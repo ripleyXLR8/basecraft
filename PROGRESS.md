@@ -37,7 +37,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Calculation token streams → source text (253 functions, 140 `Get()` flags, 29 design and location functions, operators, literals, field refs, Let, comments) | ✅ |
 | Calculations in scripts and layouts (contexts other than a table occurrence) | 🚧 |
 | Table occurrences (base table, position, colour) and relationships (TOs, join fields, cascade create) | ✅ |
-| Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
+| Relationship options: all join operators, cascade create and delete, sorting of either side | ✅ (decoded from FileMaker 26) |
 | Layouts: name, table occurrence, width, parts (kind, position, height, style) | ✅ |
 | Layout objects: kind, id, bounds, style name, field reference, static text | ✅ |
 | Layout object nesting (tab controls, panels, portals, button bars): 501/504 match XML | ✅ |
@@ -47,7 +47,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Scripts: catalog, folders, step list (type, enabled, options), long step lists | ✅ |
 | Script step parameters: control flow, variables, fields, layouts, records, finds, sorts, dialogs (see M5) | ✅ |
 | Script step parameters: other steps (windows, import/export, files…) | ⏳ |
-| Value lists (custom values, from field) | ✅ |
+| Value lists (custom values, from field: second field, related only, sort by second field) | ✅ |
 | Themes: compiled styles, named styles, local object styles, fonts (`theme.rs`) | ✅ |
 | Custom functions, accounts and privileges | ⏳ |
 | Container data | ⏳ |
@@ -190,7 +190,11 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Name indexes: collation keys of names (423 characters; `fmp12::collate`) | ✅ all 4,097 template name-index keys |
 | Schema editing (`fmp12::schema_edit`): add, rename, delete tables (with occurrence and layout) and fields; every data type; calculated and summary fields; auto-enter (serial, stamps, constant, calculation), validation (not empty, unique, existing, range, calculation), storage (global, repetitions, indexing) | ✅ verified in FileMaker: opens without warning, Manage Database and Save a Copy as XML show the tables, fields and options, records created in FileMaker get serials, stamps, constants and calculated values |
 | New empty file (`schema_edit::new_file`, from `assets/blank.fmp12` with BaseCraft's own theme) | ✅ verified in FileMaker |
-| Lookups, value-list and maximum-size validation, custom validation messages, serial increment ≠ 1, summary options (running total, restart per group), relationships | ⏳ |
+| Table occurrences: add (several per table, any name, placed on the graph), rename, delete | ✅ verified in FileMaker |
+| Relationships: add, edit, delete; one or more predicates with `=`, `≠`, `<`, `≤`, `>`, `≥`, `×`; create and delete related records on either side; sorted related records | ✅ verified in FileMaker: Manage Database shows the graph, XML shows every option, records created in FileMaker see their related records |
+| Value lists: create, edit, delete; custom values, values from a field (second field, show only the second, sort by the second, related only) | ✅ verified in FileMaker (Manage Value Lists, `ValueListItems`) |
+| Lookups (relationship, source field, no match: nothing / next lower / next higher / constant, copy empty values) | ✅ verified in FileMaker: lookups fire on creation and on Set Field |
+| Validation: member of value list, maximum characters, custom messages; serial increment ≠ 1; summary options (running total and count, restart per sort group, weighted average, fraction of total subtotaled) | ✅ verified in FileMaker |
 
 ## M3 — Data engine (`crates/engine`)
 | Feature | State |
@@ -200,15 +204,18 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | New record, edit, in memory | ✅ |
 | Find requests: words, `=`, `==`, `*`, `@`, `#`, `<` `>` `<=` `>=`, ranges, phrases, omit | ✅ |
 | Sort ascending/descending by several fields | ✅ |
-| Related records through the relationship graph (multi-hop, `=` joins); related fields and aggregates in calculations | ✅ |
-| Portals in the GUI, sorted relationships, other join operators | ⏳ |
+| Related records through the relationship graph (multi-hop, every join operator, relationship sort order); related fields and aggregates in calculations | ✅ |
+| Lookups applied when a match field changes, on new records and on import (`Database::set_values`, `apply_lookups`), next lower/higher value; not yet from Set Field in the script engine or from the GUI | ✅ |
+| Cascade delete of related records (`Database::delete_record`); serial increments | ✅ |
+| Value lists from fields: second field sort, related values only (`value_list_values_from`) | ✅ |
+| Running and restarting summaries, weighted average, subtotaled fraction in the engine | ⏳ (options read and written, computed as plain summaries) |
 | Design functions (TableNames, ValueListItems…), ExecuteSQL, GetNthRecord answered from the database | ✅ |
 | Auto-enter on new records (creation/modification stamps, serials, auto-enter calculations), written in the file's date/time formats; verified in FileMaker | ✅ |
 | Summary fields (Total, Average, Count, Min, Max, StDev, Fraction of Total, List) over a found set or break groups (`engine::summary`) | ✅ |
 | Validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
 | Stored calculations re-evaluated for new and edited records on save | ✅ |
-| Schema changes in memory (`Database::add_table`, `add_field`, `set_field`, `rename_*`, `delete_*`) with unsaved records kept; `save` writes records and moves the next serial value | ✅ |
+| Schema changes in memory (`Database::add_table`, `add_field`, `set_field`, `add_occurrence`, `add_relationship`, `add_value_list`, `rename_*`, `set_*`, `delete_*`) with unsaved records kept; `save` writes records and moves the next serial value | ✅ |
 ## M8 — Import/export, Preview and PDF
 
 | Feature | State |
@@ -259,7 +266,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
 | Run scripts from the CLI and MCP (`run-script`, `run_script`, `list_scripts`), dialogs answered automatically | ✅ |
 | MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |
-| Manage Database from the CLI: `schema add-table`, `add-field`, `set-options`, `rename`, `delete`, `new-file`; MCP `new_file`, `create_table`, `create_field` | ✅ |
+| Manage Database from the CLI: `schema add-table`, `add-field`, `set-options`, `add-occurrence`, `add-relationship`, `set-relationship`, `add-valuelist`, `set-valuelist`, `rename`, `delete`, `new-file`; MCP `new_file`, `create_table`, `create_field` (lookups, validation, summaries), `create_occurrence`, `create_relationship`, `create_valuelist` | ✅ |
 
 ### Scripts in the GUI
 
@@ -295,6 +302,26 @@ a UUID, `Code` = `FR-1` and `Label` = `France #1 first` / `France #2 many`.
 A copy of the Tasks template with a table added (a calculation referring to
 `Tasks::Task`), a Tasks field renamed and a field deleted also opens without a
 warning, and its XML export shows the new table, its layout and the renamed field.
+
+Relationship writing check (2026-11-27, `tools/oracle/graph_demo.sh`,
+`template_demo.sh` + `Test-FmGraph` in `schema_check.ps1`): a file made
+by `basecraft-cli new-file` and 37 `schema` commands (Clients and
+Invoices, two more occurrences named differently from their tables,
+three relationships using all seven operators with create, delete and
+sorts on either side, two lookups, four value lists, value-list,
+size and message validation, a serial by 5, four summary options; an
+occurrence, a relationship and a value list added, edited and deleted)
+opens in FileMaker Pro 26 without a warning. Manage Database's
+Relationships tab draws the graph, Manage Value Lists lists the four
+lists with their values, and Save a Copy as XML shows every option as
+written. Records created in FileMaker see the related records
+(`Count ( Invoices::Id )` = 2, `List ( Invoices::Amount )`, `Clients::Name`),
+lookups copy the client's name and city when the record is created and
+when a script sets the match field (and the no-match constant), the
+serial goes 1, 6, 11, 16 and `ValueListItems` returns the custom and
+field values. The same commands on a copy of the Tasks template (a Notes
+table related to Tasks, a lookup of the task's name, a `×` relationship,
+two value lists, a renamed field) give the same results.
 
 ## Distribution
 

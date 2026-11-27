@@ -323,7 +323,7 @@ fn value_lists_match_xml() {
                         v.name
                     );
                 }
-                Source::Field { to, field } => {
+                Source::Field { to, field, .. } => {
                     assert_eq!(src, "FromField", "{}", v.name);
                     let pf = x
                         .descendants()

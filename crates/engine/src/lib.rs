@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use calc::Value;
 use fmp12::schema::{DataType, FieldKind};
-use fmp12::schema_edit::{EditError, Editor, FieldSpec};
+use fmp12::schema_edit::{EditError, Editor, FieldSpec, RelationshipSpec};
 
 pub use find::{Request, find};
 pub use summary::{groups, summarize};
@@ -292,6 +292,79 @@ impl Database {
         self.edit_schema(file, |ed| ed.delete_field(table, field))
     }
 
+    /// Adds a table occurrence of `table`; returns its id.
+    pub fn add_occurrence(
+        &mut self,
+        file: &mut fmp12::File,
+        table: u32,
+        name: &str,
+    ) -> Result<u32, EditError> {
+        self.edit_schema(file, |ed| ed.add_occurrence(table, name))
+    }
+
+    pub fn rename_occurrence(
+        &mut self,
+        file: &mut fmp12::File,
+        to: u32,
+        name: &str,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.rename_occurrence(to, name))
+    }
+
+    pub fn delete_occurrence(&mut self, file: &mut fmp12::File, to: u32) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.delete_occurrence(to))
+    }
+
+    /// Adds a relationship; returns its id.
+    pub fn add_relationship(
+        &mut self,
+        file: &mut fmp12::File,
+        spec: &RelationshipSpec,
+    ) -> Result<u32, EditError> {
+        self.edit_schema(file, |ed| ed.add_relationship(spec))
+    }
+
+    pub fn set_relationship(
+        &mut self,
+        file: &mut fmp12::File,
+        id: u32,
+        spec: &RelationshipSpec,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.set_relationship(id, spec))
+    }
+
+    pub fn delete_relationship(
+        &mut self,
+        file: &mut fmp12::File,
+        id: u32,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.delete_relationship(id))
+    }
+
+    /// Adds a value list; returns its id.
+    pub fn add_value_list(
+        &mut self,
+        file: &mut fmp12::File,
+        name: &str,
+        source: &fmp12::valuelists::Source,
+    ) -> Result<u32, EditError> {
+        self.edit_schema(file, |ed| ed.add_value_list(name, source))
+    }
+
+    pub fn set_value_list(
+        &mut self,
+        file: &mut fmp12::File,
+        id: u32,
+        name: &str,
+        source: &fmp12::valuelists::Source,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.set_value_list(id, name, source))
+    }
+
+    pub fn delete_value_list(&mut self, file: &mut fmp12::File, id: u32) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.delete_value_list(id))
+    }
+
     /// The bytes of `original` (the file this database was loaded from)
     /// with the current records of every table: new, edited and deleted
     /// records are written, everything else is kept. Stored calculations
@@ -349,7 +422,8 @@ impl Database {
                 if let (Some(max), Some(next)) = (max, next)
                     && max >= next
                 {
-                    ed.set_next_serial(t.id, f.id, &(max + 1).to_string());
+                    let inc = f.def.serial_increment() as u64;
+                    ed.set_next_serial(t.id, f.id, &(max + inc).to_string());
                     moved = true;
                 }
             }
@@ -401,9 +475,17 @@ impl Database {
 }
 
 impl Database {
-    /// Values of value list `id`: custom values, or the distinct sorted
-    /// values of a field.
+    /// Values of value list `id`: custom values, or the distinct values of
+    /// its field (the values stored, sorted by the first or the second
+    /// field).
     pub fn value_list_values(&self, id: u32) -> Vec<String> {
+        self.value_list_values_from(id, None)
+    }
+
+    /// Like [`Database::value_list_values`]; a list of related values only
+    /// takes the records related to `record` (occurrence, record index),
+    /// none without it.
+    pub fn value_list_values_from(&self, id: u32, record: Option<(u32, usize)>) -> Vec<String> {
         use fmp12::valuelists::Source;
         let Some(vl) = self.value_lists.iter().find(|v| v.id == id) else {
             return Vec::new();
@@ -414,17 +496,43 @@ impl Database {
                 .filter(|v| !v.is_empty())
                 .map(str::to_string)
                 .collect(),
-            Source::Field { to, field } => {
+            Source::Field {
+                to,
+                field,
+                second,
+                sort_by_second,
+                related_from,
+                ..
+            } => {
                 let Some(t) = self.table_of(*to) else {
                     return Vec::new();
                 };
-                let mut v: Vec<String> = (0..t.records.len())
-                    .map(|r| self.value(t.id, r, *field).to_text())
-                    .filter(|s| !s.is_empty())
+                let records: Vec<usize> = match (related_from, record) {
+                    (None, _) => (0..t.records.len()).collect(),
+                    (Some(from), Some((rto, r))) if *from == rto => self.related(rto, r, *to),
+                    _ => Vec::new(),
+                };
+                // ponytail: the second field is read from the same record
+                // (FileMaker allows it on a related occurrence).
+                let by = second.filter(|_| *sort_by_second).map(|(_, f)| f);
+                let mut v: Vec<(String, String)> = records
+                    .iter()
+                    .map(|&r| {
+                        let first = self.value(t.id, r, *field).to_text();
+                        let key =
+                            by.map_or_else(|| first.clone(), |f| self.value(t.id, r, f).to_text());
+                        (key.to_lowercase(), first)
+                    })
+                    .filter(|(_, s)| !s.is_empty())
                     .collect();
-                v.sort_by_key(|s| s.to_lowercase());
-                v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-                v
+                v.sort();
+                let mut out: Vec<String> = Vec::new();
+                for (_, s) in v {
+                    if !out.iter().any(|x| x.eq_ignore_ascii_case(&s)) {
+                        out.push(s);
+                    }
+                }
+                out
             }
             Source::Unknown(_) => Vec::new(),
         }
@@ -498,8 +606,201 @@ impl Database {
                 self.tables[ti].records[r].values.insert(f.id, v);
             }
         }
+        self.apply_lookups(table, r, None);
         self.touch(table, r);
         Some(r)
+    }
+
+    /// Sets field values of a record as data entry does: lookups whose
+    /// match field changed copy their value again, then modification
+    /// stamps are applied.
+    pub fn set_values(&mut self, table: u32, record: usize, values: &[(u32, String)]) {
+        let Some(ti) = self.tables.iter().position(|t| t.id == table) else {
+            return;
+        };
+        let Some(rec) = self.tables[ti].records.get_mut(record) else {
+            return;
+        };
+        for (f, v) in values {
+            rec.values.insert(*f, v.clone());
+        }
+        let changed: Vec<u32> = values.iter().map(|(f, _)| *f).collect();
+        self.apply_lookups(table, record, Some(&changed));
+        self.touch(table, record);
+    }
+
+    /// Copies the looked-up values of a record: every lookup (`changed` =
+    /// `None`, a new record) or those whose first relationship matches on
+    /// a field of `changed`, as FileMaker does when a match field changes.
+    pub fn apply_lookups(&mut self, table: u32, record: usize, changed: Option<&[u32]>) {
+        use fmp12::schema::NoMatch;
+        let Some(ti) = self.tables.iter().position(|t| t.id == table) else {
+            return;
+        };
+        let fields = self.tables[ti].fields.clone();
+        for f in &fields {
+            let Some(l) = f.def.lookup() else {
+                continue;
+            };
+            let Some(hops) = self.path(l.context, l.from) else {
+                continue;
+            };
+            let Some(&(a, _, i)) = hops.first() else {
+                continue;
+            };
+            let rel = &self.relationships[i];
+            // Match fields on this record's side of the first relationship.
+            let keys: Vec<u32> = rel
+                .predicates
+                .iter()
+                .map(|p| {
+                    if rel.left == a {
+                        p.left_field
+                    } else {
+                        p.right_field
+                    }
+                })
+                .collect();
+            if changed.is_some_and(|c| !keys.iter().any(|k| c.contains(k))) {
+                continue;
+            }
+            let Some(src) = self.table_of(l.from).map(|t| t.id) else {
+                continue;
+            };
+            let found = self.related(l.context, record, l.from);
+            let value = match found.first() {
+                Some(&r) => Some(self.stored(src, r, l.field)),
+                None => match &l.no_match {
+                    NoMatch::DontCopy => None,
+                    NoMatch::Constant(c) => Some(c.clone()),
+                    NoMatch::Lower | NoMatch::Higher => {
+                        self.nearest(&hops, record, l.field, l.no_match == NoMatch::Lower)
+                    }
+                },
+            };
+            if let Some(v) = value.filter(|v| !v.is_empty() || l.copy_empty)
+                && let Some(rec) = self.tables[ti].records.get_mut(record)
+            {
+                rec.values.insert(f.id, v);
+            }
+        }
+    }
+
+    /// A field's value as stored: the text of a normal field, the result
+    /// of a calculation in the file's formats.
+    fn stored(&self, table: u32, record: usize, field: u32) -> String {
+        let Some(t) = self.table(table) else {
+            return String::new();
+        };
+        match t.field(field) {
+            Some(f) if f.kind == FieldKind::Normal => t
+                .records
+                .get(record)
+                .and_then(|r| r.values.get(&field))
+                .cloned()
+                .unwrap_or_default(),
+            _ => stored_text(&self.value(table, record, field), &self.locale),
+        }
+    }
+
+    /// "Copy next lower / higher value": `field` of the record of a
+    /// one-relationship lookup whose match value is closest below (above)
+    /// this record's, on the first match field.
+    /// ponytail: one hop and the first predicate only.
+    fn nearest(
+        &self,
+        hops: &[(u32, u32, usize)],
+        record: usize,
+        field: u32,
+        lower: bool,
+    ) -> Option<String> {
+        let [(a, b, i)] = hops else {
+            return None;
+        };
+        let rel = &self.relationships[*i];
+        let p = rel.predicates.first()?;
+        let (fa, fb) = if rel.left == *a {
+            (p.left_field, p.right_field)
+        } else {
+            (p.right_field, p.left_field)
+        };
+        let (ta, tb) = (self.table_of(*a)?.id, self.table_of(*b)?);
+        let key = self.value(ta, record, fa);
+        if key.is_empty() {
+            return None;
+        }
+        let mut best: Option<(Value, usize)> = None;
+        for j in 0..tb.records.len() {
+            let v = self.value(tb.id, j, fb);
+            let side = calc::eval::compare(&v, &key);
+            let ok = if lower {
+                side == std::cmp::Ordering::Less
+            } else {
+                side == std::cmp::Ordering::Greater
+            };
+            if v.is_empty() || !ok {
+                continue;
+            }
+            let better = best.as_ref().is_none_or(|(b, _)| {
+                let c = calc::eval::compare(&v, b);
+                if lower {
+                    c == std::cmp::Ordering::Greater
+                } else {
+                    c == std::cmp::Ordering::Less
+                }
+            });
+            if better {
+                best = Some((v, j));
+            }
+        }
+        best.map(|(_, j)| self.stored(tb.id, j, field))
+    }
+
+    /// Deletes record `record` of `table` and, as FileMaker does, the
+    /// records related through relationships set to delete them (and so
+    /// on). Returns the deleted records as (table, record id).
+    pub fn delete_record(&mut self, table: u32, record: usize) -> Vec<(u32, u32)> {
+        let Some(id) = self
+            .table(table)
+            .and_then(|t| t.records.get(record))
+            .map(|r| r.id)
+        else {
+            return Vec::new();
+        };
+        let mut gone: Vec<(u32, u32)> = vec![(table, id)];
+        let mut i = 0;
+        while let Some(&(t, rid)) = gone.get(i) {
+            i += 1;
+            let Some(idx) = self
+                .table(t)
+                .and_then(|x| x.records.iter().position(|r| r.id == rid))
+            else {
+                continue;
+            };
+            for rel in &self.relationships {
+                for (a, b, delete) in [
+                    (rel.left, rel.right, rel.right_cascade_delete()),
+                    (rel.right, rel.left, rel.left_cascade_delete()),
+                ] {
+                    if !delete || self.table_of(a).map(|x| x.id) != Some(t) {
+                        continue;
+                    }
+                    let Some(tb) = self.table_of(b) else {
+                        continue;
+                    };
+                    for j in self.hop(a, &[idx], b, rel) {
+                        let k = (tb.id, tb.records[j].id);
+                        if !gone.contains(&k) {
+                            gone.push(k);
+                        }
+                    }
+                }
+            }
+        }
+        for t in self.tables.iter_mut() {
+            t.records.retain(|r| !gone.contains(&(t.id, r.id)));
+        }
+        gone
     }
 
     /// Applies modification stamps after a record changed.
@@ -544,15 +845,22 @@ impl Database {
             return None;
         }
         if f.def.auto_serial() {
-            // ponytail: next serial = highest existing value + 1 (stored next value not decoded).
+            // The file's next value, or past the highest value given here.
+            // ponytail: numeric serials only.
             let t = self.table(table)?;
+            let inc = f.def.serial_increment() as i64;
             let max = t
                 .records
                 .iter()
                 .filter_map(|r| r.values.get(&f.id)?.trim().parse::<i64>().ok())
-                .max()
-                .unwrap_or(0);
-            return Some((max + 1).to_string());
+                .max();
+            let stored = f.def.serial_next.trim().parse::<i64>().ok();
+            let next = match (max, stored) {
+                (Some(m), Some(s)) => s.max(m + inc),
+                (Some(m), None) => m + inc,
+                (None, s) => s.unwrap_or(1),
+            };
+            return Some(next.to_string());
         }
         let src = f.auto_calc.as_ref()?;
         let v = self
@@ -622,8 +930,44 @@ impl Database {
     }
 
     /// Records related to record `record` of table occurrence `from`, seen
-    /// through table occurrence `to` (following the shortest relationship path).
+    /// through table occurrence `to` (following the shortest relationship
+    /// path), in the relationship's sort order when it has one.
     pub fn related(&self, from: u32, record: usize, to: u32) -> Vec<usize> {
+        let Some(hops) = self.path(from, to) else {
+            return Vec::new();
+        };
+        let mut set = vec![record];
+        for &(a, b, i) in &hops {
+            set = self.hop(a, &set, b, &self.relationships[i]);
+        }
+        if let (Some(&(_, b, i)), Some(t)) = (hops.last(), self.table_of(to)) {
+            let r = &self.relationships[i];
+            let keys = if r.right == b {
+                &r.right_sort
+            } else {
+                &r.left_sort
+            };
+            let keys: Vec<(u32, Order)> = keys
+                .iter()
+                .map(|k| {
+                    let o = if k.descending {
+                        Order::Descending
+                    } else {
+                        Order::Ascending
+                    };
+                    (k.field, o)
+                })
+                .collect();
+            if !keys.is_empty() {
+                sort(self, t.id, &mut set, &keys);
+            }
+        }
+        set
+    }
+
+    /// The relationships from occurrence `from` to `to`: (a, b, index in
+    /// `relationships`) per hop. `None` when they are not related.
+    fn path(&self, from: u32, to: u32) -> Option<Vec<(u32, u32, usize)>> {
         // Breadth-first search over the relationship graph.
         let mut prev: BTreeMap<u32, (u32, usize)> = BTreeMap::new();
         let mut queue = std::collections::VecDeque::from([from]);
@@ -648,17 +992,12 @@ impl Database {
         let mut hops = Vec::new();
         let mut cur = to;
         while cur != from {
-            let Some(&(a, i)) = prev.get(&cur) else {
-                return Vec::new();
-            };
+            let &(a, i) = prev.get(&cur)?;
             hops.push((a, cur, i));
             cur = a;
         }
-        let mut set = vec![record];
-        for (a, b, i) in hops.into_iter().rev() {
-            set = self.hop(a, &set, b, &self.relationships[i]);
-        }
-        set
+        hops.reverse();
+        Some(hops)
     }
 
     fn hop(
@@ -671,31 +1010,48 @@ impl Database {
         let (Some(ta), Some(tb)) = (self.table_of(a), self.table_of(b)) else {
             return Vec::new();
         };
-        // Predicate fields oriented from a to b.
-        let preds: Vec<(u32, u32)> = rel
-            .predicates
-            .iter()
-            .map(|p| {
-                if rel.left == a {
-                    (p.left_field, p.right_field)
-                } else {
-                    (p.right_field, p.left_field)
-                }
-            })
-            .collect();
+        let forward = rel.left == a;
         (0..tb.records.len())
             .filter(|&j| {
                 records.iter().any(|&r| {
-                    preds.iter().all(|(fa, fb)| {
-                        let (va, vb) = (self.value(ta.id, r, *fa), self.value(tb.id, j, *fb));
-                        // ponytail: only `=` joins; other operators need relationship option decoding.
-                        !va.is_empty()
-                            && !vb.is_empty()
-                            && calc::eval::compare(&va, &vb) == std::cmp::Ordering::Equal
+                    rel.predicates.iter().all(|p| {
+                        let (fa, fb) = if forward {
+                            (p.left_field, p.right_field)
+                        } else {
+                            (p.right_field, p.left_field)
+                        };
+                        let (va, vb) = (self.value(ta.id, r, fa), self.value(tb.id, j, fb));
+                        // The predicate reads left op right.
+                        let (l, r) = if forward { (&va, &vb) } else { (&vb, &va) };
+                        joins(p.op, l, r)
                     })
                 })
             })
             .collect()
+    }
+}
+
+/// Whether a predicate `left op right` holds, as FileMaker matches
+/// relationships: an empty value matches nothing, except through ×.
+fn joins(op: fmp12::graph::JoinOp, left: &Value, right: &Value) -> bool {
+    use fmp12::graph::JoinOp as J;
+    use std::cmp::Ordering as O;
+    if op == J::Cartesian {
+        return true;
+    }
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    let c = calc::eval::compare(left, right);
+    match op {
+        J::Equal => c == O::Equal,
+        J::NotEqual => c != O::Equal,
+        J::Less => c == O::Less,
+        J::LessOrEqual => c != O::Greater,
+        J::Greater => c == O::Greater,
+        J::GreaterOrEqual => c != O::Less,
+        J::Cartesian => true,
+        J::Unknown(_) => false,
     }
 }
 

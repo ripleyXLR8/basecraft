@@ -204,3 +204,267 @@ fn bad_calculation_writes_nothing() {
     assert!(ed.add_field(t, &spec).is_err());
     assert_eq!(ed.field_id(t, "C"), None);
 }
+
+/// Clients and Invoices on a new file. Returns the editor and (clients,
+/// its occurrence, invoices, its occurrence).
+fn shop() -> (Editor, [u32; 4]) {
+    let file = fmp12::File::from_bytes(fmp12::schema_edit::new_file("Clients").unwrap()).unwrap();
+    let mut ed = Editor::open(&file).unwrap();
+    let c = ed.table_id("Clients").unwrap();
+    for (n, d) in [
+        ("Id", DataType::Number),
+        ("Name", DataType::Text),
+        ("City", DataType::Text),
+    ] {
+        ed.add_field(c, &FieldSpec::new(n, d)).unwrap();
+    }
+    let (i, ito, _) = ed.add_table("Invoices").unwrap();
+    for (n, d) in [
+        ("Id", DataType::Number),
+        ("ClientId", DataType::Number),
+        ("Amount", DataType::Number),
+    ] {
+        ed.add_field(i, &FieldSpec::new(n, d)).unwrap();
+    }
+    let cto = ed.occurrence_id("Clients").unwrap();
+    (ed, [c, cto, i, ito])
+}
+
+#[test]
+fn occurrences_relationships_and_value_lists_round_trip() {
+    use fmp12::graph::{JoinOp, Predicate};
+    use fmp12::schema_edit::{RelSide, RelationshipSpec};
+    use fmp12::valuelists::Source;
+    let (mut ed, [c, cto, i, ito]) = shop();
+    let f = |ed: &Editor, t: u32, n: &str| ed.field_id(t, n).unwrap();
+    let (cid, name, city) = (f(&ed, c, "Id"), f(&ed, c, "Name"), f(&ed, c, "City"));
+    let (cl, amount) = (f(&ed, i, "ClientId"), f(&ed, i, "Amount"));
+    // Clients -< Invoices: create and delete invoices, sorted by amount (desc).
+    let mut spec = RelationshipSpec::equal(cto, cid, ito, cl);
+    spec.right_options = RelSide {
+        create: true,
+        delete: true,
+        sort: vec![(amount, true)],
+    };
+    spec.left_options.sort = vec![(name, false)];
+    let r1 = ed.add_relationship(&spec).unwrap();
+    // A second occurrence of Invoices, named differently, with every operator.
+    let big = ed.add_occurrence(i, "Big invoices").unwrap();
+    let ops = [
+        JoinOp::Equal,
+        JoinOp::NotEqual,
+        JoinOp::Less,
+        JoinOp::LessOrEqual,
+        JoinOp::Greater,
+        JoinOp::GreaterOrEqual,
+        JoinOp::Cartesian,
+    ];
+    let preds: Vec<Predicate> = ops
+        .iter()
+        .map(|op| Predicate {
+            op: *op,
+            left_field: cid,
+            right_field: amount,
+        })
+        .collect();
+    let mut spec2 = RelationshipSpec::equal(cto, cid, big, amount);
+    spec2.predicates = preds.clone();
+    spec2.left_options.delete = true;
+    // Creation needs = only; a duplicate pair or a cycle is refused.
+    let mut bad = spec2.clone();
+    bad.right_options.create = true;
+    assert!(ed.add_relationship(&bad).is_err());
+    let r2 = ed.add_relationship(&spec2).unwrap();
+    assert!(ed.add_relationship(&spec).is_err());
+    assert!(
+        ed.add_relationship(&RelationshipSpec::equal(ito, cl, big, amount))
+            .is_err()
+    );
+    // Value lists: custom, two fields, related only.
+    let cities = ed
+        .add_value_list("Cities", &Source::Custom("Paris\rLyon\rNice".into()))
+        .unwrap();
+    let names_src = Source::Field {
+        to: cto,
+        field: cid,
+        second: Some((cto, name)),
+        second_only: true,
+        sort_by_second: true,
+        related_from: None,
+    };
+    let names = ed.add_value_list("Client names", &names_src).unwrap();
+    let related = Source::Field {
+        to: ito,
+        field: amount,
+        second: None,
+        second_only: false,
+        sort_by_second: false,
+        related_from: Some(cto),
+    };
+    let rel_vl = ed.add_value_list("Amounts", &related).unwrap();
+    assert!(
+        ed.add_value_list("cities", &Source::Custom("x".into()))
+            .is_err()
+    );
+    // Rename an occurrence, then reopen.
+    ed.rename_occurrence(big, "Large").unwrap();
+    let file = reopen(ed.finish());
+
+    let tos = fmp12::graph::table_occurrences(&file).unwrap();
+    let large = tos.iter().find(|o| o.id == big).unwrap();
+    assert_eq!((large.name.as_str(), large.base_table), ("Large", i));
+    assert!(large.width > 0.0 && large.left > 0.0);
+    let rels = fmp12::graph::relationships(&file).unwrap();
+    let a = rels.iter().find(|r| r.id == r1).unwrap();
+    assert_eq!((a.left, a.right), (cto, ito));
+    assert!(a.right_cascade_create() && a.right_cascade_delete());
+    assert!(!a.left_cascade_create() && !a.left_cascade_delete());
+    assert_eq!(a.right_sort.len(), 1);
+    assert!(a.right_sort[0].descending && a.right_sort[0].field == amount);
+    assert_eq!(a.left_sort[0].field, name);
+    let b = rels.iter().find(|r| r.id == r2).unwrap();
+    assert_eq!(b.predicates, preds);
+    assert!(b.left_cascade_delete());
+    let vls = fmp12::valuelists::value_lists(&file).unwrap();
+    let by = |id: u32| vls.iter().find(|v| v.id == id).unwrap();
+    assert_eq!(
+        by(cities).source,
+        Source::Custom("Paris\rLyon\rNice".into())
+    );
+    assert_eq!(by(names).source, names_src);
+    assert_eq!(by(names).name, "Client names");
+    assert_eq!(by(rel_vl).source, related);
+
+    // Edit and delete.
+    let mut ed = Editor::open(&file).unwrap();
+    let mut s = ed.relationship_spec(r1).unwrap();
+    assert_eq!(s, spec);
+    s.predicates.push(Predicate {
+        op: JoinOp::Equal,
+        left_field: city,
+        right_field: amount,
+    });
+    s.right_options.sort.clear();
+    ed.set_relationship(r1, &s).unwrap();
+    ed.set_value_list(cities, "Towns", &Source::Custom("Oslo".into()))
+        .unwrap();
+    ed.delete_value_list(names).unwrap();
+    ed.delete_relationship(r2).unwrap();
+    // The last occurrence of a table stays.
+    assert!(ed.delete_occurrence(cto).is_err());
+    ed.delete_occurrence(big).unwrap();
+    let file = reopen(ed.finish());
+    let rels = fmp12::graph::relationships(&file).unwrap();
+    assert_eq!(rels.len(), 1);
+    assert_eq!(rels[0].predicates.len(), 2);
+    assert!(rels[0].right_sort.is_empty());
+    assert!(
+        !fmp12::graph::table_occurrences(&file)
+            .unwrap()
+            .iter()
+            .any(|o| o.id == big)
+    );
+    let vls = fmp12::valuelists::value_lists(&file).unwrap();
+    assert_eq!(vls.len(), 2);
+    assert!(
+        vls.iter()
+            .any(|v| v.name == "Towns" && v.source == Source::Custom("Oslo".into()))
+    );
+}
+
+#[test]
+fn lookups_and_more_field_options_round_trip() {
+    use fmp12::schema::{Lookup, NoMatch};
+    use fmp12::schema_edit::RelationshipSpec;
+    use fmp12::valuelists::Source;
+    let (mut ed, [c, cto, i, ito]) = shop();
+    let f = |ed: &Editor, t: u32, n: &str| ed.field_id(t, n).unwrap();
+    let (cid, name) = (f(&ed, c, "Id"), f(&ed, c, "Name"));
+    let (cl, amount) = (f(&ed, i, "ClientId"), f(&ed, i, "Amount"));
+    let vl = ed
+        .add_value_list("Cities", &Source::Custom("Paris\rLyon".into()))
+        .unwrap();
+    // A lookup needs a relationship.
+    let mut look = FieldSpec::new("Client name", DataType::Text);
+    look.auto_enter.lookup = Some(Lookup {
+        context: ito,
+        from: cto,
+        field: name,
+        no_match: NoMatch::Constant("?".into()),
+        copy_empty: false,
+    });
+    assert!(ed.add_field(i, &look).is_err());
+    ed.add_relationship(&RelationshipSpec::equal(cto, cid, ito, cl))
+        .unwrap();
+    let lk = ed.add_field(i, &look).unwrap();
+    let mut lower = look.clone();
+    lower.name = "Lower".into();
+    if let Some(l) = lower.auto_enter.lookup.as_mut() {
+        l.no_match = NoMatch::Lower;
+        l.copy_empty = true;
+    }
+    let lw = ed.add_field(i, &lower).unwrap();
+    let mut serial = FieldSpec::new("Number", DataType::Number);
+    serial.auto_enter.serial = Some("100".into());
+    serial.auto_enter.serial_increment = 10;
+    let sr = ed.add_field(i, &serial).unwrap();
+    let mut town = FieldSpec::new("Town", DataType::Text);
+    town.validation.value_list = Some(vl);
+    town.validation.max_chars = Some(12);
+    town.validation.message = Some("\"Pick a city\"".into());
+    let tw = ed.add_field(c, &town).unwrap();
+    let summary = |name: &str, op: SummaryOp, running: bool| FieldSpec {
+        field_type: FieldType::Summary {
+            op,
+            field: amount,
+            running,
+            by: Some(cl),
+        },
+        ..FieldSpec::summary(name, op, amount)
+    };
+    let running = summary("Running", SummaryOp::Total, true);
+    let rn = ed.add_field(i, &running).unwrap();
+    let weighted = summary("Weighted", SummaryOp::Average, false);
+    let wa = ed.add_field(i, &weighted).unwrap();
+    let share = summary("Share", SummaryOp::FractionOfTotal, false);
+    let fr = ed.add_field(i, &share).unwrap();
+    // A restart needs a running total; a minimum takes no second field.
+    assert!(
+        ed.add_field(i, &summary("Bad", SummaryOp::Total, false))
+            .is_err()
+    );
+    assert!(
+        ed.add_field(i, &summary("Bad", SummaryOp::Minimum, false))
+            .is_err()
+    );
+
+    let file = reopen(ed.finish());
+    let tables = fmp12::schema::tables(&file).unwrap();
+    let inv = tables.iter().find(|t| t.id == i).unwrap();
+    let l = inv.fields[&lk].lookup().unwrap();
+    assert_eq!((l.context, l.from, l.field), (ito, cto, name));
+    assert_eq!(l.no_match, NoMatch::Constant("?".into()));
+    assert!(!l.copy_empty);
+    let l = inv.fields[&lw].lookup().unwrap();
+    assert_eq!(l.no_match, NoMatch::Lower);
+    assert!(l.copy_empty);
+    assert_eq!(inv.fields[&sr].serial_increment(), 10);
+    assert!(inv.fields[&rn].summary_running());
+    assert_eq!(inv.fields[&rn].summary_by(), Some(cl));
+    assert_eq!(inv.fields[&wa].summary_by(), Some(cl));
+    assert_eq!(inv.fields[&fr].summary_by(), Some(cl));
+    let cli = tables.iter().find(|t| t.id == c).unwrap();
+    let t = &cli.fields[&tw];
+    assert_eq!(t.validation_value_list(), Some(vl));
+    assert_eq!(t.max_size(), Some(12));
+    assert!(t.validation().custom_message);
+    // The editor reads every option back.
+    let ed = Editor::open(&file).unwrap();
+    assert_eq!(ed.field_spec(i, lk).unwrap(), look);
+    assert_eq!(ed.field_spec(i, lw).unwrap(), lower);
+    assert_eq!(ed.field_spec(i, sr).unwrap(), serial);
+    assert_eq!(ed.field_spec(c, tw).unwrap(), town);
+    assert_eq!(ed.field_spec(i, rn).unwrap(), running);
+    assert_eq!(ed.field_spec(i, wa).unwrap(), weighted);
+    assert_eq!(ed.field_spec(i, fr).unwrap(), share);
+}

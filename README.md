@@ -118,7 +118,7 @@ basecraft-cli session Contacts.fmp12
 
 Files written by the CLI open in FileMaker Pro 26.
 
-### Manage Database: new files, tables and fields
+### Manage Database: new files, tables, fields, relationships and value lists
 
 ```sh
 basecraft-cli new-file   Shop.fmp12 --table Customers               # a new, empty database
@@ -134,14 +134,43 @@ basecraft-cli schema delete      Shop.fmp12 field Sales Label --in-place
 basecraft-cli schema delete      Shop.fmp12 table Sales --in-place
 ```
 
+```sh
+# Customers (Id, Name, Limit) and Orders (CustomerId, Amount, Date):
+basecraft-cli schema add-occurrence   Shop.fmp12 Orders "Big orders" --in-place      # another occurrence of Orders
+basecraft-cli schema add-relationship Shop.fmp12 Customers Orders "Id = CustomerId" \
+    --create-right --delete-right --sort-right Date:desc --in-place
+basecraft-cli schema add-relationship Shop.fmp12 Customers "Big orders" "Id = CustomerId" "Limit < Amount" --in-place
+basecraft-cli schema set-relationship Shop.fmp12 Customers Orders --no-delete-right --in-place
+basecraft-cli schema add-field        Shop.fmp12 Orders CustomerName --lookup Customers::Name --if-no-match value:? --in-place
+basecraft-cli schema add-valuelist    Shop.fmp12 Sizes S M L --in-place
+basecraft-cli schema add-valuelist    Shop.fmp12 Customers --from-field Customers::Id --second Customers::Name --second-only --in-place
+basecraft-cli schema add-field        Shop.fmp12 Orders Size --in-list Sizes --max-chars 1 --message "S, M or L" --in-place
+basecraft-cli schema rename           Shop.fmp12 occurrence "Big orders" Large --in-place
+basecraft-cli schema delete           Shop.fmp12 relationship Customers Large --in-place   # also: occurrence, valuelist
+```
+
 * Field options: `--type text|number|date|time|timestamp|container`, `--comment`;
   `--calc FORMULA` (`--unstored`) or `--summary total|average|count|minimum|maximum|stdev|fraction|list:Field`;
   auto-enter `--serial NEXT`, `--stamp creation-date|creation-time|creation-timestamp|creation-name|creation-account`
   (or `modification-…`), `--auto-calc FORMULA` (`--replace`, `--always-evaluate`), `--constant VALUE`,
   `--prohibit-modification`; validation `--not-empty`, `--unique`, `--existing`, `--range LOW:HIGH`,
-  `--validate FORMULA`, `--always-validate`, `--strict` (no override); storage `--global`,
-  `--repetitions N`, `--index none|minimal|all`, `--no-auto-index`. With `set-options`,
-  `--name NEW` renames and `--no-<option>` turns an option off.
+  `--validate FORMULA`, `--always-validate`, `--strict` (no override), `--in-list VALUELIST`,
+  `--max-chars N`, `--message TEXT` (or `--message-calc FORMULA`); serial `--increment N`;
+  lookups `--lookup Occurrence::Field` (`--lookup-from Occurrence`, `--if-no-match
+  none|lower|higher|value:TEXT`, `--copy-empty`); summaries `--running`, `--restart-by Field`,
+  `--weighted-by Field`, `--subtotal-by Field`; storage `--global`, `--repetitions N`,
+  `--index none|minimal|all`, `--no-auto-index`. With `set-options`, `--name NEW` renames and
+  `--no-<option>` turns an option off.
+* Relationships join two table occurrences with one or more `Field op Field` arguments, the
+  operator being `=`, `≠` (`!=`), `<`, `≤` (`<=`), `>`, `≥` (`>=`) or `×` (`x`). Options per
+  side: `--create-left/right`, `--delete-left/right`, `--sort-left/right Field[:desc]`
+  (repeated); `set-relationship` takes the same arguments (new predicates replace the old
+  ones) and `--no-…`. As in FileMaker, two occurrences have at most one relationship and the
+  graph has no cycles: relate a new occurrence instead.
+* Value lists take custom values as arguments, or `--from-field Occurrence::Field` with
+  `--second Occurrence::Field`, `--second-only`, `--sort-second`, `--related-from Occurrence`.
+* Lookups copy when the match field changes (`set`, `new`, scripts) as in FileMaker, and
+  deleting a record deletes the related records its relationships say to delete.
 * Calculations use FileMaker's syntax (fields of other tables as `Occurrence::Field`) and are
   compiled the way FileMaker stores them, so FileMaker evaluates them.
 * A new table gets a table occurrence and an empty layout of the same name. Deleting a table
@@ -181,7 +210,8 @@ server on stdio. It exposes these tools:
 * `open_file`, `new_file`, `describe_database`;
 * `find_records`, `evaluate`;
 * `create_record`, `update_record`, `delete_record`;
-* `create_table`, `create_field` (types, calculations, summaries, auto-enter, validation, storage);
+* `create_table`, `create_field` (types, calculations, summaries, auto-enter, lookups, validation, storage);
+* `create_occurrence`, `create_relationship`, `create_valuelist`;
 * `list_scripts`, `run_script`;
 * `export_records`, `import_records`, `print_pdf`;
 * `save_file`.

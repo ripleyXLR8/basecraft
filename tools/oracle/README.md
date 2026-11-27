@@ -43,6 +43,19 @@ from files we authored ourselves.
   (screenshots too), creates records on the table's layout and optionally
   saves the copy as XML. `schema_demo.sh <out.fmp12> [basecraft-cli]` builds
   the file used for the check with `basecraft-cli new-file` and `schema`.
+* `Test-FmGraph <file> [-Plan "1:1,2:2,1:1"] [-Script steps.xml] [-Xml out.xml]` (in
+  `schema_check.ps1`) checks relationships, lookups and value lists BaseCraft wrote: opens a
+  copy, screenshots Manage Database's Relationships tab, lists Manage Value Lists, creates
+  records on the layouts of `-Plan`, pastes and runs the steps of `-Script` in a new script,
+  optionally saves the copy as XML. `graph_demo.sh <out.fmp12> [basecraft-cli]` builds the
+  file it was written for (run it with `-Script graph_lookup.xml`), `template_demo.sh <Tasks
+  en.fmp12> <out.fmp12>` does the same on a copy of the Tasks template (`-Plan ""
+  -Script template_lookup.xml`). The auto-enter calculations named `Seen` store what
+  FileMaker saw through the relationships when it created each record.
+* More helpers in `fmui.ps1`: `Find-FmWindow <pattern>`, `Click-FmId <automation id> [in]`
+  (most dialogs, e.g. Field Options, Edit Relationship, Specify Fields for Value List, have
+  automation ids such as `IDC_LOOKUP_FIELD_LIST`), `Open-FmValueLists`,
+  `Add-FmScriptSteps <snippet> -Run`.
 * `script_check.ps1`: `Test-FmScripts <file> [-Xml out.xml] [-Click x,y]`
   checks a file whose scripts BaseCraft wrote: opens a copy, reports the
   damage dialog if any, lists every step as FileMaker prints it (Save a

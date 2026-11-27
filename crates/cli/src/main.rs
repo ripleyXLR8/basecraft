@@ -21,7 +21,8 @@
 //!                       [--margin PT] [--find…] [--omit…] [--sort…]
 //! basecraft-cli scripts <file>                                 list scripts and their steps
 //! basecraft-cli run-script <file> <name|id> [--param P] [--layout L] [--answer N] [-o out | --in-place]
-//! basecraft-cli schema add-table|add-field|set-options|rename|delete <file> …   (-o out | --in-place)
+//! basecraft-cli schema add-table|add-field|set-options|add-occurrence|add-relationship|set-relationship|
+//!                       add-valuelist|set-valuelist|rename|delete <file> …   (-o out | --in-place)
 //! basecraft-cli new-file <out.fmp12> [--table Name]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
 //! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
@@ -156,14 +157,7 @@ fn info(d: &Doc) -> Json {
             "name": o.name,
             "table": db.table(o.base_table).map(|t| t.name.clone()),
         })).collect::<Vec<_>>(),
-        "relationships": db.relationships.iter().map(|r| json!({
-            "left": to_name(r.left),
-            "right": to_name(r.right),
-            "predicates": r.predicates.iter().map(|p| {
-                let f = |to: u32, id: u32| db.table_of(to).and_then(|t| t.field(id)).map(|f| f.name.clone());
-                json!([f(r.left, p.left_field), "=", f(r.right, p.right_field)])
-            }).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
+        "relationships": db.relationships.iter().map(|r| schema::relationship_json(db, r)).collect::<Vec<_>>(),
         "layouts": db.layouts.iter().filter(|l| l.table_occurrence != 0).map(|l| json!({
             "name": l.name,
             "occurrence": to_name((l.table_occurrence & 0xFFF) as u32),
@@ -172,10 +166,7 @@ fn info(d: &Doc) -> Json {
             "name": a.name,
             "privilege_set": db.privilege_sets.iter().find(|p| p.id == a.privilege_set).map(|p| p.name.clone()),
         })).collect::<Vec<_>>(),
-        "value_lists": db.value_lists.iter().map(|v| json!({
-            "name": v.name,
-            "values": db.value_list_values(v.id),
-        })).collect::<Vec<_>>(),
+        "value_lists": db.value_lists.iter().map(|v| schema::value_list_json(db, v)).collect::<Vec<_>>(),
     })
 }
 
@@ -272,15 +263,7 @@ fn set_fields(d: &mut Doc, table: u32, idx: usize, values: &[(String, String)]) 
         .iter()
         .map(|(f, v)| Ok((d.field_id(t, f)?, v.clone())))
         .collect::<Res<_>>()?;
-    let ti =
-        d.db.tables
-            .iter()
-            .position(|t| t.id == table)
-            .ok_or("no table")?;
-    for (f, v) in ids {
-        d.db.tables[ti].records[idx].values.insert(f, v);
-    }
-    d.db.touch(table, idx);
+    d.db.set_values(table, idx, &ids);
     Ok(())
 }
 
@@ -316,13 +299,13 @@ fn set(d: &mut Doc, table: &str, id: u32, values: &[(String, String)]) -> Res<Js
 fn delete(d: &mut Doc, table: &str, id: u32) -> Res<Json> {
     let tid = d.table(table)?.id;
     let idx = d.index_of(tid, id)?;
-    let ti =
-        d.db.tables
-            .iter()
-            .position(|t| t.id == tid)
-            .ok_or("no table")?;
-    d.db.tables[ti].records.remove(idx);
-    Ok(json!({ "deleted": id }))
+    let gone = d.db.delete_record(tid, idx);
+    let also: Vec<Json> = gone
+        .iter()
+        .skip(1)
+        .map(|(t, r)| json!({ "table": d.db.table(*t).map(|t| t.name.clone()), "id": r }))
+        .collect();
+    Ok(json!({ "deleted": id, "related_deleted": also }))
 }
 
 /// Parses `records`/`eval` options and the output target out of `args`.

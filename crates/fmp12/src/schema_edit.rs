@@ -1,6 +1,6 @@
 //! Schema editing ("Manage Database"): tables, their occurrences and
-//! layouts, fields and field options, written into the file's catalogs
-//! (FORMAT.md §14).
+//! layouts, fields and field options, relationships and value lists,
+//! written into the file's catalogs (FORMAT.md §14).
 //!
 //! An [`Editor`] works on the logical entries of a file and rebuilds it with
 //! [`Editor::finish`]. Every catalog (`[3].[16]` tables, `[3].[17]` table
@@ -13,9 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::calc::{self, FileNames};
 use crate::collate;
-use crate::graph::TableOccurrence;
+use crate::graph::{JoinOp, Predicate, Relationship, SortKey, TableOccurrence};
 use crate::save::{encode_text, entry_kv, fresh_uuid, len_int, path_elem, read_len_int};
 use crate::schema::{self, AutoStamp, DataType, Field, FieldKind, Indexing, SummaryOp};
+pub use crate::schema::{Lookup, NoMatch};
+use crate::valuelists::{Source, ValueList};
 use crate::write::{self, Entry, Item};
 use crate::{Chunk, Error, File, int_path, path_int};
 
@@ -71,16 +73,25 @@ pub enum FieldType {
     Summary {
         op: SummaryOp,
         field: u32,
+        /// Running total or count (Total, Count).
+        running: bool,
+        /// Second field of the same table: the sort field a running
+        /// summary restarts on, the weight of an Average, the field a
+        /// Fraction of Total is subtotaled by.
+        by: Option<u32>,
     },
 }
 
 /// Auto-enter options of a normal field.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AutoEnter {
     pub stamp: Option<AutoStamp>,
     /// Serial number generated on creation: next value.
-    /// ponytail: increment is always 1 (its storage is not decoded).
     pub serial: Option<String>,
+    /// Increment of the serial number (0 is written as 1).
+    pub serial_increment: u32,
+    /// Looked-up value.
+    pub lookup: Option<Lookup>,
     pub constant: Option<String>,
     pub calculation: Option<String>,
     /// Auto-enter calculation replaces an existing value.
@@ -88,6 +99,22 @@ pub struct AutoEnter {
     /// Evaluate the calculation even when referenced fields are empty.
     pub always_evaluate: bool,
     pub prohibit_modification: bool,
+}
+
+impl Default for AutoEnter {
+    fn default() -> Self {
+        AutoEnter {
+            stamp: None,
+            serial: None,
+            serial_increment: 1,
+            lookup: None,
+            constant: None,
+            calculation: None,
+            replace_existing: false,
+            always_evaluate: false,
+            prohibit_modification: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +128,13 @@ pub struct ValidationSpec {
     /// Range, as text in the file's formats.
     pub range: Option<(String, String)>,
     pub calculation: Option<String>,
+    /// Member of this value list.
+    pub value_list: Option<u32>,
+    /// Maximum number of characters.
+    pub max_chars: Option<u32>,
+    /// Custom message shown when validation fails: a calculation
+    /// (`"Text"` for plain text).
+    pub message: Option<String>,
 }
 
 impl Default for ValidationSpec {
@@ -113,6 +147,9 @@ impl Default for ValidationSpec {
             existing: false,
             range: None,
             calculation: None,
+            value_list: None,
+            max_chars: None,
+            message: None,
         }
     }
 }
@@ -177,10 +214,95 @@ impl FieldSpec {
     /// A summary field over field `of`.
     pub fn summary(name: &str, op: SummaryOp, of: u32) -> Self {
         FieldSpec {
-            field_type: FieldType::Summary { op, field: of },
+            field_type: FieldType::Summary {
+                op,
+                field: of,
+                running: false,
+                by: None,
+            },
             ..FieldSpec::new(name, DataType::Number)
         }
     }
+}
+
+/// Options of one side of a relationship (FileMaker's Edit Relationship
+/// dialog): the records of this side.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RelSide {
+    /// Allow creation of records in this side's table through the relationship.
+    pub create: bool,
+    /// Delete this side's records when a related record of the other side
+    /// is deleted.
+    pub delete: bool,
+    /// Sort this side's records: (field of this side's table, descending).
+    pub sort: Vec<(u32, bool)>,
+}
+
+/// A relationship, for [`Editor::add_relationship`] and
+/// [`Editor::set_relationship`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelationshipSpec {
+    /// Table occurrences.
+    pub left: u32,
+    pub right: u32,
+    /// Match fields: left field of `left`, operator, right field of `right`.
+    pub predicates: Vec<Predicate>,
+    pub left_options: RelSide,
+    pub right_options: RelSide,
+}
+
+impl RelationshipSpec {
+    /// `left::lf = right::rf`, no options.
+    pub fn equal(left: u32, lf: u32, right: u32, rf: u32) -> Self {
+        RelationshipSpec {
+            left,
+            right,
+            predicates: vec![Predicate {
+                op: JoinOp::Equal,
+                left_field: lf,
+                right_field: rf,
+            }],
+            left_options: RelSide::default(),
+            right_options: RelSide::default(),
+        }
+    }
+}
+
+/// Path element of the relationship catalog `[3].[251]`: FileMaker spells
+/// 251 as one byte there (and in an occurrence's links `[TO].[251]`).
+const RELS: u8 = 0xFB;
+
+/// `[3].[251].[…]`.
+fn rels_path(rest: &[u32]) -> Vec<Vec<u8>> {
+    [vec![vec![3], vec![RELS]], sp(rest)].concat()
+}
+
+/// `[T].[3].[1].[14].[251].[F]`: what lookup field F of table T copies
+/// through (251 spelled as one byte, like [`RELS`]).
+fn lookup_deps(t: u32, f: u32) -> Vec<Vec<u8>> {
+    [sp(&[t, 3, 1, 14]), vec![vec![RELS]], sp(&[f])].concat()
+}
+
+/// An entry keyed by 3 bytes (an occurrence `D0 hi lo`), as FileMaker
+/// writes them: ops 11–15 for values of 1, 2, 4, 6 or 8 bytes, else 16.
+fn kv3(path: Vec<Vec<u8>>, key: Vec<u8>, data: Vec<u8>) -> Entry {
+    let op = match data.len() {
+        1 => 0x11,
+        2 => 0x12,
+        4 => 0x13,
+        6 => 0x14,
+        8 => 0x15,
+        _ => return kvlong(path, key, data),
+    };
+    Entry {
+        path,
+        item: [vec![op], key, data].concat(),
+    }
+}
+
+/// Path of an entry as integers.
+fn ipath(e: &Entry) -> Option<Vec<u32>> {
+    int_path(&e.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>())
 }
 
 fn type_code(d: DataType) -> u8 {
@@ -252,7 +374,7 @@ fn option_block(spec: &FieldSpec, language: u32) -> Vec<u8> {
     }
     if spec.field_type == FieldType::Normal {
         let a = &spec.auto_enter;
-        o[10] = a.prohibit_modification as u8;
+        o[10] = a.prohibit_modification as u8 | if a.lookup.is_some() { 0x04 } else { 0 };
         if let Some(st) = a.stamp {
             o[3] = stamp_code(st);
             o[11] |= 0x01;
@@ -269,27 +391,85 @@ fn option_block(spec: &FieldSpec, language: u32) -> Vec<u8> {
             o[11] |= if a.replace_existing { 0x80 } else { 0 };
         }
         let v = &spec.validation;
-        o[14] = if v.always { 0x04 } else { 0 };
+        o[14] = (v.value_list.is_some() as u8)
+            | if v.max_chars.is_some() { 0x02 } else { 0 }
+            | if v.always { 0x04 } else { 0 }
+            | if v.message.is_some() { 0x80 } else { 0 };
+        o[20..24].copy_from_slice(&v.max_chars.unwrap_or(0).to_be_bytes());
         o[15] = (v.calculation.is_some() as u8)
+            | if v.message.is_some() { 0x80 } else { 0 }
             | if v.allow_override { 0 } else { 0x04 }
             | if v.not_empty { 0x08 } else { 0 }
             | if v.unique { 0x10 } else { 0 }
             | if v.existing { 0x20 } else { 0 }
             | if v.range.is_some() { 0x40 } else { 0 };
     }
-    o[19] = 1;
+    // Serial increment, 1 in every field FileMaker creates.
+    o[16..20].copy_from_slice(&spec.auto_enter.serial_increment.max(1).to_be_bytes());
     o[24..26].copy_from_slice(&s.repetitions.max(1).to_be_bytes());
     o
 }
 
-/// Summary definition (key 9): operation, then the summarized field as a
-/// reference `len 01 path-int` (FORMAT.md §5); the other bytes as FileMaker
-/// writes them for a plain summary.
-fn summary_block(op: SummaryOp, field: u32) -> Vec<u8> {
-    let f = path_elem(field);
-    let mut b = vec![op_code(op), 0, 2, 1, 0, 0, 0, 0, 1 + f.len() as u8, 1];
+/// A field reference as summaries and lookups store it (14 bytes): a
+/// 5-byte occurrence slot (`len 03 D0 hi lo`, or `02 01 00` and padding),
+/// a byte (`7F` after a set second reference), a 4-byte field slot (`len 01
+/// path-int`, padded), two zero bytes and the repetition (u16).
+fn ref14(to: Option<u32>, mark: u8, field: Option<u32>) -> Vec<u8> {
+    let mut b = match to {
+        Some(t) => crate::graph::len_to(t),
+        None => vec![2, 1, 0, 0, 0],
+    };
+    b.push(mark);
+    let mut f = field.map_or(vec![2, 1, 0], crate::graph::fref);
+    f.resize(4, 0);
     b.extend(f);
-    b.extend([0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 1]);
+    b.extend([0, 0, 0, 1]);
+    b
+}
+
+/// Summary definition (key 9, FORMAT.md §5): operation, options (0x04
+/// running, 0x10 restart for each sorted group, 0x01 a second field), the
+/// summarized field, then the second field: the sort field (on the
+/// table's occurrence `ctx`) of a restarting running summary or a
+/// subtotaled fraction, the weight of an average.
+fn summary_block(op: SummaryOp, field: u32, running: bool, by: Option<u32>, ctx: u32) -> Vec<u8> {
+    let flags = if running { 0x04 } else { 0 }
+        | match (by, op) {
+            (None, _) => 0,
+            (Some(_), SummaryOp::Total | SummaryOp::Count) => 0x11,
+            (Some(_), _) => 0x01,
+        };
+    let mut b = vec![op_code(op), flags];
+    b.extend(ref14(None, 0, Some(field)));
+    b.extend(match by {
+        None => ref14(None, 0, None),
+        Some(f) if op == SummaryOp::Average => ref14(None, 0x7F, Some(f)),
+        Some(f) => ref14(Some(ctx), 0x7F, Some(f)),
+    });
+    b
+}
+
+/// Lookup definition (key 8): no-match option, copy-empty flag, the
+/// source field and the starting occurrence (see [`Field::lookup`]).
+fn lookup_block(l: &Lookup) -> Vec<u8> {
+    let no_match = match l.no_match {
+        NoMatch::DontCopy => 0,
+        NoMatch::Lower => 1,
+        NoMatch::Higher => 2,
+        NoMatch::Constant(_) => 3,
+    };
+    let mut b = vec![no_match, l.copy_empty as u8];
+    b.extend(ref14(Some(l.from), 0x7F, Some(l.field)));
+    b.extend(crate::graph::len_to(l.context));
+    b.push(0);
+    b
+}
+
+/// Key 7 of "member of value list" validation: the value list, then the
+/// bytes FileMaker 26 wrote after it (not decoded).
+fn value_list_block(vl: u32) -> Vec<u8> {
+    let mut b = crate::graph::fref(vl);
+    b.extend([0, 0x90, 1, 2, 1, 0, 0, 0x71, 0xD1, 0xFF]);
     b
 }
 
@@ -651,16 +831,19 @@ impl Editor {
                     if key == 16 {
                         o.name = crate::text(&data);
                     } else {
-                        let n = data.get(3).copied().unwrap_or(0) as usize;
-                        o.base_table = data.get(5..4 + n).and_then(path_int).unwrap_or(0);
-                        o.raw = data;
+                        crate::graph::read_occurrence(o, &data);
                     }
                 }
-                ([t, 3, 5, f], 16 | 2 | 9) if *t >= 128 => {
+                ([t, 3, 5, f], 16 | 2 | 7 | 8 | 9 | 11 | 12 | 24) if *t >= 128 => {
                     let x = fields.entry((*t, *f)).or_default();
                     match key {
                         16 => x.name = crate::text(&data),
                         2 => x.options = data,
+                        7 => x.value_list_raw = data,
+                        8 => x.lookup_raw = data,
+                        11 => x.lookup_constant = crate::text(&data),
+                        24 => x.message = crate::text(&data),
+                        12 => x.serial_next = crate::text(&data),
                         _ => x.summary_raw = data,
                     }
                 }
@@ -797,14 +980,36 @@ impl Editor {
             .max(names.occurrences.iter().map(|x| x.id).max().unwrap_or(0))
             .max(128)
             + 1;
+        if !names.tables.iter().any(|x| x.id == t) {
+            return Err(EditError::NotFound(format!("table {t}")));
+        }
         self.cat_add(&oc, to, name);
-        // Key 2: 02 01 00, base table (len, 02, path int), position and size
-        // (0: FileMaker places it), collapsed height, colour.
+        // Key 2: 02 01 00, base table (len, 02, path int), left, top, width
+        // and height (f32), u32 80, u32 0, colour. FileMaker lays out
+        // occurrences of size 0 when it shows the graph; BaseCraft places a
+        // new one to the right of the others (unplaced ones counted in a
+        // row, as FileMaker places them), 131 × 111 points.
+        let mut unplaced = 0.0;
+        let right = names
+            .occurrences
+            .iter()
+            .map(|o| {
+                if o.width > 0.0 {
+                    o.left + o.width
+                } else {
+                    unplaced += 188.0;
+                    unplaced - 37.0
+                }
+            })
+            .fold(0.0f32, f32::max);
         let b = path_elem(t);
         let mut def = vec![2, 1, 0, 1 + b.len() as u8, 2];
         def.extend(b);
-        def.extend([0u8; 24]);
-        def.extend([0x77, 0x77, 0x77, 0xFF]);
+        for v in [right + 57.0, 20.0, 131.0, 111.0] {
+            def.extend(v.to_be_bytes());
+        }
+        def.extend([0, 0, 0, 0x50, 0, 0, 0, 0]);
+        def.extend([0x78, 0x78, 0x78, 0xFF]);
         let node = [sp(&[3, 17, 5]), vec![to_elem(to)]].concat();
         let uuid = self.uuid();
         self.set(node.clone(), 2, def);
@@ -1017,38 +1222,626 @@ impl Editor {
             .map(|o| o.id)
             .collect();
         for to in &tos {
-            self.delete_occurrence(*to);
+            self.drop_occurrence(*to);
         }
         Ok(())
     }
 
-    fn delete_occurrence(&mut self, to: u32) {
+    // ---- table occurrences ------------------------------------------------
+
+    /// Occurrence id by name (case-insensitive).
+    pub fn occurrence_id(&self, name: &str) -> Option<u32> {
+        self.names()
+            .occurrences
+            .iter()
+            .find(|o| o.name.eq_ignore_ascii_case(name))
+            .map(|o| o.id)
+    }
+
+    /// Renames table occurrence `to`.
+    pub fn rename_occurrence(&mut self, to: u32, name: &str) -> Res<()> {
+        Self::check_name(name)?;
+        let names = self.names();
+        if !names.occurrences.iter().any(|o| o.id == to) {
+            return Err(EditError::NotFound(format!("table occurrence {to}")));
+        }
+        if names
+            .occurrences
+            .iter()
+            .any(|o| o.id != to && o.name.eq_ignore_ascii_case(name))
+        {
+            return Err(EditError::Exists(name.into()));
+        }
+        let node = [sp(&[3, 17, 5]), vec![to_elem(to)]].concat();
+        self.set(node.clone(), 16, encode_text(name));
+        self.bump(node);
+        self.cat_rename(&Self::occurrences_cat(), to, name);
+        Ok(())
+    }
+
+    /// Deletes table occurrence `to` and its relationships. The last
+    /// occurrence of a table cannot be deleted: its calculations are
+    /// evaluated from it.
+    pub fn delete_occurrence(&mut self, to: u32) -> Res<()> {
+        let names = self.names();
+        let o = names
+            .occurrences
+            .iter()
+            .find(|o| o.id == to)
+            .ok_or_else(|| EditError::NotFound(format!("table occurrence {to}")))?;
+        if !names
+            .occurrences
+            .iter()
+            .any(|x| x.id != to && x.base_table == o.base_table)
+        {
+            return Err(EditError::Invalid(format!(
+                "{} is the only occurrence of its table",
+                o.name
+            )));
+        }
+        self.drop_occurrence(to);
+        Ok(())
+    }
+
+    fn drop_occurrence(&mut self, to: u32) {
         self.remove_tree(&[sp(&[3, 17, 5]), vec![to_elem(to)]].concat());
         self.remove_tree(&[to_elem(to)]);
         self.cat_remove(&Self::occurrences_cat(), to);
-        // Relationships that use it.
-        let rels: Vec<u32> = self
-            .entries
+        for r in self
+            .relationships()
             .iter()
-            .filter(|e| e.path.len() == 4 && e.path[..3] == sp(&[3, 251, 5])[..])
-            .filter_map(|e| {
-                let (k, d) = entry_kv(e)?;
-                let r = path_int(&e.path[3])?;
-                // Key 2: 04 TOref (left), 04 TOref (right), …
-                let uses = |i: usize| d.get(i..i + 4).and_then(crate::graph::to_ref) == Some(to);
-                (k == 2 && (uses(1) || uses(6))).then_some(r)
-            })
-            .collect();
-        for r in rels {
-            self.remove_tree(&sp(&[3, 251, 5, r]));
-            let h = sp(&[3, 251, 1]);
-            let n = self
-                .get(&h, 4)
-                .and_then(|d| d.try_into().ok().map(u32::from_be_bytes))
-                .unwrap_or(1);
-            self.set(h.clone(), 4, n.saturating_sub(1).to_be_bytes().to_vec());
-            self.bump(h);
+            .filter(|r| r.left == to || r.right == to)
+        {
+            self.remove_relationship(r.id);
         }
+        self.rebuild_graph();
+    }
+
+    // ---- relationships ----------------------------------------------------
+
+    /// Relationships as they are now.
+    pub fn relationships(&self) -> Vec<Relationship> {
+        let mut rels: BTreeMap<u32, Relationship> = BTreeMap::new();
+        let mut preds: BTreeMap<u32, Vec<(u32, Predicate)>> = BTreeMap::new();
+        for e in &self.entries {
+            let (Some(p), Some((key, data))) = (ipath(e), entry_kv(e)) else {
+                continue;
+            };
+            match p.as_slice() {
+                [3, 251, 5, r] if key == 2 => {
+                    let x = rels.entry(*r).or_default();
+                    x.id = *r;
+                    crate::graph::read_relationship(x, &data);
+                }
+                [3, 251, 5, r, 3] => {
+                    if let Some(pr) = crate::graph::parse_predicate(&data) {
+                        preds.entry(*r).or_default().push((key, pr));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (r, mut ps) in preds {
+            ps.sort_by_key(|(k, _)| *k);
+            if let Some(x) = rels.get_mut(&r) {
+                x.predicates = ps.into_iter().map(|(_, p)| p).collect();
+            }
+        }
+        rels.into_values().collect()
+    }
+
+    /// The relationship between occurrences `a` and `b` (either side).
+    pub fn relationship_between(&self, a: u32, b: u32) -> Option<u32> {
+        self.relationships()
+            .iter()
+            .find(|r| (r.left, r.right) == (a, b) || (r.left, r.right) == (b, a))
+            .map(|r| r.id)
+    }
+
+    /// Occurrences `a` and `b` are joined by a path of relationships,
+    /// leaving out relationship `skip`.
+    fn connected(&self, a: u32, b: u32, skip: Option<u32>) -> bool {
+        let rels = self.relationships();
+        let mut seen = BTreeSet::from([a]);
+        let mut todo = vec![a];
+        while let Some(x) = todo.pop() {
+            if x == b {
+                return true;
+            }
+            for r in rels.iter().filter(|r| Some(r.id) != skip) {
+                let y = match (r.left == x, r.right == x) {
+                    (true, _) => r.right,
+                    (_, true) => r.left,
+                    _ => continue,
+                };
+                if seen.insert(y) {
+                    todo.push(y);
+                }
+            }
+        }
+        false
+    }
+
+    /// The definition of relationship `id`.
+    pub fn relationship_spec(&self, id: u32) -> Res<RelationshipSpec> {
+        let r = self
+            .relationships()
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or_else(|| EditError::NotFound(format!("relationship {id}")))?;
+        let side = |create: bool, delete: bool, sort: &[SortKey]| RelSide {
+            create,
+            delete,
+            sort: sort.iter().map(|k| (k.field, k.descending)).collect(),
+        };
+        Ok(RelationshipSpec {
+            left: r.left,
+            right: r.right,
+            predicates: r.predicates.clone(),
+            left_options: side(
+                r.left_cascade_create(),
+                r.left_cascade_delete(),
+                &r.left_sort,
+            ),
+            right_options: side(
+                r.right_cascade_create(),
+                r.right_cascade_delete(),
+                &r.right_sort,
+            ),
+        })
+    }
+
+    /// Checks a relationship as FileMaker's Edit Relationship dialog does.
+    /// `id` is the relationship being changed.
+    fn check_relationship(&self, spec: &RelationshipSpec, id: Option<u32>) -> Res<()> {
+        let names = self.names();
+        let table_of = |to: u32| -> Res<&schema::Table> {
+            let o = names
+                .occurrences
+                .iter()
+                .find(|o| o.id == to)
+                .ok_or_else(|| EditError::NotFound(format!("table occurrence {to}")))?;
+            names
+                .tables
+                .iter()
+                .find(|t| t.id == o.base_table)
+                .ok_or_else(|| EditError::NotFound(format!("table of occurrence {}", o.name)))
+        };
+        let (lt, rt) = (table_of(spec.left)?, table_of(spec.right)?);
+        if spec.left == spec.right {
+            return Err(EditError::Invalid(
+                "a relationship joins two different table occurrences".into(),
+            ));
+        }
+        if spec.predicates.is_empty() {
+            return Err(EditError::Invalid(
+                "a relationship needs a match field".into(),
+            ));
+        }
+        let field = |t: &schema::Table, f: u32| -> Res<()> {
+            t.fields
+                .contains_key(&f)
+                .then_some(())
+                .ok_or_else(|| EditError::NotFound(format!("field {f} of table {}", t.name)))
+        };
+        for p in &spec.predicates {
+            field(lt, p.left_field)?;
+            field(rt, p.right_field)?;
+            if let JoinOp::Unknown(n) = p.op {
+                return Err(EditError::Invalid(format!("unknown operator {n}")));
+            }
+        }
+        for (s, t) in [(&spec.left_options, lt), (&spec.right_options, rt)] {
+            for (f, _) in &s.sort {
+                field(t, *f)?;
+            }
+        }
+        let equal = spec.predicates.iter().all(|p| p.op == JoinOp::Equal);
+        if (spec.left_options.create || spec.right_options.create) && !equal {
+            return Err(EditError::Invalid(
+                "records can be created only through = relationships".into(),
+            ));
+        }
+        if let Some(r) = self.relationship_between(spec.left, spec.right)
+            && Some(r) != id
+        {
+            return Err(EditError::Exists(format!(
+                "relationship between {} and {}",
+                spec.left, spec.right
+            )));
+        }
+        if self.connected(spec.left, spec.right, id) {
+            // FileMaker's graph has no cycles: a second path needs another occurrence.
+            return Err(EditError::Invalid(format!(
+                "occurrences {} and {} are already related; add another table occurrence",
+                spec.left, spec.right
+            )));
+        }
+        Ok(())
+    }
+
+    /// Adds a relationship; returns its id.
+    pub fn add_relationship(&mut self, spec: &RelationshipSpec) -> Res<u32> {
+        self.check_relationship(spec, None)?;
+        let h = rels_path(&[1]);
+        let last = self.get(&h, 0).and_then(|d| read_len_int(&d)).unwrap_or(0) as u32;
+        let id = self
+            .relationships()
+            .iter()
+            .map(|r| r.id)
+            .fold(last, u32::max)
+            + 1;
+        self.ensure(h.clone());
+        let count = self.relationships().len() as u32 + 1;
+        self.set(h.clone(), 0, len_int(id as u64));
+        self.set(h.clone(), 4, count.to_be_bytes().to_vec());
+        if self.get(&h, 216).is_none() {
+            let u = self.uuid();
+            self.set(h.clone(), 216, u);
+        }
+        self.bump(h);
+        let u = self.uuid();
+        self.set(rels_path(&[5, id]), 216, u);
+        self.write_relationship(id, spec);
+        Ok(id)
+    }
+
+    /// Replaces the definition of relationship `id`.
+    pub fn set_relationship(&mut self, id: u32, spec: &RelationshipSpec) -> Res<()> {
+        if !self.relationships().iter().any(|r| r.id == id) {
+            return Err(EditError::NotFound(format!("relationship {id}")));
+        }
+        self.check_relationship(spec, Some(id))?;
+        self.write_relationship(id, spec);
+        self.bump(rels_path(&[1]));
+        Ok(())
+    }
+
+    /// Deletes relationship `id`.
+    pub fn delete_relationship(&mut self, id: u32) -> Res<()> {
+        if !self.relationships().iter().any(|r| r.id == id) {
+            return Err(EditError::NotFound(format!("relationship {id}")));
+        }
+        self.remove_relationship(id);
+        self.rebuild_graph();
+        Ok(())
+    }
+
+    fn remove_relationship(&mut self, id: u32) {
+        self.remove_tree(&rels_path(&[5, id]));
+        let h = rels_path(&[1]);
+        let n = self.relationships().len() as u32;
+        self.set(h.clone(), 4, n.to_be_bytes().to_vec());
+        self.bump(h);
+    }
+
+    /// Node `[3].[251].[5].[id]`: key 2 (occurrences, sort orders, flags),
+    /// predicates in `[3]` keys 1…n; then the occurrences' links.
+    fn write_relationship(&mut self, id: u32, spec: &RelationshipSpec) {
+        use crate::graph::*;
+        let node = rels_path(&[5, id]);
+        let sort = |to: u32, s: &RelSide| -> Vec<SortKey> {
+            s.sort
+                .iter()
+                .map(|(field, descending)| SortKey {
+                    to,
+                    field: *field,
+                    descending: *descending,
+                })
+                .collect()
+        };
+        let (l, r) = (&spec.left_options, &spec.right_options);
+        let flag = |on: bool, f: u8| if on { f } else { 0 };
+        let flags = flag(r.delete, RIGHT_DELETE)
+            | flag(l.delete, LEFT_DELETE)
+            | flag(r.create, RIGHT_CREATE)
+            | flag(l.create, LEFT_CREATE)
+            | flag(!r.sort.is_empty(), RIGHT_SORT)
+            | flag(!l.sort.is_empty(), LEFT_SORT);
+        let def = relationship_bytes(
+            spec.left,
+            spec.right,
+            &sort(spec.left, l),
+            &sort(spec.right, r),
+            flags,
+        );
+        self.set(node.clone(), 2, def);
+        let pp = [node, vec![path_elem(3)]].concat();
+        self.remove_tree(&pp);
+        self.ensure(pp.clone());
+        for (i, p) in spec.predicates.iter().enumerate() {
+            self.entries
+                .push(kv(pp.clone(), i as u32 + 1, predicate_bytes(p)));
+        }
+        self.rebuild_graph();
+    }
+
+    /// Rewrites what FileMaker derives from the relationships: each
+    /// occurrence's links `[3].[17].[5].[TO].[251]` (other occurrence →
+    /// relationship), the route table `[3].[17].[1].[8].[TO]` (every
+    /// reachable occurrence → the first relationship on the way), and
+    /// drops the evaluation plan cache `[3].[17].[1].[14]`.
+    fn rebuild_graph(&mut self) {
+        let rels = self.relationships();
+        let tos: Vec<u32> = self.names().occurrences.iter().map(|o| o.id).collect();
+        let links = |to: u32| [sp(&[3, 17, 5]), vec![to_elem(to), vec![RELS]]].concat();
+        let routes = sp(&[3, 17, 1, 8]);
+        for to in &tos {
+            self.remove_tree(&links(*to));
+        }
+        self.entries
+            .retain(|e| !(e.path.starts_with(&routes) && e.path.len() > routes.len()));
+        self.remove_tree(&sp(&[3, 17, 1, 14]));
+        for r in &rels {
+            for (a, b) in [(r.left, r.right), (r.right, r.left)] {
+                self.ensure(links(a));
+                self.entries
+                    .push(kv3(links(a), to_elem(b), len_int(r.id as u64)));
+            }
+        }
+        if rels.is_empty() {
+            return;
+        }
+        self.ensure(routes.clone());
+        for a in tos {
+            // Breadth-first: the relationship each occurrence is first reached by.
+            let mut first: BTreeMap<u32, u32> = BTreeMap::new();
+            let mut todo = std::collections::VecDeque::from([(a, 0u32)]);
+            while let Some((x, via)) = todo.pop_front() {
+                for r in &rels {
+                    let y = match (r.left == x, r.right == x) {
+                        (true, _) => r.right,
+                        (_, true) => r.left,
+                        _ => continue,
+                    };
+                    if y != a && !first.contains_key(&y) {
+                        let v = if via == 0 { r.id } else { via };
+                        first.insert(y, v);
+                        todo.push_back((y, v));
+                    }
+                }
+            }
+            if first.is_empty() {
+                continue;
+            }
+            let p = [routes.clone(), vec![to_elem(a)]].concat();
+            self.ensure(p.clone());
+            for (b, r) in first {
+                self.entries
+                    .push(kv3(p.clone(), to_elem(b), len_int(r as u64)));
+            }
+        }
+    }
+
+    // ---- value lists --------------------------------------------------------
+
+    fn value_lists_cat() -> Catalog {
+        Catalog {
+            header: sp(&[33, 1]),
+            refs: Refs::Id,
+        }
+    }
+
+    /// Value lists as they are now.
+    pub fn value_lists(&self) -> Vec<ValueList> {
+        let mut nodes: BTreeMap<u32, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
+        for e in &self.entries {
+            if let (Some([33, 5, id]), Some((k, d))) = (ipath(e).as_deref(), entry_kv(e)) {
+                nodes.entry(*id).or_default().insert(k, d);
+            }
+        }
+        nodes
+            .iter()
+            .map(|(id, kv)| crate::valuelists::from_keys(*id, kv))
+            .collect()
+    }
+
+    /// Value list id by name (case-insensitive).
+    pub fn value_list_id(&self, name: &str) -> Option<u32> {
+        self.value_lists()
+            .iter()
+            .find(|v| v.name.eq_ignore_ascii_case(name))
+            .map(|v| v.id)
+    }
+
+    fn check_value_list(&self, id: Option<u32>, name: &str, source: &Source) -> Res<()> {
+        Self::check_name(name)?;
+        if self
+            .value_lists()
+            .iter()
+            .any(|v| Some(v.id) != id && v.name.eq_ignore_ascii_case(name))
+        {
+            return Err(EditError::Exists(name.into()));
+        }
+        let names = self.names();
+        let check = |to: u32, f: Option<u32>| -> Res<()> {
+            let o = names
+                .occurrences
+                .iter()
+                .find(|o| o.id == to)
+                .ok_or_else(|| EditError::NotFound(format!("table occurrence {to}")))?;
+            match f {
+                Some(f)
+                    if !names
+                        .tables
+                        .iter()
+                        .any(|t| t.id == o.base_table && t.fields.contains_key(&f)) =>
+                {
+                    Err(EditError::NotFound(format!("field {f} of {}", o.name)))
+                }
+                _ => Ok(()),
+            }
+        };
+        match source {
+            Source::Custom(_) => Ok(()),
+            Source::Field {
+                to,
+                field,
+                second,
+                related_from,
+                ..
+            } => {
+                check(*to, Some(*field))?;
+                if let Some((t, f)) = second {
+                    check(*t, Some(*f))?;
+                }
+                if let Some(r) = related_from {
+                    check(*r, None)?;
+                    if !self.connected(*r, *to, None) || r == to {
+                        return Err(EditError::Invalid(format!(
+                            "occurrence {to} is not related to {r}"
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Source::Unknown(n) => Err(EditError::Invalid(format!("unknown value list source {n}"))),
+        }
+    }
+
+    /// Adds a value list; returns its id.
+    pub fn add_value_list(&mut self, name: &str, source: &Source) -> Res<u32> {
+        self.check_value_list(None, name, source)?;
+        let c = Self::value_lists_cat();
+        let id = self
+            .value_lists()
+            .iter()
+            .map(|v| v.id)
+            .fold(self.cat_last(&c), u32::max)
+            + 1;
+        self.cat_add(&c, id, name);
+        let ids = c.sub(7);
+        self.ensure(ids.clone());
+        self.entries.push(kv(ids, id, Vec::new()));
+        let u = self.uuid();
+        self.set(sp(&[33, 5, id]), 216, u);
+        self.write_value_list(id, name, source);
+        Ok(id)
+    }
+
+    /// Replaces value list `id` (name and values).
+    pub fn set_value_list(&mut self, id: u32, name: &str, source: &Source) -> Res<()> {
+        let old = self
+            .value_lists()
+            .into_iter()
+            .find(|v| v.id == id)
+            .ok_or_else(|| EditError::NotFound(format!("value list {id}")))?;
+        self.check_value_list(Some(id), name, source)?;
+        let c = Self::value_lists_cat();
+        if old.name != name {
+            self.cat_rename(&c, id, name);
+        } else {
+            self.bump(c.header);
+        }
+        self.write_value_list(id, name, source);
+        Ok(())
+    }
+
+    /// Deletes value list `id`.
+    pub fn delete_value_list(&mut self, id: u32) -> Res<()> {
+        if !self.value_lists().iter().any(|v| v.id == id) {
+            return Err(EditError::NotFound(format!("value list {id}")));
+        }
+        let c = Self::value_lists_cat();
+        self.remove_tree(&sp(&[33, 5, id]));
+        self.cat_remove(&c, id);
+        self.unindex(&c.sub(6), &id_ref(id));
+        let ids = c.sub(7);
+        self.entries
+            .retain(|e| !(e.path == ids && entry_kv(e).is_some_and(|(k, _)| k == id)));
+        Ok(())
+    }
+
+    /// Node `[33].[5].[V]`: key 2 definition, key 3 custom values (CR
+    /// between values), key 16 name; and the catalog's index by source and
+    /// name `[33].[1].[6]`.
+    fn write_value_list(&mut self, id: u32, name: &str, source: &Source) {
+        let node = sp(&[33, 5, id]);
+        self.set(node.clone(), 2, crate::valuelists::definition(source));
+        self.remove_kv(&node, 3);
+        if let Source::Custom(values) = source {
+            self.set(node.clone(), 3, encode_text(values));
+        }
+        self.set(node.clone(), 16, encode_text(name));
+        let tp = Self::value_lists_cat().sub(6);
+        self.unindex(&tp, &id_ref(id));
+        let kind = matches!(source, Source::Field { .. }) as u8;
+        if let Some(key) = collate::index_key(&[0, kind], name) {
+            self.ensure(tp.clone());
+            self.entries.push(kvlong(tp, key, id_ref(id)));
+        }
+    }
+
+    // ---- field references -------------------------------------------------
+
+    /// Checks the fields, occurrences and value lists a field definition
+    /// of table `t` refers to.
+    fn check_field_refs(&self, t: u32, spec: &FieldSpec) -> Res<()> {
+        let names = self.names();
+        let has = |tb: u32, f: u32| {
+            names
+                .tables
+                .iter()
+                .any(|x| x.id == tb && x.fields.contains_key(&f))
+        };
+        if let FieldType::Summary {
+            op,
+            field,
+            running,
+            by,
+        } = spec.field_type
+        {
+            use SummaryOp::*;
+            if !has(t, field) {
+                return Err(EditError::NotFound(format!("summarized field {field}")));
+            }
+            if running && !matches!(op, Total | Count) {
+                return Err(EditError::Invalid(format!("{op:?} cannot be running")));
+            }
+            if let Some(b) = by {
+                if !has(t, b) {
+                    return Err(EditError::NotFound(format!("field {b}")));
+                }
+                match op {
+                    Total | Count if !running => {
+                        return Err(EditError::Invalid(
+                            "restarting for each sorted group needs a running summary".into(),
+                        ));
+                    }
+                    Total | Count | Average | FractionOfTotal => {}
+                    _ => return Err(EditError::Invalid(format!("{op:?} takes no second field"))),
+                }
+            }
+        }
+        if let Some(l) = &spec.auto_enter.lookup {
+            let to = |id: u32| {
+                names
+                    .occurrences
+                    .iter()
+                    .find(|o| o.id == id)
+                    .ok_or_else(|| EditError::NotFound(format!("table occurrence {id}")))
+            };
+            if to(l.context)?.base_table != t {
+                return Err(EditError::Invalid(
+                    "a lookup starts from an occurrence of the field's table".into(),
+                ));
+            }
+            if !has(to(l.from)?.base_table, l.field) {
+                return Err(EditError::NotFound(format!("lookup field {}", l.field)));
+            }
+            if l.from == l.context || !self.connected(l.context, l.from, None) {
+                return Err(EditError::Invalid(format!(
+                    "occurrence {} is not related to {}",
+                    l.from, l.context
+                )));
+            }
+        }
+        if let Some(vl) = spec.validation.value_list
+            && !self.value_lists().iter().any(|v| v.id == vl)
+        {
+            return Err(EditError::NotFound(format!("value list {vl}")));
+        }
+        Ok(())
     }
 
     // ---- fields -----------------------------------------------------------
@@ -1149,6 +1942,7 @@ impl Editor {
         self.unindex(&sp(&[t, 3, 1, 6]), &id_ref(f));
         self.remove_tree(&sp(&[t, 1, f]));
         // Dependencies of the field and on the field.
+        self.remove_tree(&lookup_deps(t, f));
         for d in [32880, 32881] {
             self.remove_tree(&sp(&[t, 3, 1, 14, d, f]));
             let dp = sp(&[t, 3, 1, 14, d]);
@@ -1218,6 +2012,8 @@ impl Editor {
                 FieldType::Summary {
                     op: s.op,
                     field: s.field,
+                    running: x.summary_running(),
+                    by: x.summary_by(),
                 }
             }
             _ => FieldType::Normal,
@@ -1233,6 +2029,8 @@ impl Editor {
                 serial: x
                     .auto_serial()
                     .then(|| text(12).unwrap_or_else(|| "1".into())),
+                serial_increment: x.serial_increment(),
+                lookup: x.lookup(),
                 constant: x.auto_constant().then(|| text(13).unwrap_or_default()),
                 calculation: if normal && x.auto_calculation() {
                     calc_at(5)
@@ -1253,6 +2051,13 @@ impl Editor {
                     .range
                     .then(|| (text(33).unwrap_or_default(), text(34).unwrap_or_default())),
                 calculation: if v.calculation { calc_at(25) } else { None },
+                value_list: x.validation_value_list(),
+                max_chars: x.max_size(),
+                message: if v.custom_message {
+                    calc_at(32).or_else(|| text(24))
+                } else {
+                    None
+                },
             },
             storage: Storage {
                 global: x.global(),
@@ -1270,11 +2075,7 @@ impl Editor {
     fn write_field(&mut self, t: u32, f: u32, spec: &FieldSpec) -> Res<()> {
         let node = sp(&[t, 3, 5, f]);
         let ctx = self.context(t)?;
-        if let FieldType::Summary { field, .. } = spec.field_type
-            && self.field_id_exists(t, field).is_none()
-        {
-            return Err(EditError::NotFound(format!("summarized field {field}")));
-        }
+        self.check_field_refs(t, spec)?;
         // Compile first: nothing is written when a calculation is wrong.
         let names = self.names();
         let main = match &spec.field_type {
@@ -1289,6 +2090,10 @@ impl Editor {
             (FieldType::Normal, Some(c)) => Some(calc::compile(c, ctx, &names)?),
             _ => None,
         };
+        let message = match (&spec.field_type, &spec.validation.message) {
+            (FieldType::Normal, Some(c)) => Some(calc::compile(c, ctx, &names)?),
+            _ => None,
+        };
         let records = self.has_records(t);
         let mut options = option_block(spec, self.language);
         // An existing field keeps its index language and the options
@@ -1296,8 +2101,8 @@ impl Editor {
         // validation, strict data types, messages, furigana…).
         if let Some(old) = self.get(&node, 2).filter(|o| o.len() == 26) {
             const MANAGED: [u8; 26] = [
-                0xFF, 0xFF, 0, 0xFF, 0, 0, 0, 0, 0xE8, 0x03, 0x01, 0xAF, 0, 0, 0x04, 0x7D, 0, 0, 0,
-                0, 0, 0, 0, 0, 0xFF, 0xFF,
+                0xFF, 0xFF, 0, 0xFF, 0, 0, 0, 0, 0xE8, 0x03, 0x05, 0xAF, 0, 0, 0x87, 0xFD, 0xFF,
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             ];
             for i in 0..26 {
                 options[i] = old[i] & !MANAGED[i] | options[i] & MANAGED[i];
@@ -1320,14 +2125,18 @@ impl Editor {
             .get(&node, 252)
             .and_then(|d| read_len_int(&d))
             .unwrap_or(0);
-        let calcs = [5u32, 25].map(|k| [node.clone(), vec![path_elem(k)]].concat());
+        let calcs = [5u32, 25, 32].map(|k| [node.clone(), vec![path_elem(k)]].concat());
         self.entries.retain(|e| {
             if !e.path.starts_with(&node) {
                 return true;
             }
             if e.path.len() == node.len() {
-                return !entry_kv(e)
-                    .is_some_and(|(k, _)| matches!(k, 2 | 3 | 9 | 12 | 13 | 16 | 33 | 34 | 252));
+                return !entry_kv(e).is_some_and(|(k, _)| {
+                    matches!(
+                        k,
+                        2 | 3 | 7 | 8 | 9 | 11 | 12 | 13 | 16 | 24 | 33 | 34 | 252
+                    )
+                });
             }
             !calcs.iter().any(|c| e.path.starts_with(c))
         });
@@ -1336,8 +2145,14 @@ impl Editor {
         if !spec.comment.is_empty() {
             self.set(node.clone(), 3, encode_text(&spec.comment));
         }
-        if let FieldType::Summary { op, field } = spec.field_type {
-            self.set(node.clone(), 9, summary_block(op, field));
+        if let FieldType::Summary {
+            op,
+            field,
+            running,
+            by,
+        } = spec.field_type
+        {
+            self.set(node.clone(), 9, summary_block(op, field, running, by, ctx));
         }
         let a = &spec.auto_enter;
         if spec.field_type == FieldType::Normal {
@@ -1351,6 +2166,18 @@ impl Editor {
                 self.set(node.clone(), 33, encode_text(lo));
                 self.set(node.clone(), 34, encode_text(hi));
             }
+            if let Some(l) = &a.lookup {
+                self.set(node.clone(), 8, lookup_block(l));
+                if let NoMatch::Constant(c) = &l.no_match {
+                    self.set(node.clone(), 11, encode_text(c));
+                }
+            }
+            if let Some(vl) = spec.validation.value_list {
+                self.set(node.clone(), 7, value_list_block(vl));
+            }
+            if let Some(m) = &spec.validation.message {
+                self.set(node.clone(), 24, encode_text(m));
+            }
         }
         self.set(node.clone(), 16, encode_text(&spec.name));
         let uuid = match uuid {
@@ -1359,7 +2186,7 @@ impl Editor {
         };
         self.set(node.clone(), 216, uuid);
         self.set(node.clone(), 252, len_int(count + 1));
-        for (k, c) in [(5, &main), (25, &check)] {
+        for (k, c) in [(5, &main), (25, &check), (32, &message)] {
             if let Some(c) = c {
                 let mut p = node.clone();
                 p.push(path_elem(k));
@@ -1400,6 +2227,8 @@ impl Editor {
                 .collect()
         };
         let mut deps: Vec<(u32, u8)> = Vec::new();
+        // Keys naming a field through an occurrence: `00 TOref len field`.
+        let mut long_deps: Vec<(Vec<u8>, u8)> = Vec::new();
         if spec.field_type == FieldType::Normal {
             let auto = a.stamp.is_some()
                 || a.serial.is_some()
@@ -1415,20 +2244,42 @@ impl Editor {
         if let Some(c) = &main {
             deps.extend(same_table(c).into_iter().map(|x| (x, 1)));
         }
-        if let FieldType::Summary { field, .. } = spec.field_type {
-            deps.push((field, 0));
+        if let FieldType::Summary { field, op, by, .. } = spec.field_type {
+            match by {
+                Some(b) if op == SummaryOp::Average => {
+                    deps.push((b, 2));
+                    if b != field {
+                        deps.push((field, 0));
+                    }
+                }
+                Some(b) => {
+                    deps.push((field, 0));
+                    long_deps.push(([vec![0], to_ref(ctx), id_ref(b)].concat(), 2));
+                }
+                None => deps.push((field, 0)),
+            }
         }
         let checks: Vec<(u32, u8)> = check
             .as_ref()
             .map(|c| same_table(c).into_iter().map(|x| (x, 1)).collect())
             .unwrap_or_default();
-        for (d, list) in [(32880, deps), (32881, checks)] {
+        // A lookup: empty node [14].[251].[F].[context TO].[lookup TO]
+        // (FileMaker runs lookups from it; without it they never fire).
+        let lp = lookup_deps(t, f);
+        self.remove_tree(&lp);
+        if let (FieldType::Normal, Some(l)) = (&spec.field_type, &a.lookup) {
+            self.ensure([lp, vec![to_elem(l.context), to_elem(l.from)]].concat());
+        }
+        for (d, list, long) in [(32880, deps, long_deps), (32881, checks, Vec::new())] {
             let p = sp(&[t, 3, 1, 14, d, f]);
             self.remove_tree(&p);
-            if !list.is_empty() {
+            if !list.is_empty() || !long.is_empty() {
                 self.ensure(p.clone());
                 for (k, v) in list {
                     self.entries.push(kv(p.clone(), k, vec![v]));
+                }
+                for (k, v) in long {
+                    self.entries.push(kvlong(p.clone(), k, vec![v]));
                 }
             }
         }
@@ -1445,16 +2296,6 @@ impl Editor {
         // The graph's dependency cache of the table: FileMaker rebuilds it.
         self.remove_tree(&sp(&[3, 17, 1, 14, t]));
         Ok(())
-    }
-
-    fn field_id_exists(&self, t: u32, f: u32) -> Option<()> {
-        self.names()
-            .tables
-            .iter()
-            .find(|x| x.id == t)?
-            .fields
-            .contains_key(&f)
-            .then_some(())
     }
 }
 

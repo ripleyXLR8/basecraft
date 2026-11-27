@@ -542,6 +542,12 @@ impl App {
         if !self.commit() {
             return;
         }
+        // The privilege set's "Allow exporting".
+        if self.doc.as_ref().is_some_and(|d| !d.db.can_export()) {
+            let msg = crate::security_ui::denied().to_string();
+            self.messages.push((String::new(), msg));
+            return;
+        }
         let Some(d) = self.doc.as_ref() else { return };
         let Some(l) = d.layouts.get(self.layout) else {
             return;

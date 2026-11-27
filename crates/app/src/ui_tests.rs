@@ -897,6 +897,7 @@ fn protected_blank(hide_layouts: bool) -> Vec<u8> {
     let mut new = s.clone();
     let mut set = new.sets[2].clone();
     set.name = "Viewers".into();
+    set.set_flag(security::flag::EXPORT, false);
     if hide_layouts {
         for l in fmp12::layouts::layouts(&f).unwrap() {
             set.set_item(security::LAYOUTS, Some(l.id), security::NO_ACCESS, 0);
@@ -948,6 +949,15 @@ fn login_dialog_and_privileges() {
     h.run_steps(3);
     h.get_by_label(security_ui::denied());
     shot(&mut h, "s03_denied");
+    h.get_by_label("OK").click();
+    h.run_steps(2);
+
+    // No export privilege: File › Export Records… is refused.
+    h.get_by_label(tr("File")).click();
+    h.run_steps(2);
+    h.get_by_label(records::t("Export Records…")).click();
+    h.run_steps(3);
+    h.get_by_label(security_ui::denied());
     h.get_by_label("OK").click();
     h.run_steps(2);
 

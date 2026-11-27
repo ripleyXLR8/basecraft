@@ -989,6 +989,14 @@ mod tests {
         let e = value_entries(&rec, 6, "P-001");
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].item, [0x06, 0x06, 0x05, 0x0A, 0x77, 0x6A, 0x6A, 0x6B]);
+        // Repetitions, as FileMaker wrote them: field 7 rep 2 = "b",
+        // field 131 rep 3 = "u3"; long values under the same spelling.
+        let e = value_entries(&rec, schema::rep_key(7, 2), "b");
+        assert_eq!(e[0].item, [0x09, 0x07, 0x02, 0x38]);
+        let e = value_entries(&rec, schema::rep_key(131, 3), "u3");
+        assert_eq!(e[0].item, [0x12, 0x80, 0x03, 0x03, 0x2F, 0x69]);
+        let e = value_entries(&rec, schema::rep_key(12, 2), "04\u{E000}");
+        assert_eq!(e[0].path.last(), Some(&vec![0x0C, 0x02]));
         // An em dash takes 2 bytes: sub-path with byte and character counts.
         let e = value_entries(&rec, 3, "Café crème — spécial");
         assert_eq!(e[1].item, [0x05, 0, 0, 0, 0, 0x15, 0, 0, 0, 0x14]);

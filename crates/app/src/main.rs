@@ -1,8 +1,9 @@
 //! BaseCraft desktop application (egui).
 //!
-//! Browse and Find modes over a `.fmp12` file: layouts drawn at their real
-//! coordinates, editable fields, new/delete record, find requests, sort.
-//! Changes live in memory (saving to `.fmp12` is milestone M7).
+//! Browse, Find and Layout modes over a `.fmp12` file: layouts drawn at
+//! their real coordinates, editable fields, new/delete record, find
+//! requests, sort, and layout editing (`design.rs`). File › Save writes
+//! records and layouts back to the `.fmp12`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -12,6 +13,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use engine::{Database, Order, Request};
 use fmp12::layouts::Layout;
 
+mod design;
 mod i18n;
 mod look;
 use i18n::tr;
@@ -21,6 +23,7 @@ use look::Look;
 enum Mode {
     Browse,
     Find,
+    Layout,
 }
 
 struct Doc {
@@ -83,6 +86,8 @@ struct App {
     messages: Vec<(String, String)>,
     /// Front panel chosen by the user, per tab control id.
     tabs: BTreeMap<u64, u64>,
+    /// Layout mode state (the layout being edited).
+    designer: Option<design::Designer>,
 }
 
 impl App {
@@ -170,7 +175,15 @@ impl App {
             return;
         }
         let Some(d) = self.doc.as_mut() else { return };
-        let bytes = match d.db.save(&d.file) {
+        // In Layout mode, saving the file saves the layout first.
+        if let Some(ds) = self.designer.as_mut() {
+            ds.apply(d);
+        }
+        let saved = d.db.save(&d.file).and_then(|b| {
+            let f = fmp12::File::from_bytes(b)?;
+            fmp12::save::save_layouts(&f, &d.db.layouts)
+        });
+        let bytes = match saved {
             Ok(b) => b,
             Err(e) => {
                 self.error = Some(e.to_string());
@@ -286,7 +299,7 @@ impl App {
         window.sorted = sorted;
         window.mode = match mode {
             Mode::Find => script::Mode::Find,
-            Mode::Browse => script::Mode::Browse,
+            Mode::Browse | Mode::Layout => script::Mode::Browse,
         };
         let mut host = AppHost {
             db: &mut d.db,
@@ -493,6 +506,67 @@ impl App {
         self.current.insert(t, 0);
     }
 
+    /// View › Layout Mode: edits a copy of the current layout.
+    fn enter_layout(&mut self) {
+        if self.mode() == Mode::Layout || !self.commit() {
+            return;
+        }
+        let Some(d) = self.doc.as_ref() else { return };
+        if self.layout >= d.layouts.len() {
+            return;
+        }
+        self.designer = Some(design::Designer::new(d, self.layout));
+        self.mode = Some(Mode::Layout);
+    }
+
+    /// Leaves the layout (exit, other layout, new layout): FileMaker asks
+    /// whether to save the changes first.
+    fn leave_layout(&mut self, then: design::Then) {
+        match self.designer.as_mut() {
+            Some(ds) if ds.changed() => ds.ask = Some(then),
+            _ => self.finish_layout(then),
+        }
+    }
+
+    fn finish_layout(&mut self, then: design::Then) {
+        match then {
+            design::Then::Exit => {
+                self.designer = None;
+                self.mode = Some(Mode::Browse);
+            }
+            design::Then::Switch(i) => {
+                self.layout = i;
+                self.designer = self.doc.as_ref().map(|d| design::Designer::new(d, i));
+            }
+            design::Then::NewLayout => {
+                let Some(d) = self.doc.as_mut() else { return };
+                let Some(base) = d.layouts.get(self.layout).cloned() else {
+                    return;
+                };
+                let id = d.db.layouts.iter().map(|l| l.id).max().unwrap_or(0) + 1;
+                let to = (base.table_occurrence & 0xFFF) as u32;
+                let to_name =
+                    d.db.occurrences
+                        .iter()
+                        .find(|o| o.id == to)
+                        .map_or(tr("Layout").to_string(), |o| o.name.clone());
+                let name = (2..)
+                    .map(|n| format!("{to_name} {n}"))
+                    .find(|n| d.layouts.iter().all(|l| &l.name != n))
+                    .unwrap_or_default();
+                let l = design::blank_layout(&base, id, name);
+                d.layouts.push(l.clone());
+                d.db.layouts.push(l);
+                self.layout = d.layouts.len() - 1;
+                self.designer = Some(design::Designer::new(d, self.layout));
+                self.messages.push((
+                    String::new(),
+                    tr("New layouts are kept for this session only: writing new layouts to the file is not supported yet.").to_string(),
+                ));
+            }
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(tr("File"), |ui| {
@@ -527,15 +601,58 @@ impl App {
                 }
             });
             ui.menu_button(tr("Edit"), |ui| {
-                ui.label(tr("Not implemented yet"));
+                let Some(ds) = self.designer.as_mut() else {
+                    ui.label(tr("Not implemented yet"));
+                    return;
+                };
+                let undo = egui::Button::new(tr("Undo")).shortcut_text("Ctrl+Z");
+                if ui.add_enabled(ds.can_undo(), undo).clicked() {
+                    ds.undo();
+                    ui.close();
+                }
+                let redo = egui::Button::new(tr("Redo")).shortcut_text("Ctrl+Y");
+                if ui.add_enabled(ds.can_redo(), redo).clicked() {
+                    ds.redo();
+                    ui.close();
+                }
+                ui.separator();
+                if ui
+                    .add(egui::Button::new(tr("Delete")).shortcut_text("Del"))
+                    .clicked()
+                {
+                    ds.delete_selection();
+                    ui.close();
+                }
+                if ui
+                    .add(egui::Button::new(tr("Select All")).shortcut_text("Ctrl+A"))
+                    .clicked()
+                {
+                    ds.select_all();
+                    ui.close();
+                }
             });
             ui.menu_button(tr("View"), |ui| {
                 if ui.button(tr("Browse Mode")).clicked() {
-                    self.mode = Some(Mode::Browse);
+                    if self.mode() == Mode::Layout {
+                        self.leave_layout(design::Then::Exit);
+                    } else {
+                        self.mode = Some(Mode::Browse);
+                    }
                     ui.close();
                 }
-                if ui.button(tr("Find Mode")).clicked() {
+                if ui
+                    .add_enabled(
+                        self.mode() != Mode::Layout,
+                        egui::Button::new(tr("Find Mode")),
+                    )
+                    .clicked()
+                {
                     self.enter_find();
+                    ui.close();
+                }
+                let layout = egui::Button::new(tr("Layout Mode")).shortcut_text("Ctrl+L");
+                if ui.add_enabled(self.doc.is_some(), layout).clicked() {
+                    self.enter_layout();
                     ui.close();
                 }
             });
@@ -600,6 +717,10 @@ impl App {
 
     /// Status toolbar: navigation, counts, record commands.
     fn status_toolbar(&mut self, ui: &mut egui::Ui) {
+        if let Some(ds) = self.designer.as_mut() {
+            ui.horizontal(|ui| ds.tools(ui));
+            return;
+        }
         let Some(t) = self.table() else { return };
         let total = self
             .doc
@@ -672,6 +793,7 @@ impl App {
                         self.sort(Order::Descending);
                     }
                 }
+                Mode::Layout => {}
                 Mode::Find => {
                     if ui.button(tr("Perform Find")).clicked() {
                         self.perform_find();
@@ -712,6 +834,41 @@ impl App {
             .map(|l| l.name.clone())
             .collect();
         let mut chosen = None;
+        if self.mode() == Mode::Layout {
+            let mut then = None;
+            ui.horizontal(|ui| {
+                ui.label(tr("Layout:"));
+                let current = names.get(self.layout).map_or("", |n| n.as_str());
+                egui::ComboBox::from_id_salt("layout")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (i, n) in names.iter().enumerate() {
+                            if ui.selectable_label(i == self.layout, n).clicked()
+                                && i != self.layout
+                            {
+                                then = Some(design::Then::Switch(i));
+                            }
+                        }
+                    });
+                if ui.button(tr("New Layout/Report")).clicked() {
+                    then = Some(design::Then::NewLayout);
+                }
+                if ui.button(tr("Layout Setup…")).clicked()
+                    && let Some(ds) = self.designer.as_mut()
+                {
+                    ds.open_setup();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(tr("Exit Layout")).clicked() {
+                        then = Some(design::Then::Exit);
+                    }
+                });
+            });
+            if let Some(t) = then {
+                self.leave_layout(t);
+            }
+            return;
+        }
         ui.horizontal(|ui| {
             ui.label(tr("Layout:"));
             let current = names.get(self.layout).map_or("", |n| n.as_str());
@@ -735,9 +892,14 @@ impl App {
                 }
             }
             ui.add_enabled(false, egui::Button::new(tr("Preview")));
+            let mut edit = false;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled(false, egui::Button::new(tr("Edit Layout")));
+                edit = ui.button(tr("Edit Layout")).clicked();
             });
+            if edit {
+                chosen = None;
+                self.enter_layout();
+            }
         });
         if let Some(i) = chosen.filter(|_| self.commit()) {
             self.layout = i;
@@ -1052,6 +1214,52 @@ impl App {
     }
 }
 
+impl App {
+    /// Layout mode dialogs: the designer's own, and "save changes?".
+    fn layout_dialogs(&mut self, ctx: &egui::Context) {
+        let scripts: Vec<(u32, String)> = self
+            .engine
+            .as_ref()
+            .map(|e| {
+                e.scripts
+                    .iter()
+                    .filter(|s| !s.is_folder() && !s.steps.is_empty())
+                    .map(|s| (s.id, s.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (Some(ds), Some(d)) = (self.designer.as_mut(), self.doc.as_mut()) else {
+            return;
+        };
+        ds.dialogs(ctx, d, &scripts);
+        let Some(then) = ds.ask else { return };
+        let mut answer = None;
+        egui::Modal::new(egui::Id::NULL.with("save_layout")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(i18n::save_layout_question(&ds.layout.name));
+            ui.horizontal(|ui| {
+                if ui.button(tr("Save")).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button(tr("Don't Save")).clicked() {
+                    answer = Some(false);
+                }
+                if ui.button(tr("Cancel")).clicked() {
+                    ds.ask = None;
+                }
+            });
+        });
+        if let Some(save) = answer {
+            ds.ask = None;
+            if save {
+                ds.apply(d);
+                self.dirty = true;
+            }
+            self.finish_layout(then);
+        }
+    }
+}
+
 /// Replaces `<<Field>>` and `<<TO::Field>>` merge fields in layout text.
 fn merge_fields(doc: &Doc, text: &str, t: u32, layout_to: u32, rec: Option<usize>) -> String {
     let mut out = String::new();
@@ -1177,7 +1385,7 @@ fn draw_object(
             let s = request.entry(field).or_default();
             ui.put(inner, lk.edit(s));
         }
-        (Mode::Find, _) | (Mode::Browse, None) => {}
+        (Mode::Find | Mode::Layout, _) | (Mode::Browse, None) => {}
         (Mode::Browse, Some(rec)) if is_calc => {
             let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
             lk.paint_text(painter, r, &v);
@@ -1327,6 +1535,16 @@ impl eframe::App for App {
         {
             self.save(&ctx, false);
         }
+        if self.doc.is_some()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L))
+        {
+            if self.mode() == Mode::Layout {
+                self.leave_layout(design::Then::Exit);
+            } else {
+                self.enter_layout();
+            }
+        }
+        self.layout_dialogs(&ctx);
         if let Some(step) = self.pending_step.take() {
             self.run_script_with(|e, h| e.run_step(h, &step));
         }
@@ -1366,6 +1584,25 @@ impl eframe::App for App {
                 self.status_toolbar(ui);
                 self.layout_bar(ui);
             });
+        }
+        if let (Some(ds), Some(d)) = (self.designer.as_mut(), self.doc.as_ref()) {
+            egui::Panel::right("inspector")
+                .default_size(270.0)
+                .resizable(true)
+                .show(ui, |ui| {
+                    ui.heading(tr("Inspector"));
+                    ds.inspector(ui, d);
+                });
+            egui::CentralPanel::default().show(ui, |ui| {
+                if let Some(e) = &self.error {
+                    ui.colored_label(Color32::RED, e);
+                }
+                egui::ScrollArea::both().show(ui, |ui| ds.canvas(ui, d));
+            });
+            ds.keys(&ctx);
+            let title = format!("{} — {}", d.name, tr("Layout Mode"));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            return;
         }
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(e) = &self.error {

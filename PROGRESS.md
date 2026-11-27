@@ -14,7 +14,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | 🚧 |
 | M4 | GUI: Browse / Find / List / Table views | 🚧 |
 | M5 | Script engine and Script Workspace | 🚧 |
-| M6 | Layout mode | ⏳ |
+| M6 | Layout mode | 🚧 |
 | M7 | Write `.fmp12` files that FileMaker Pro opens | 🚧 |
 | M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | ⏳ |
 | M9 | Out of scope for now: Server hosting, WebDirect, ODBC, plug-ins, AI steps | — |
@@ -125,6 +125,24 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Windows (New/Close/Select Window), Go to Related Record, Go to Portal Row, Select All, finds on related fields | ⏳ |
 | Script triggers, script debugger, Script Workspace UI | ⏳ |
 | Builds for `wasm32-unknown-unknown` | ✅ |
+## M6 — Layout mode (`crates/app/src/design.rs`, `fmp12::save::save_layouts`)
+
+| Feature | State |
+|---------|-------|
+| Enter/leave: Edit Layout button, View › Layout Mode, Ctrl+L; "Save changes to layout…?" (Save / Don't Save / Cancel) on exit or layout switch | ✅ |
+| Canvas: rulers, grid, part labels in the left margin (English/French names), objects drawn with their theme look, field names in fields | ✅ |
+| Selection: click, Shift-click, marquee; handles; move with the mouse or the arrow keys (Shift = 10 pt); resize from the handles; Delete | ✅ |
+| Undo/redo within the session (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, Edit menu) | ✅ |
+| Part resizing by dragging a part boundary (parts and objects below follow) | ✅ |
+| Layout bar: layout pop-up, New Layout/Report, Layout Setup (name, table occurrence), Exit Layout | ✅ |
+| Tools: selection, text (edited in place, double-click to edit again), field (Specify Field, optional label), rectangle, line, button (Go to Layout or Perform Script; double-click to edit) | ✅ |
+| Inspector: Position (name, left/top/right/bottom/width/height, layout width), Appearance (named style, fill, border, text colour overrides), Data (field, control style, value list) | ✅ |
+| Save to `.fmp12`: object list, per-object nodes (text, name, label, UUIDs), parts, layout name, table occurrence, width, last object id, spatial index and tab order | ✅ tested by re-reading; 🔍 to verify in FileMaker |
+| Protobuf encoder (`pb::Msg::encode`, `pb::MsgBuf`): all 418 template layouts and 5,544 objects re-encode byte for byte | ✅ |
+| New layouts written to the file (needs the layout catalog `[4].[1]` and its collation-keyed name index) | ⏳ session only |
+| Name index `[4].[1].[1]` after a rename (collation keys) | ⏳ left as is |
+| Other tools (oval, portal, tab control, web viewer…), alignment, grouping, arrange (z-order), fonts, part add/delete, tab order editing | ⏳ |
+
 ## M7 — Writing `.fmp12`
 
 | Feature | State |
@@ -173,7 +191,8 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Related fields outside portals (first related record) | ✅ |
 | Pop-up menus and drop-down lists from value lists (custom and field-based) | ✅ |
 | Checkboxes, radio buttons, calendars | ⏳ |
-| Layout mode, Preview mode | ⏳ |
+| Layout mode (see M6) | 🚧 |
+| Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
 | Save from the app: Ctrl+S / Save a Copy As (desktop), download (web) | ✅ |
 

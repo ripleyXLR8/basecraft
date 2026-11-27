@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-fn french() -> bool {
+pub fn french() -> bool {
     static FR: OnceLock<bool> = OnceLock::new();
     *FR.get_or_init(|| {
         #[cfg(target_arch = "wasm32")]
@@ -74,6 +74,85 @@ pub fn tr(key: &'static str) -> &'static str {
         "Accept anyway" => "Accepter quand même",
         "Save a Copy As…" => "Enregistrer une copie sous…",
         "or drop a .fmp12 file here" => "ou déposez un fichier .fmp12 ici",
+        "Layout Mode" => "Mode Modèle",
+        "Exit Layout" => "Quitter le modèle",
+        "New Layout/Report" => "Nouveau modèle/rapport",
+        "Layout Setup…" => "Configuration du modèle…",
+        "Layout Setup" => "Configuration du modèle",
+        "Layout Name" => "Nom du modèle",
+        "Show records from" => "Afficher les enregistrements de",
+        "Layout width" => "Largeur du modèle",
+        "Don't Save" => "Ne pas enregistrer",
+        "Inspector" => "Inspecteur",
+        "Selection tool" => "Outil de sélection",
+        "Text tool" => "Outil Texte",
+        "Field tool" => "Outil Champ",
+        "Rectangle tool" => "Outil Rectangle",
+        "Line tool" => "Outil Trait",
+        "Button tool" => "Outil Bouton",
+        "Undo" => "Annuler",
+        "Redo" => "Rétablir",
+        "Delete" => "Supprimer",
+        "Select All" => "Tout sélectionner",
+        "Position" => "Position",
+        "Appearance" => "Apparence",
+        "Data" => "Données",
+        "Name" => "Nom",
+        "Left" => "Gauche",
+        "Top" => "Haut",
+        "Right" => "Droite",
+        "Bottom" => "Bas",
+        "Width" => "Largeur",
+        "Height" => "Hauteur",
+        "No objects selected" => "Aucun objet sélectionné",
+        "objects selected" => "objets sélectionnés",
+        "Style" => "Style",
+        "Default" => "Par défaut",
+        "Fill" => "Remplissage",
+        "Border" => "Bordure",
+        "Text color" => "Couleur du texte",
+        "Use the style's value" => "Utiliser la valeur du style",
+        "Field" => "Champ",
+        "No field selected" => "Aucun champ sélectionné",
+        "Control style" => "Style de contrôle",
+        "Edit box" => "Zone de modification",
+        "Drop-down list" => "Liste déroulante",
+        "Pop-up menu" => "Menu local",
+        "Checkbox set" => "Ensemble de cases à cocher",
+        "Value list" => "Liste de valeurs",
+        "<None>" => "<Aucune>",
+        "Specify Field" => "Indiquer le champ",
+        "Create label" => "Créer une étiquette",
+        "Button Setup" => "Paramétrage du bouton",
+        "Button" => "Bouton",
+        "Label" => "Libellé",
+        "Go to Layout" => "Aller au modèle",
+        "Perform Script" => "Exécuter script",
+        "Text" => "Texte",
+        "Layout" => "Modèle",
+        "Header" => "En-tête",
+        "Leading Grand Summary" => "Récapitulatif général en tête",
+        "Sub-summary" => "Sous-récapitulatif",
+        "Body" => "Corps",
+        "Trailing Grand Summary" => "Récapitulatif général en fin",
+        "Footer" => "Pied de page",
+        "Title Header" => "En-tête de titre",
+        "Title Footer" => "Pied de page de titre",
+        "Top Navigation" => "Navigation supérieure",
+        "Bottom Navigation" => "Navigation inférieure",
+        "Part" => "Partie",
+        "New layouts are kept for this session only: writing new layouts to the file is not supported yet." => {
+            "Les nouveaux modèles ne sont conservés que pendant cette session : leur écriture dans le fichier n'est pas encore prise en charge."
+        }
         other => other,
+    }
+}
+
+/// FileMaker's question when leaving a modified layout.
+pub fn save_layout_question(name: &str) -> String {
+    if french() {
+        format!("Enregistrer les modifications apportées au modèle « {name} » ?")
+    } else {
+        format!("Save changes to layout \u{201C}{name}\u{201D}?")
     }
 }

@@ -377,6 +377,54 @@ Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
   8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);
 * `[4].[5].[L].[5].[obj]` key 1 = static text, `.[3]` = button label calculation.
 
+### Layout objects in detail
+
+* Object list field 1 (repeated varint) = ids of the **top-level** objects,
+  ascending in the templates; children of portals, tab panels and button
+  bars are not listed. Field 2 = the objects, front to back.
+* The list is stored inline (key 7 of `[4].[5].[L]`, empty = `00 07`) up
+  to 1000 bytes; above that in `[4].[5].[L].[7]`: key 0 = total length
+  (u32 BE), keys 1…n = 1000-byte chunks (largest inline list seen: 834
+  bytes; smallest split one: 1,812).
+* Object kinds: 1 field, 2 text, 4 line (style type 50), 5 rectangle (51),
+  9 portal, 10 button, 11 tab control, 12 tab panel, 13 web viewer,
+  18 button bar. A field's control style is field 8.5 (0 edit box,
+  1 drop-down, 2 pop-up, 3 checkbox set, 6 calendar) and its style type
+  follows it (61, 62, 63, 64, 66; 67 container).
+* `[4].[5].[L].[5]` key 0 = last object id (length-prefixed integer).
+* `[4].[5].[L].[5].[obj]`: key 1 text, key 7 (`00 02` fields, `00 04`
+  buttons), key 13 (field formatting, `00 00` elsewhere), key 16 = object
+  name (empty: `00 10`), keys 216/217 = UUIDs; `.[3]` button label
+  `{4: 01 00, 5: tokens, 6: tokens}` (a text literal is `13 len text 00`,
+  §11); `.[6]` placeholder; `.[17]` button step parameters.
+* `[4].[5].[L].[10]`: a spatial index of the fields, buttons, tab controls
+  and button bars: byte-string key = top, left (u16, absolute), id − 1
+  (u16); value = `00 len 01 id …` (`len` = length of `01 id`), then
+  `00 00 00 00 01` (other tails seen). Portal children are not listed.
+* `[4].[5].[L].[21]`: tab order, key n → the same object reference.
+* Buttons (object field 16): `{1, 2, 3: step {1 id, 2 arg, 3 options,
+  4 14-byte inline block}, 4, 5, 6}`. The inline block is `len 01 id` then
+  one byte `BE` or `6F` that does not depend on the target.
+* `[4].[1].[7].[L]` repeats the layout's name (key 16) and a message whose
+  field 2 is its table occurrence; `[4].[1].[1]` indexes layout names by
+  collation key.
+
+### Writing (`fmp12::save::save_layouts`) 🔍
+
+FileMaker writes minimal protobuf, so decode → encode gives the same
+bytes for every layout message of the 66 templates (`tests/layouts.rs`).
+The writer keeps the raw messages and patches only the fields that
+changed: an object's bounds (field 4), style (5), field reference and
+control (8), button step (16.3); a part's top, height and style (4, 5,
+10); the header's table occurrence (2) and width (8). New objects are
+built on an existing object of the same kind and style type (from the
+same layout if possible), which keeps the fields we do not understand;
+their node copies keys 7 and 13 of the prototype and gets fresh UUIDs.
+Deleted objects lose their node and their index and tab-order entries;
+moved ones get their index key shifted by the move. A rename rewrites
+both name keys but not the name index (collation keys are not
+implemented). Not yet verified in FileMaker.
+
 ## 11. Calculations ✅
 
 Stored next to their owner as keys 4 (context: a TO ref `03 D0 hi lo`, or

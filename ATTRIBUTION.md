@@ -2,7 +2,7 @@
 
 | Path | What | Author / source | Licence | How it was made |
 |------|------|-----------------|---------|-----------------|
-| `assets/icon/*` | BaseCraft app icon | BaseCraft contributors | MIT (this repository) | Original artwork drawn in code by `packaging/icon.py` (Pillow) |
+| `assets/icon/*` | BaseCraft app icon (purple tile, stack of record cards) | BaseCraft contributors | MIT (this repository) | Original artwork drawn in code by `packaging/icon.py` (Pillow), in the general style of the Craft apps (flat tile, outlined cream object); nothing traced or copied |
 | `crates/fmp12` sector and chunk layer | Format notes | [fmptools](https://github.com/evanmiller/fmptools) by Evan Miller | MIT | Public notes and source used as a starting point; see `docs/FORMAT.md` |
 
 BaseCraft contains no Claris code, binaries, artwork, themes, templates or

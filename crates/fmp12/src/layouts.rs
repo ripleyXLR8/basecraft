@@ -52,6 +52,10 @@ pub struct LayoutObject {
     /// Field 6 of containers: one of their children (the front tab panel of a
     /// tab control; for other containers its meaning is not settled).
     pub active_child: Option<u64>,
+    /// Field display: 0 edit box, 1 drop-down list, 2 pop-up menu, … (field 8.5).
+    pub display: u64,
+    /// Value list id attached to a field object (field 8.6).
+    pub value_list: Option<u32>,
     /// Portal: (table occurrence as in XML, rows shown, first row).
     pub portal: Option<(u64, u32, u32)>,
 }
@@ -177,6 +181,8 @@ fn object(m: &Msg, texts: &BTreeMap<u32, String>) -> LayoutObject {
         }),
         text: u32::try_from(id).ok().and_then(|i| texts.get(&i).cloned()),
         parent: None,
+        display: m.msg(8).and_then(|f| f.uint(5)).unwrap_or(0),
+        value_list: m.msg(8).and_then(|f| f.uint(6)).map(|v| v as u32),
         active_child: m.uint(6),
         portal: m.msg(15).map(|p| {
             (

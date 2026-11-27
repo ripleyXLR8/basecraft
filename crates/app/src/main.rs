@@ -783,10 +783,39 @@ fn draw_object(
             lk.paint_text(painter, r, &v);
         }
         (Mode::Browse, Some(rec)) => {
+            // Pop-up menus and drop-down lists offer their value list.
+            let choices = match (o.display, o.value_list) {
+                (1 | 2, Some(vl)) => Some(doc.db.value_list_values(vl)),
+                _ => None,
+            };
             if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
                 let s = tbl.records[rec].values.entry(field).or_default();
-                if ui.put(inner, lk.edit(s)).changed() {
-                    *dirty = true;
+                match choices {
+                    Some(values) => {
+                        let mut picked = None;
+                        ui.put(inner, |ui: &mut egui::Ui| {
+                            egui::ComboBox::from_id_salt(("vl", o.id, rec))
+                                .selected_text(s.as_str())
+                                .width(inner.width())
+                                .show_ui(ui, |ui| {
+                                    for v in &values {
+                                        if ui.selectable_label(s == v, v).clicked() {
+                                            picked = Some(v.clone());
+                                        }
+                                    }
+                                })
+                                .response
+                        });
+                        if let Some(v) = picked {
+                            *s = v;
+                            *dirty = true;
+                        }
+                    }
+                    None => {
+                        if ui.put(inner, lk.edit(s)).changed() {
+                            *dirty = true;
+                        }
+                    }
                 }
             }
         }

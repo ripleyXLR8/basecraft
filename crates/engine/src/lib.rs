@@ -70,6 +70,7 @@ pub struct Database {
     pub relationships: Vec<fmp12::graph::Relationship>,
     pub layouts: Vec<fmp12::layouts::Layout>,
     pub themes: Vec<fmp12::theme::Theme>,
+    pub value_lists: Vec<fmp12::valuelists::ValueList>,
 }
 
 /// Names for decompiling calculations into `calc`-parsable source.
@@ -161,6 +162,7 @@ impl Database {
             relationships: fmp12::graph::relationships(file)?,
             layouts: fmp12::layouts::layouts(file)?,
             themes: fmp12::theme::themes(file)?,
+            value_lists: fmp12::valuelists::value_lists(file)?,
             occurrences,
         })
     }
@@ -202,6 +204,35 @@ impl Database {
 }
 
 impl Database {
+    /// Values of value list `id`: custom values, or the distinct sorted
+    /// values of a field.
+    pub fn value_list_values(&self, id: u32) -> Vec<String> {
+        use fmp12::valuelists::Source;
+        let Some(vl) = self.value_lists.iter().find(|v| v.id == id) else {
+            return Vec::new();
+        };
+        match &vl.source {
+            Source::Custom(text) => text
+                .split('\r')
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .collect(),
+            Source::Field { to, field } => {
+                let Some(t) = self.table_of(*to) else {
+                    return Vec::new();
+                };
+                let mut v: Vec<String> = (0..t.records.len())
+                    .map(|r| self.value(t.id, r, *field).to_text())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                v.sort_by_key(|s| s.to_lowercase());
+                v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                v
+            }
+            Source::Unknown(_) => Vec::new(),
+        }
+    }
+
     fn to_named(&self, name: &str) -> Option<&fmp12::graph::TableOccurrence> {
         self.occurrences
             .iter()

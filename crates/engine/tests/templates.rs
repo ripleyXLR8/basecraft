@@ -89,3 +89,18 @@ fn related_records_follow_relationships() {
     assert_eq!(db.related(cto, 0, pto), vec![0, 2]);
     assert_eq!(db.related(cto, 1, pto), vec![1]);
 }
+
+#[test]
+fn custom_value_lists() {
+    let Some(d) = dir() else { return };
+    let db = Database::open(d.join("Contacts").join("en.fmp12")).unwrap();
+    let vl = db
+        .value_lists
+        .iter()
+        .find(|v| v.name == "Phone Type")
+        .unwrap();
+    assert_eq!(
+        db.value_list_values(vl.id),
+        ["Home", "Mobile", "Work", "Fax"]
+    );
+}

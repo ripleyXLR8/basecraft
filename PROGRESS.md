@@ -123,7 +123,8 @@ ApplicationArchitecture.
 | Form, List (body repeated per record) and Table views | ✅ |
 | Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |
 | Related fields outside portals (first related record) | ✅ |
-| Pop-up menus, drop-down lists, checkboxes from value lists | ⏳ |
+| Pop-up menus and drop-down lists from value lists (custom and field-based) | ✅ |
+| Checkboxes, radio buttons, calendars | ⏳ |
 | Layout mode, Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
 | Web: save (download, or File System Access API) | ⏳ |

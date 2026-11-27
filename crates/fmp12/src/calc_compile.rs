@@ -54,22 +54,7 @@ fn err<T>(at: usize, message: impl Into<String>) -> Res<T> {
 /// Compiles `src` for a calculation evaluated from occurrence `context`
 /// (0 for scripts and layouts: every field is then written `TO::Field`).
 pub fn compile(src: &str, context: u32, names: &dyn Resolve) -> Result<Compiled, CompileError> {
-    let toks = lex(src, context, names)?;
-    let mut p = Parser {
-        toks,
-        pos: 0,
-        frames: Vec::new(),
-    };
-    p.skip();
-    let compiled = if p.pos < p.toks.len() {
-        let c = p.expr(0)?;
-        if p.pos < p.toks.len() {
-            return err(p.toks[p.pos].at, "unexpected token");
-        }
-        c
-    } else {
-        return err(0, "empty calculation");
-    };
+    let (compiled, p) = parse(lex(src, context, names)?)?;
     let tokens = p.toks.iter().flat_map(|t| t.k5.iter().copied()).collect();
     let mut fields: Vec<(u32, u32)> = p
         .toks
@@ -86,6 +71,185 @@ pub fn compile(src: &str, context: u32, names: &dyn Resolve) -> Result<Compiled,
         compiled,
         fields,
     })
+}
+
+/// Key 6 of a stored token stream (key 5). Scripts keep only key 5 in
+/// memory ([`crate::scripts::Calc`]); the writer derives key 6 with this.
+pub fn compiled(tokens: &[u8]) -> Result<Vec<u8>, CompileError> {
+    Ok(parse(scan(tokens)?)?.0)
+}
+
+/// Every function name the compiler knows, and every `Get` flag, sorted
+/// (for a calculation editor's function list).
+pub fn function_names() -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut f: Vec<&str> = FUNCTIONS
+        .iter()
+        .map(|(_, n)| *n)
+        .chain(FUNCTIONS2.iter().map(|(_, _, n)| *n))
+        .chain(EXTERNAL.iter().map(|(_, _, n)| *n))
+        .filter(|n| *n != "Get")
+        .collect();
+    f.sort_unstable_by_key(|n| n.to_lowercase());
+    f.dedup();
+    let mut g: Vec<&str> = GET_FLAGS.iter().map(|(_, n)| *n).collect();
+    g.sort_unstable_by_key(|n| n.to_lowercase());
+    (f, g)
+}
+
+fn parse(toks: Vec<Tok>) -> Res<(Vec<u8>, Parser)> {
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        frames: Vec::new(),
+    };
+    p.skip();
+    if p.pos >= p.toks.len() {
+        // Only comments: FileMaker stores key 6 = 00 (as for text it
+        // cannot parse, kept as one comment).
+        let comment = p
+            .toks
+            .iter()
+            .any(|t| matches!(t.k5.first(), Some(0x0D | 0x0E)));
+        return if comment {
+            Ok((vec![0], p))
+        } else {
+            err(0, "empty calculation")
+        };
+    }
+    let c = p.expr(0)?;
+    if p.pos < p.toks.len() {
+        return err(p.toks[p.pos].at, "unexpected token");
+    }
+    Ok((c, p))
+}
+
+/// Tokens of a stored key-5 stream, as [`lex`] makes them from text
+/// (`at` is a byte offset). Names stand for their token byte.
+fn scan(b: &[u8]) -> Res<Vec<Tok>> {
+    use crate::calc::{run, run_len};
+    let mut out = Vec::new();
+    let mut i = 0;
+    let bad = |i: usize| CompileError {
+        at: i,
+        message: format!("unknown token {:02X?}", b.get(i)),
+    };
+    let ident = |s: &str| (Kind::Ident, s.to_string());
+    while i < b.len() {
+        let t = b[i];
+        let run_at = |j: usize| -> Res<(String, usize)> {
+            let (len, l) = run_len(b, j).ok_or_else(|| bad(i))?;
+            let (s, n) = run(b, j + l, len).ok_or_else(|| bad(i))?;
+            Ok((s, l + n + 1 + j - i))
+        };
+        let ((kind, text), len) = match t {
+            0x0C..=0x0E => {
+                let (s, n) = run_at(i + 2)?;
+                ((Kind::Trivia, s), n)
+            }
+            0x13 => {
+                let (s, n) = run_at(i + 1)?;
+                ((Kind::Text, s), n)
+            }
+            // Let variable name: 0B len name 00 + 1 byte.
+            0x0B => {
+                let (s, n) = run_at(i + 1)?;
+                (ident(&s), n + 1)
+            }
+            0x1D => {
+                let lib = b.get(i + 4..i + 8).ok_or_else(|| bad(i))?;
+                let idx = b.get(i + 8..i + 10).ok_or_else(|| bad(i))?;
+                let idx = u16::from_be_bytes([idx[0], idx[1]]);
+                let (_, _, n) = EXTERNAL
+                    .iter()
+                    .find(|(l, x, _)| l.as_slice() == lib && *x == idx)
+                    .ok_or_else(|| bad(i))?;
+                (ident(n), 10)
+            }
+            0x1A => {
+                let units = *b.get(i + 1).ok_or_else(|| bad(i))? as usize;
+                let n = (units..=units * 3 + 3)
+                    .find(|n| {
+                        b.get(i + 2..i + 2 + n)
+                            .is_some_and(|s| crate::text(s).encode_utf16().count() == units)
+                    })
+                    .ok_or_else(|| bad(i))?;
+                ((Kind::Var, String::new()), 2 + n)
+            }
+            0x10 => {
+                let c = b.get(i..i + 18).ok_or_else(|| bad(i))?;
+                ((Kind::Num(c.to_vec()), String::new()), 20)
+            }
+            0x16 => {
+                let to = b
+                    .get(i + 3..i + 7)
+                    .and_then(crate::graph::to_ref)
+                    .ok_or_else(|| bad(i))?;
+                let n = *b.get(i + 7).ok_or_else(|| bad(i))? as usize;
+                let field = b
+                    .get(i + 9..i + 8 + n)
+                    .and_then(crate::path_int)
+                    .ok_or_else(|| bad(i))?;
+                let qualified = b.get(i + 1).is_some_and(|f| f & 4 != 0);
+                (
+                    (
+                        Kind::Field {
+                            to,
+                            field,
+                            qualified,
+                        },
+                        String::new(),
+                    ),
+                    10 + n,
+                )
+            }
+            0x9C => {
+                let f = *b.get(i + 1).ok_or_else(|| bad(i))?;
+                let (_, n) = GET_FLAGS
+                    .iter()
+                    .find(|(x, _)| *x == f)
+                    .ok_or_else(|| bad(i))?;
+                (ident(n), 2)
+            }
+            0xF8..=0xFE => {
+                let x = *b.get(i + 1).ok_or_else(|| bad(i))?;
+                let (_, _, n) = FUNCTIONS2
+                    .iter()
+                    .find(|(p, y, _)| *p == t && *y == x)
+                    .ok_or_else(|| bad(i))?;
+                (ident(n), 2)
+            }
+            // Unary minus may be stored as 2C.
+            0x2C => ((Kind::Punct("-"), "-".into()), 1),
+            _ => match PUNCT.iter().find(|(_, x)| *x == t) {
+                Some((p, _)) => ((Kind::Punct(p), p.to_string()), 1),
+                None => {
+                    let n = crate::calc_tables::OPS
+                        .iter()
+                        .chain(FUNCTIONS)
+                        .find(|(x, _)| *x == t)
+                        .map(|(_, n)| *n)
+                        .ok_or_else(|| bad(i))?;
+                    (ident(n), 1)
+                }
+            },
+        };
+        let raw = b.get(i..i + len).ok_or_else(|| bad(i))?.to_vec();
+        let k5 = match kind {
+            Kind::Punct(p) => PUNCT
+                .iter()
+                .find(|(q, _)| *q == p)
+                .map_or(raw, |(_, x)| vec![*x]),
+            _ => raw,
+        };
+        out.push(Tok {
+            kind,
+            at: i,
+            text,
+            k5,
+        });
+        i += len;
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, PartialEq)]

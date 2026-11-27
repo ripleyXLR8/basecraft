@@ -1,17 +1,16 @@
 //! Calculation compiler against every calculation stored in the FileMaker
-//! starter templates (skipped when they are not installed; override the
-//! directory with FMP12_TEMPLATES):
+//! starter templates, scripts and layouts included (skipped when they are
+//! not installed; override the directory with FMP12_TEMPLATES):
 //!
-//! * key 6 derived from key 5 equals FileMaker's key 6;
-//! * key 5 decompiled to text and compiled again gives the same bytes.
+//! * key 6 derived from key 5 ([`calc::compiled`]) equals FileMaker's key 6;
+//! * key 5 decompiled to text and compiled again gives the same keys 5 and 6.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use fmp12::script_calc::{Resolve, compiled, source_tokens};
-use fmp12::{Chunk, schema};
+use fmp12::{Chunk, calc};
 
 fn template_files() -> Vec<PathBuf> {
     let dir = std::env::var_os("FMP12_TEMPLATES")
@@ -29,46 +28,13 @@ fn template_files() -> Vec<PathBuf> {
     out
 }
 
-pub struct FileNames {
-    tables: Vec<schema::Table>,
-    tos: Vec<fmp12::graph::TableOccurrence>,
-}
-
-impl fmp12::calc::Names for FileNames {
-    fn field(&self, to: u32, field: u32) -> Option<String> {
-        let bt = self.tos.iter().find(|t| t.id == to)?.base_table;
-        let t = self.tables.iter().find(|t| t.id == bt)?;
-        Some(t.fields.get(&field)?.name.clone())
-    }
-    fn occurrence(&self, to: u32) -> Option<String> {
-        Some(self.tos.iter().find(|t| t.id == to)?.name.clone())
-    }
-}
-
-struct Ctx<'a>(&'a FileNames, u32);
-
-impl Resolve for Ctx<'_> {
-    fn field(&self, to: Option<&str>, name: &str) -> Option<(u32, u32)> {
-        let o = match to {
-            Some(n) => self.0.tos.iter().find(|t| t.name == n)?,
-            None => self.0.tos.iter().find(|t| t.id == self.1)?,
-        };
-        let t = self.0.tables.iter().find(|t| t.id == o.base_table)?;
-        let f = t.fields.iter().find(|(_, f)| f.name == name)?;
-        Some((o.id, *f.0))
-    }
-}
-
 #[test]
 fn template_calculations_compile() {
     let (mut pairs, mut ok6, mut ok5, mut n5) = (0, 0, 0, 0);
     let mut fails: Vec<String> = Vec::new();
     for path in template_files() {
         let file = fmp12::File::open(&path).unwrap();
-        let names = FileNames {
-            tables: schema::tables(&file).unwrap(),
-            tos: fmp12::graph::table_occurrences(&file).unwrap(),
-        };
+        let names = calc::FileNames::load(&file).unwrap();
         // Calculation nodes: path → keys 4, 5, 6.
         let mut nodes: BTreeMap<Vec<u32>, [Option<Vec<u8>>; 3]> = BTreeMap::new();
         file.walk(|p, c| {
@@ -86,29 +52,21 @@ fn template_calculations_compile() {
             };
             let context = match k4.as_slice() {
                 [1, 0] => 0,
-                b => match fmp12::graph::to_ref(b) {
+                b => match calc::context(b) {
                     Some(t) => t,
                     None => continue,
                 },
             };
             // Only real calculations (a decodable token stream).
-            let Ok(text) = fmp12::calc::decompile(&k5, context, &names) else {
+            let Ok(text) = calc::decompile(&k5, context, &names) else {
                 continue;
             };
-            // ponytail: script_calc does not handle comments; the schema
-            // compiler (calc::compile) does. Drop this skip once they merge.
-            if text.contains("//") || text.contains("/*") {
-                continue;
-            }
             pairs += 1;
-            match compiled(&k5) {
+            match calc::compiled(&k5) {
                 Ok(c) if c == k6 => ok6 += 1,
                 r => {
                     if fails.len() < 30 {
-                        fails.push(format!(
-                            "k6 {p:?} {text:?}: {r:02x?}
-   want {k6:02x?}"
-                        ));
+                        fails.push(format!("k6 {p:?} {text:?}: {r:02x?}\n   want {k6:02x?}"));
                     }
                 }
             }
@@ -120,21 +78,20 @@ fn template_calculations_compile() {
                 continue;
             }
             n5 += 1;
-            match source_tokens(&text, context, &Ctx(&names, context)) {
-                Ok(t) if t == k5 => ok5 += 1,
+            match calc::compile(&text, context, &names) {
+                Ok(c) if c.tokens == k5 && c.compiled == k6 => ok5 += 1,
                 // Our SCSU encoder picks other windows than FileMaker for
                 // non-Latin scripts: same text, other bytes.
-                Ok(t)
+                Ok(c)
                     if !text.is_ascii()
-                        && fmp12::calc::decompile(&t, context, &names).as_ref() == Ok(&text) =>
+                        && calc::decompile(&c.tokens, context, &names).as_ref() == Ok(&text) =>
                 {
                     ok5 += 1
                 }
                 r => {
                     if fails.len() < 30 {
                         fails.push(format!(
-                            "k5 {p:?} {text:?}: {r:02x?}
-   want {k5:02x?}"
+                            "k5 {p:?} {text:?}: {r:02x?}\n   want {k5:02x?}\n   k6 {k6:02x?}"
                         ));
                     }
                 }
@@ -147,4 +104,32 @@ fn template_calculations_compile() {
     }
     assert_eq!(ok6, pairs);
     assert_eq!(ok5, n5);
+}
+
+/// Pairs from the templates, and the script compiler's old checks.
+#[test]
+fn compiled_from_key5() {
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    for (k5, k6) in [
+        ("9b0c13017a00040c13017a009c3e0c13017a0005", "9b3e"),
+        (
+            "87040c13017a0016040403d0000402010b000105",
+            "87000117040403d0000402010b0001",
+        ),
+        (
+            "1a027e220c13017a00500c13017a0013012300",
+            "501a027e2213012300",
+        ),
+        (
+            "fa00441002000100100000000000000000000000000020",
+            "44fa00100200010010000000000000000000000000",
+        ),
+    ] {
+        assert_eq!(calc::compiled(&hex(k5)).unwrap(), hex(k6), "{k5}");
+    }
 }

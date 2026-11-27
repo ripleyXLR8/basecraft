@@ -5,7 +5,7 @@
 //! A calculation node holds key 4 (context table occurrence), key 5 (token
 //! stream that keeps the source formatting) and key 6 (compiled form).
 
-pub use crate::calc_compile::{CompileError, Compiled, Resolve, compile};
+pub use crate::calc_compile::{CompileError, Compiled, Resolve, compile, compiled, function_names};
 use crate::calc_tables::{EXTERNAL, FUNCTIONS, FUNCTIONS2, GET_FLAGS, OPS};
 use crate::graph::to_ref;
 use crate::{path_int, text};
@@ -38,7 +38,7 @@ impl std::error::Error for CalcError {}
 
 /// Length of a text run at `b[i]`: one byte, or two with the top bit set
 /// (from 128 UTF-16 units). Returns (length, bytes used).
-fn run_len(b: &[u8], i: usize) -> Option<(usize, usize)> {
+pub(crate) fn run_len(b: &[u8], i: usize) -> Option<(usize, usize)> {
     let x = *b.get(i)? as usize;
     if x < 0x80 {
         Some((x, 1))

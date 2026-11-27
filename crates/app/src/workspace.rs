@@ -1221,7 +1221,7 @@ impl Workspace {
                 // Functions and Get flags.
                 let ui = &mut cols[1];
                 ui.add(egui::TextEdit::singleline(&mut d.search).hint_text(tr("Search functions")));
-                let (funcs, flags) = fmp12::script_calc::function_names();
+                let (funcs, flags) = fmp12::calc::function_names();
                 let q = d.search.to_lowercase();
                 egui::ScrollArea::vertical()
                     .id_salt("calc_funcs")

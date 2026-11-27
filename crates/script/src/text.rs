@@ -30,15 +30,18 @@ impl fmp12::calc::Names for Names<'_> {
     }
 }
 
-impl fmp12::script_calc::Resolve for Names<'_> {
-    fn field(&self, to: Option<&str>, name: &str) -> Option<(u32, u32)> {
-        let o = self
-            .db
+impl fmp12::calc::Resolve for Names<'_> {
+    fn occurrences(&self) -> Vec<(u32, String)> {
+        self.db
             .occurrences
             .iter()
-            .find(|o| to.is_some_and(|t| o.name.eq_ignore_ascii_case(t)))?;
-        let f = self.db.table_of(o.id)?.field_by_name(name)?;
-        Some((o.id, f.id))
+            .map(|o| (o.id, o.name.clone()))
+            .collect()
+    }
+    fn fields(&self, to: u32) -> Vec<(u32, String)> {
+        self.db.table_of(to).map_or_else(Vec::new, |t| {
+            t.fields.iter().map(|f| (f.id, f.name.clone())).collect()
+        })
     }
 }
 
@@ -74,8 +77,8 @@ impl Names<'_> {
     }
 
     /// Compiles `src` (script context: field references name their TO).
-    pub fn compile(&self, src: &str) -> Result<Calc, fmp12::script_calc::CompileError> {
-        fmp12::script_calc::compile(src, 0, self).map(|c| Calc(c.tokens))
+    pub fn compile(&self, src: &str) -> Result<Calc, fmp12::calc::CompileError> {
+        fmp12::calc::compile(src, 0, self).map(|c| Calc(c.tokens))
     }
 }
 

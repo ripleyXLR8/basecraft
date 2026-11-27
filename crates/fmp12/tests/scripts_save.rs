@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use fmp12::script_calc::{Resolve, compile};
 use fmp12::scripts::{
     Calc, DialogButton, FieldRef, LayoutDest, Script, SortOrder, Step, StepParams, id, scripts,
 };
@@ -165,20 +164,6 @@ fn unchanged_save_is_a_plain_rewrite() {
     );
 }
 
-struct Names(
-    Vec<fmp12::schema::Table>,
-    Vec<fmp12::graph::TableOccurrence>,
-);
-
-impl Resolve for Names {
-    fn field(&self, to: Option<&str>, name: &str) -> Option<(u32, u32)> {
-        let o = self.1.iter().find(|t| Some(t.name.as_str()) == to)?;
-        let t = self.0.iter().find(|t| t.id == o.base_table)?;
-        let (f, _) = t.fields.iter().find(|(_, f)| f.name == name)?;
-        Some((o.id, *f))
-    }
-}
-
 #[test]
 fn edited_and_new_scripts_read_back() {
     let Some(path) = template_files()
@@ -188,11 +173,8 @@ fn edited_and_new_scripts_read_back() {
         return;
     };
     let file = fmp12::File::open(&path).unwrap();
-    let names = Names(
-        fmp12::schema::tables(&file).unwrap(),
-        fmp12::graph::table_occurrences(&file).unwrap(),
-    );
-    let calc = |s: &str| Calc(compile(s, 0, &names).unwrap().tokens);
+    let names = fmp12::calc::FileNames::load(&file).unwrap();
+    let calc = |s: &str| Calc(fmp12::calc::compile(s, 0, &names).unwrap().tokens);
     let mut list = scripts(&file).unwrap();
     // Edit "Sort by Name": a comment, an If block around a Set Variable,
     // a disabled Beep; descending sort.
@@ -273,28 +255,9 @@ fn edited_and_new_scripts_read_back() {
         panic!()
     };
     assert_eq!(name, "$count");
-    let fnames = Names(names.0.clone(), names.1.clone());
-    struct N<'a>(&'a Names);
-    impl fmp12::calc::Names for N<'_> {
-        fn field(&self, to: u32, f: u32) -> Option<String> {
-            let bt = self.0.1.iter().find(|t| t.id == to)?.base_table;
-            Some(
-                self.0
-                    .0
-                    .iter()
-                    .find(|t| t.id == bt)?
-                    .fields
-                    .get(&f)?
-                    .name
-                    .clone(),
-            )
-        }
-        fn occurrence(&self, to: u32) -> Option<String> {
-            Some(self.0.1.iter().find(|t| t.id == to)?.name.clone())
-        }
-    }
+
     assert_eq!(
-        value.as_ref().unwrap().text(&N(&fnames)).unwrap(),
+        value.as_ref().unwrap().text(&names).unwrap(),
         "Get ( FoundCount ) & \" tasks\""
     );
     assert!(ed.steps.iter().any(|s| matches!(&s.params,
@@ -306,10 +269,7 @@ fn edited_and_new_scripts_read_back() {
     };
     assert_eq!(buttons.len(), 3);
     assert!(buttons[0].commit && !buttons[1].commit);
-    assert_eq!(
-        title.as_ref().unwrap().text(&N(&fnames)).unwrap(),
-        "\"Hello\""
-    );
+    assert_eq!(title.as_ref().unwrap().text(&names).unwrap(), "\"Hello\"");
     assert_eq!(
         new.steps[1].params,
         StepParams::GoToLayout {

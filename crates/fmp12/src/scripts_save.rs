@@ -10,11 +10,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::calc::compiled;
 use crate::save::{
     encode_text, entry_kv, fresh_uuid, ipath, kv_entry, len_int, marker, path_elem, read_len_int,
     spelled,
 };
-use crate::script_calc::compiled;
 use crate::scripts::{
     Calc, FieldRef, LayoutDest, RawParams, RecordDest, STEP_LEN, Script, SortOrder, Step,
     StepParams, Target, id, opt, step_number,

@@ -139,7 +139,14 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Button actions (`Engine::run_step`) | ✅ |
 | Template scripts run in tests: Contacts and Tasks "Sort by Name", "Sort by Status", "Create Assignee Entry", "Cancel Add Assignee", "Go to Entry Field" | ✅ |
 | Windows (New/Close/Select Window), Go to Related Record, Go to Portal Row, Select All, finds on related fields | ⏳ |
-| Script triggers, script debugger, Script Workspace UI | ⏳ |
+| Resumable runs (`Engine::start`, `Run::resume` → `Suspended(Dialog \| Pause)` / `Finished`): Show Custom Dialog, delete confirmations, Pause/Resume Script, modes entered with Pause wait for the user; no threads (wasm32) | ✅ |
+| `perform` / `run_step` run to the end (dialogs through `Host::dialog`, button 1 by default): CLI and MCP unchanged | ✅ |
+| `Get ( LastErrorLocation / LastErrorDetail / ScriptAnimationState / Trigger… )` (trigger values set by the host) | ✅ |
+| Step text as in the Script Workspace (`script::text`), block indentation | ✅ |
+| Script triggers: layouts decoded (`fmp12::triggers`, 8/8 OnLayoutEnter of the oracle files match the XML); object and file triggers, event ids other than 101 guessed | 🚧 |
+| Calculation compiler (`fmp12::calc_compile`): source tokens (key 5) and prefix form (key 6); all 5,200 template calculations: key 6 derived from key 5 identical, key 5 round-trips through decompile | ✅ |
+| Writing scripts (`fmp12::scripts_save::save_scripts`): step lists, parameter trees, new/renamed/deleted scripts; 224 template and oracle scripts (1,138 steps) re-encode byte for byte, 886 typed steps encode back from their typed parameters | ✅ tested by re-reading; 🔍 to verify in FileMaker |
+| Script debugger, Pause/Resume duration storage, script folders created in the workspace, script order changes by dragging | ⏳ |
 | Builds for `wasm32-unknown-unknown` | ✅ |
 ## M6 — Layout mode (`crates/app/src/design.rs`, `fmp12::save::save_layouts`)
 
@@ -250,8 +257,12 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 |---------|-------|
 | Scripts menu runs the file's scripts | ✅ |
 | Buttons run their action (single step or Perform Script) | ✅ |
-| Custom dialogs (shown after the script; default button used) | 🚧 |
-| Script triggers, Script Workspace editor, debugger | ⏳ |
+| Custom dialogs: modal with title, message, input fields and buttons (button 1 on the right, Enter); the script waits | ✅ |
+| Pause/Resume Script: "Script paused" with Continue / Cancel in the status area; timed pauses continue by themselves | ✅ |
+| Script triggers run: OnLayoutEnter/Exit, OnRecordLoad, OnModeEnter, OnRecordCommit (user actions and layout changes by scripts), OnObjectEnter/Modify/Exit on fields, OnFirstWindowOpen; queued, one at a time, no trigger loops | ✅ (Contacts sorts by name when opened) |
+| Script Workspace (Scripts › Script Workspace…, Ctrl+Shift+S): script list with folders, step text with indentation and greyed disabled steps, palette by category with search, add / delete / duplicate / disable / move (drag or buttons), new / rename / delete script, Run | ✅ |
+| Workspace step editors: Set Field, Set Variable, If / Else If / Exit Loop If, Go to Layout, Go to Record, Perform Script, Show Custom Dialog, Sort, Perform Find, Enter Find Mode, Comment, Commit, Insert Text, Go to Field/Object, Pause/Resume, Refresh Window; calculation editor with fields, functions and Get flags | ✅ |
+| Script debugger, Data Viewer | ⏳ |
 
 Layout writing check (2026-11-27): a file whose "Contact List" layout BaseCraft
 edited (object moved, text changed, object deleted, body taller, new text,

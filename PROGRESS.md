@@ -205,14 +205,15 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Find requests: words, `=`, `==`, `*`, `@`, `#`, `<` `>` `<=` `>=`, ranges, phrases, omit | ✅ |
 | Sort ascending/descending by several fields | ✅ |
 | Related records through the relationship graph (multi-hop, every join operator, relationship sort order); related fields and aggregates in calculations | ✅ |
-| Lookups applied when a match field changes, on new records and on import (`Database::set_values`, `apply_lookups`), next lower/higher value; not yet from Set Field in the script engine or from the GUI | ✅ |
+| Lookups applied when a match field changes (`Database::set_values`, the one path for every caller): new records, import, fields left in the app (form and table views), Set Field, Set Field By Name, Insert Text / Calculated Result / Current Date, Time, User Name, Paste, Replace Field Contents; Relookup Field Contents (`Database::relookup`) over the found set; next lower/higher value | ✅ (parameter storage of the steps other than Set Field and Insert Text inferred, not seen in a file) |
 | Cascade delete of related records (`Database::delete_record`); serial increments | ✅ |
 | Value lists from fields: second field sort, related values only (`value_list_values_from`) | ✅ |
-| Running and restarting summaries, weighted average, subtotaled fraction in the engine | ⏳ (options read and written, computed as plain summaries) |
+| Running total and count (restarting for each sorted group), weighted average, fraction of total subtotaled by a field, standard deviation by population (`summary_at` for a record, `summarize_sorted` for a group): in records, `GetSummary`, Preview/print sub-summaries and grand summaries, exports, the CLI's `records` | ✅ checked in FileMaker's Table view (`tools/oracle/summary_demo.sh`): every value unsorted and sorted, `GetSummary` by the break field; List is operation 9, by population is option 0x01 |
 | Design functions (TableNames, ValueListItems…), ExecuteSQL, GetNthRecord answered from the database | ✅ |
 | Auto-enter on new records (creation/modification stamps, serials, auto-enter calculations), written in the file's date/time formats; verified in FileMaker | ✅ |
 | Summary fields (Total, Average, Count, Min, Max, StDev, Fraction of Total, List) over a found set or break groups (`engine::summary`) | ✅ |
-| Validation enforcement | ⏳ |
+| Validation enforced on commit, in the app (dialog, "Accept anyway" when allowed) and in scripts (record stays open, `Get ( LastError )`: 502 number, 504 unique, 505 existing, 506 value list, 509 not empty, 511 maximum characters; Commit Records' "skip data entry validation" keeps "always" fields): not empty, unique, existing, strict number, member of value list, maximum characters; custom messages (a calculation) replace FileMaker's text | ✅ (error codes from FileMaker's documentation, not checked in FileMaker) |
+| Validation by range and by calculation | ⏳ |
 | Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
 | Stored calculations re-evaluated for new and edited records on save | ✅ |
 | Schema changes in memory (`Database::add_table`, `add_field`, `set_field`, `add_occurrence`, `add_relationship`, `add_value_list`, `rename_*`, `set_*`, `delete_*`) with unsaved records kept; `save` writes records and moves the next serial value | ✅ |
@@ -229,7 +230,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Import Records (`engine::import`): CSV, tab, Merge, `.xlsx`; mapping by name or order; add, update matching (match fields, add remaining), replace found set | ✅ |
 | Import: auto-enter on or off, validation reported, records failing always validation skipped | ✅ |
 | Import from XML, other files, folders; character sets other than UTF-8 | ⏳ |
-| Summary field definitions (field key 9) and sub-summary break fields (part field 6) decoded | ✅ (Total, Count seen in templates; other operation numbers inferred) |
+| Summary field definitions (field key 9) and sub-summary break fields (part field 6) decoded | ✅ (operation numbers and options checked in FileMaker's Table view) |
 | Preview pagination (`crates/print`): header/footer per page, title header/footer on page 1, body per record, leading/trailing sub-summaries by sorted break field, grand summaries, letter/A4, landscape, margins | ✅ |
 | PDF output: hand-written PDF 1.4, Helvetica (WinAnsi), theme backgrounds, borders, text colours, sizes, bold, alignment, padding; fields, text with merge fields and `{{PageNumber}}`, button labels, portals | ✅ |
 | Part options (page break before/after, allow break across pages), sliding, layout number/date formats, images, Unicode fonts (non-Latin scripts) | ⏳ |

@@ -16,7 +16,7 @@ use fmp12::schema::{DataType, FieldKind};
 use fmp12::schema_edit::{EditError, Editor, FieldSpec, RelationshipSpec};
 
 pub use find::{Request, find};
-pub use summary::{groups, summarize};
+pub use summary::{groups, summarize, summarize_sorted, summary_at};
 
 #[derive(Debug, Clone)]
 pub struct Field {
@@ -450,9 +450,10 @@ impl Database {
         };
         if f.kind == FieldKind::Summary {
             // ponytail: the engine has no found set, so a summary field
-            // summarizes the whole table (Show All Records); O(n) per call.
+            // summarizes the whole table (Show All Records, unsorted);
+            // O(n) per call, O(n²) for a running summary over every record.
             let all: Vec<usize> = (0..t.records.len()).collect();
-            return summarize(self, table, field, &all, &all);
+            return summary_at(self, table, field, record, &all, &[]);
         }
         if let Some(src) = &f.calc {
             let mut ctx = RecordContext {
@@ -627,6 +628,20 @@ impl Database {
         let changed: Vec<u32> = values.iter().map(|(f, _)| *f).collect();
         self.apply_lookups(table, record, Some(&changed));
         self.touch(table, record);
+    }
+
+    /// Relookup Field Contents: the lookups matching on `field` copy their
+    /// value again in each of `records`; records that change get their
+    /// modification stamps.
+    pub fn relookup(&mut self, table: u32, records: &[usize], field: u32) {
+        for &r in records {
+            let before = self.table(table).and_then(|t| t.records.get(r)).cloned();
+            self.apply_lookups(table, r, Some(&[field]));
+            let after = self.table(table).and_then(|t| t.records.get(r));
+            if before.map(|b| b.values) != after.map(|a| a.values.clone()) {
+                self.touch(table, r);
+            }
+        }
     }
 
     /// Copies the looked-up values of a record: every lookup (`changed` =
@@ -918,9 +933,43 @@ impl Database {
                     rule: Rule::Numeric,
                     can_override: v.allow_override,
                 });
+            } else if let Some(vl) = f.def.validation_value_list()
+                && !self
+                    .value_list_values(vl)
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(text))
+            {
+                out.push(Invalid {
+                    field: f.id,
+                    rule: Rule::ValueList,
+                    can_override: v.allow_override,
+                });
+            } else if f
+                .def
+                .max_size()
+                .is_some_and(|n| text.chars().count() > n as usize)
+            {
+                out.push(Invalid {
+                    field: f.id,
+                    rule: Rule::MaxChars,
+                    can_override: v.allow_override,
+                });
             }
         }
         out
+    }
+
+    /// The custom message of a field's validation ("Display custom message
+    /// if validation fails"), evaluated for `record`; `None` without one.
+    pub fn validation_message(&self, table: u32, record: usize, field: u32) -> Option<String> {
+        let f = self.table(table)?.field(field)?;
+        if !f.def.validation().custom_message || f.def.message.is_empty() {
+            return None;
+        }
+        Some(
+            self.eval_source(&f.def.message, table, f.context, Some(record))
+                .to_text(),
+        )
     }
 
     fn to_named(&self, name: &str) -> Option<&fmp12::graph::TableOccurrence> {
@@ -1287,11 +1336,13 @@ impl calc::Context for RecordContext<'_, '_> {
                 .ok_or_else(|| calc::EvalError::new(102, format!("field {n} missing")))
         };
         let (sf, bf) = (field(summary.1)?, field(break_field.1)?);
-        let found: Vec<usize> = (0..t.records.len()).collect();
+        let mut found: Vec<usize> = (0..t.records.len()).collect();
         if sf == bf {
             return Ok(summary::summarize(self.db, t.id, sf, &found, &found));
         }
-        // Records sharing this record's break value, in table order.
+        // The found set sorted by the break field, and the records sharing
+        // this record's break value.
+        sort(self.db, t.id, &mut found, &[(bf, Order::Ascending)]);
         let mine = self.db.value(t.id, self.record, bf);
         let group: Vec<usize> = found
             .iter()
@@ -1300,7 +1351,14 @@ impl calc::Context for RecordContext<'_, '_> {
                 calc::eval::compare(&self.db.value(t.id, r, bf), &mine) == std::cmp::Ordering::Equal
             })
             .collect();
-        Ok(summary::summarize(self.db, t.id, sf, &group, &found))
+        Ok(summary::summarize_sorted(
+            self.db,
+            t.id,
+            sf,
+            &group,
+            &found,
+            &[bf],
+        ))
     }
 
     fn record_ids(&mut self, _table: Option<&str>) -> Result<Vec<u64>, calc::EvalError> {
@@ -1346,6 +1404,24 @@ pub enum Rule {
     Unique,
     Existing,
     Numeric,
+    /// Not a value of the field's "member of value list".
+    ValueList,
+    /// More characters than the field's maximum.
+    MaxChars,
+}
+
+impl Rule {
+    /// FileMaker's error code (`Get ( LastError )` after a commit fails).
+    pub fn code(self) -> u32 {
+        match self {
+            Rule::Numeric => 502,
+            Rule::Unique => 504,
+            Rule::Existing => 505,
+            Rule::ValueList => 506,
+            Rule::NotEmpty => 509,
+            Rule::MaxChars => 511,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

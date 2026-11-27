@@ -101,10 +101,17 @@ impl Doc {
             .ok_or_else(|| format!("no record with id {id}"))
     }
 
-    fn record_json(&self, t: &engine::Table, i: usize) -> Json {
+    /// Record `i` of `t`; summary fields over the found set `found`
+    /// sorted by fields `sort` (running totals up to the record…).
+    fn record_json(&self, t: &engine::Table, i: usize, found: Option<(&[usize], &[u32])>) -> Json {
         let mut fields = serde_json::Map::new();
         for f in &t.fields {
-            let v = self.db.value(t.id, i, f.id);
+            let v = match found {
+                Some((found, sort)) if f.kind == fmp12::schema::FieldKind::Summary => {
+                    engine::summary_at(&self.db, t.id, f.id, i, found, sort)
+                }
+                _ => self.db.value(t.id, i, f.id),
+            };
             fields.insert(f.name.clone(), value_json(&v));
         }
         json!({ "id": t.records[i].id, "fields": fields })
@@ -191,13 +198,13 @@ struct Query {
 
 fn records(d: &Doc, table: &str, q: &Query) -> Res<Json> {
     let t = d.table(table)?;
-    let mut found = found_set(d, t, q)?;
-    let total = found.len();
-    found.truncate(q.limit.unwrap_or(usize::MAX));
+    let found = found_set(d, t, q)?;
+    let sort: Vec<u32> = sort_keys(d, t, q)?.iter().map(|(f, _)| *f).collect();
+    let shown = &found[..found.len().min(q.limit.unwrap_or(usize::MAX))];
     Ok(json!({
         "table": t.name,
-        "found": total,
-        "records": found.iter().map(|&i| d.record_json(t, i)).collect::<Vec<_>>(),
+        "found": found.len(),
+        "records": shown.iter().map(|&i| d.record_json(t, i, Some((&found, &sort)))).collect::<Vec<_>>(),
     }))
 }
 
@@ -273,7 +280,9 @@ fn new_record(d: &mut Doc, table: &str, values: &[(String, String)]) -> Res<Json
     set_fields(d, tid, idx, values)?;
     let errs = d.db.validate(tid, idx);
     let t = d.db.table(tid).ok_or("no table")?;
-    Ok(json!({ "record": d.record_json(t, idx), "validation_errors": invalid_json(t, &errs) }))
+    Ok(
+        json!({ "record": d.record_json(t, idx, None), "validation_errors": invalid_json(t, &errs) }),
+    )
 }
 
 fn invalid_json(t: &engine::Table, errs: &[engine::Invalid]) -> Json {
@@ -293,7 +302,9 @@ fn set(d: &mut Doc, table: &str, id: u32, values: &[(String, String)]) -> Res<Js
     set_fields(d, tid, idx, values)?;
     let errs = d.db.validate(tid, idx);
     let t = d.db.table(tid).ok_or("no table")?;
-    Ok(json!({ "record": d.record_json(t, idx), "validation_errors": invalid_json(t, &errs) }))
+    Ok(
+        json!({ "record": d.record_json(t, idx, None), "validation_errors": invalid_json(t, &errs) }),
+    )
 }
 
 fn delete(d: &mut Doc, table: &str, id: u32) -> Res<Json> {

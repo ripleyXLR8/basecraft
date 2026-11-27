@@ -216,6 +216,67 @@ fn pdf_smoke() {
 }
 
 #[test]
+fn running_totals_in_bodies_and_sub_summaries() {
+    // Total becomes a running total restarting for each City group.
+    let mut db = db(&PEOPLE);
+    let mut raw = vec![1, 0x15, 2, 1, 0, 0, 0, 0, 2, 1, AMOUNT as u8, 0, 0, 0, 0, 1];
+    raw.extend([
+        4,
+        3,
+        0xD0,
+        0,
+        (T - 128) as u8,
+        0x7F,
+        2,
+        1,
+        CITY as u8,
+        0,
+        0,
+        0,
+        0,
+        1,
+    ]);
+    db.tables[0].fields[3].def.summary_raw = raw;
+    let found = sorted(&db);
+    let sort = [(CITY, Order::Ascending)];
+    let layout = &db.layouts[0];
+    let pages = paginate(&db, layout, &found, &sort, &Paper::letter());
+    let shown = |kind: u64| -> Vec<String> {
+        pages[0]
+            .bands
+            .iter()
+            .filter(|b| layout.parts[b.part].kind == kind)
+            .map(|b| {
+                let f = (0x104000 | T as u64, TOTAL as u64, 1);
+                field_text(&db, layout, &found, &sort, b, f)
+            })
+            .collect()
+    };
+    // Oslo: Di 40; Paris: Bob 20; Rome: Ada 10, Cy 30, Ed (empty).
+    assert_eq!(shown(part::BODY), ["40", "20", "10", "40", "40"]);
+    assert_eq!(shown(part::LEADING_SUB_SUMMARY), ["40", "20", "40"]);
+    // Unsorted, it does not restart.
+    let all = [3, 1, 0, 2, 4];
+    let pages = paginate(&db, layout, &all, &[], &Paper::letter());
+    let body: Vec<String> = pages[0]
+        .bands
+        .iter()
+        .filter(|b| layout.parts[b.part].kind == part::BODY)
+        .map(|b| {
+            field_text(
+                &db,
+                layout,
+                &all,
+                &[],
+                b,
+                (0x104000 | T as u64, TOTAL as u64, 1),
+            )
+        })
+        .collect();
+    assert_eq!(body, ["40", "60", "70", "100", "100"]);
+}
+
+#[test]
 fn page_breaks_at_paper_size() {
     let names: Vec<String> = (0..100).map(|i| format!("P{i}")).collect();
     let rows: Vec<(&str, &str, &str)> = names.iter().map(|n| (n.as_str(), "X", "1")).collect();

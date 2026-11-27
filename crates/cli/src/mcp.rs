@@ -147,7 +147,7 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
                    "summary": { "type": "object", "properties": {
                        "operation": { "type": "string", "enum": ["total", "average", "count", "minimum", "maximum", "stdev", "fraction", "list"] },
                        "field": { "type": "string" },
-                       "running": { "type": "boolean", "description": "Running total or count" },
+                       "running": { "type": "boolean", "description": "Running total or count; by population for a standard deviation" },
                        "by": { "type": "string", "description": "Field a running summary restarts on, the weight of an average, or the field a fraction is subtotaled by" } } },
                    "serial": { "type": "string", "description": "Next serial value" },
                    "serial_increment": { "type": "integer" },

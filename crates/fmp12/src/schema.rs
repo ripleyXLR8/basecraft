@@ -263,8 +263,8 @@ impl Field {
     /// path-int field`. Operations 1 (Total) and 3 (Count) and the field
     /// position are seen in the templates (FORMAT.md §5).
     /// ponytail: the other operation numbers follow FileMaker's dialog order
-    /// and are unverified; option bytes (running total, by population,
-    /// restart per group, fraction subtotal field) are not decoded.
+    /// and are unverified. Options: [`Field::summary_running`],
+    /// [`Field::summary_restart`], [`Field::summary_by`].
     pub fn summary(&self) -> Option<Summary> {
         use SummaryOp::*;
         if self.kind() != FieldKind::Summary {
@@ -279,7 +279,8 @@ impl Field {
             5 => Maximum,
             6 => StandardDeviation,
             7 => FractionOfTotal,
-            8 => List,
+            // 8 shows a count in FileMaker; not an option of its dialog.
+            9 => List,
             _ => return None,
         };
         // Bytes 8… are a field reference: length, 01, path integer.
@@ -300,7 +301,7 @@ impl Field {
             Maximum => 5,
             StandardDeviation => 6,
             FractionOfTotal => 7,
-            List => 8,
+            List => 9,
         };
         let mut b = vec![op, 0, 2, 1, 0, 0, 0xFE, 0x7F, 2, 1];
         b.push(s.field.min(127) as u8);
@@ -313,12 +314,29 @@ impl Field {
         self.summary_raw.get(1).is_some_and(|b| b & 0x04 != 0)
     }
 
+    /// "Restart summary for each sorted group" of a running summary.
+    pub fn summary_restart(&self) -> bool {
+        self.summary_raw.get(1).is_some_and(|b| b & 0x10 != 0)
+    }
+
+    /// Standard deviation "by population": operation 6 with option 0x01
+    /// (checked in FileMaker's Table view).
+    pub fn summary_population(&self) -> bool {
+        let b = &self.summary_raw;
+        self.kind() == FieldKind::Summary
+            && b.first() == Some(&6)
+            && b.get(1).is_some_and(|f| f & 0x01 != 0)
+    }
+
     /// The summary's second field: the sort field a running summary
     /// restarts on, the weight of a weighted average, or the field a
     /// fraction of total is subtotaled by.
     pub fn summary_by(&self) -> Option<u32> {
         let b = &self.summary_raw;
         b.get(1).filter(|f| **f & 0x01 != 0)?;
+        if self.summary_population() {
+            return None;
+        }
         slot_field(b, 22)
     }
 

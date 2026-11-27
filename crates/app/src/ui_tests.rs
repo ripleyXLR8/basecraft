@@ -13,7 +13,11 @@ use fmp12::scripts::{Step, StepParams, id};
 fn harness(name: &str) -> Option<Harness<'static, App>> {
     let mut app = tests::template(name)?;
     app.doc.as_mut()?.path = None;
-    let h = Harness::builder()
+    Some(harness_for(app))
+}
+
+fn harness_for(app: App) -> Harness<'static, App> {
+    Harness::builder()
         .with_size([1060.0, 900.0])
         .with_accessibility_check(false)
         // eframe's native fallback for the glyphs egui's fonts lack (arrows).
@@ -25,8 +29,7 @@ fn harness(name: &str) -> Option<Harness<'static, App>> {
         .build_eframe(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::light());
             app
-        });
-    Some(h)
+        })
 }
 
 /// Renders the window to `$BASECRAFT_SHOTS/<name>.png`.
@@ -363,4 +366,146 @@ fn data_viewer<'a>(h: &'a Harness<'_, App>) -> egui_kittest::Node<'a> {
     h.get_all_by_role(egui::accesskit::Role::Window)
         .find(|w| w.accesskit_node().label().as_deref() == Some(tr("Data Viewer")))
         .unwrap()
+}
+
+/// Clients (Id, Name) and Invoices (ClientId, ClientName looked up from
+/// Clients::Name, Size from the value list S/M/L with a custom message),
+/// built with the schema editor; the Invoices layout shows its three
+/// fields side by side. Opened on that layout.
+fn shop_app() -> App {
+    use fmp12::schema::{DataType, Lookup, NoMatch};
+    use fmp12::schema_edit::{FieldSpec, RelationshipSpec};
+    use fmp12::valuelists::Source;
+    let mut file =
+        fmp12::File::from_bytes(fmp12::schema_edit::new_file("Clients").unwrap()).unwrap();
+    let mut db = Database::load(&file).unwrap();
+    let c = db.tables[0].id;
+    let num = |n: &str| FieldSpec::new(n, DataType::Number);
+    let id = db.add_field(&mut file, c, &num("Id")).unwrap();
+    let name = FieldSpec::new("Name", DataType::Text);
+    let name = db.add_field(&mut file, c, &name).unwrap();
+    let i = db.add_table(&mut file, "Invoices").unwrap();
+    let cid = db.add_field(&mut file, i, &num("ClientId")).unwrap();
+    let to = |db: &Database, n: &str| db.occurrences.iter().find(|o| o.name == n).unwrap().id;
+    let (cto, ito) = (to(&db, "Clients"), to(&db, "Invoices"));
+    db.add_relationship(&mut file, &RelationshipSpec::equal(cto, id, ito, cid))
+        .unwrap();
+    let mut l = FieldSpec::new("ClientName", DataType::Text);
+    l.auto_enter.lookup = Some(Lookup {
+        context: ito,
+        from: cto,
+        field: name,
+        no_match: NoMatch::DontCopy,
+        copy_empty: false,
+    });
+    let cname = db.add_field(&mut file, i, &l).unwrap();
+    let sizes = Source::Custom("S\rM\rL".into());
+    let sizes = db.add_value_list(&mut file, "Sizes", &sizes).unwrap();
+    let mut size = FieldSpec::new("Size", DataType::Text);
+    size.validation.value_list = Some(sizes);
+    size.validation.message = Some("\"Pick S, M or L\"".into());
+    let size = db.add_field(&mut file, i, &size).unwrap();
+    for (k, n) in [("1", "Ada"), ("2", "Bob")] {
+        let r = db.new_record(c).unwrap();
+        db.set_values(c, r, &[(id, k.into()), (name, n.into())]);
+    }
+    let r = db.new_record(i).unwrap();
+    db.set_values(i, r, &[(cid, "1".into()), (size, "M".into())]);
+    let file = fmp12::File::from_bytes(db.save(&file).unwrap()).unwrap();
+    let mut layouts = fmp12::layouts::layouts(&file).unwrap();
+    let lay = layouts.iter_mut().find(|l| l.name == "Invoices").unwrap();
+    let top = lay.parts.iter().find(|p| p.kind == 4).unwrap().top + 10.0;
+    for (n, f) in [cid, cname, size].into_iter().enumerate() {
+        let left = 10.0 + 130.0 * n as f64;
+        lay.objects.push(fmp12::layouts::LayoutObject {
+            id: 100 + n as u64,
+            kind: 1,
+            bounds: fmp12::layouts::Bounds {
+                top,
+                left,
+                bottom: top + 22.0,
+                right: left + 120.0,
+            },
+            field: Some((0x104000 | ito as u64, f as u64, 1)),
+            ..Default::default()
+        });
+    }
+    let bytes = fmp12::save::save_layouts(&file, &layouts).unwrap();
+    let mut app = App::default();
+    app.open("Shop".into(), bytes);
+    let d = app.doc.as_ref().unwrap();
+    app.layout = d.layouts.iter().position(|l| l.name == "Invoices").unwrap();
+    app
+}
+
+/// Clicks the `n`-th text input from the left, selects its text and types `text`.
+fn retype(h: &mut Harness<'_, App>, n: usize, text: &str) {
+    click_input(h, n);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text(text.into()));
+    h.run_steps(2);
+}
+
+/// Clicks the `n`-th text input from the left.
+fn click_input(h: &mut Harness<'_, App>, n: usize) {
+    let mut inputs: Vec<egui::Pos2> = h
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .map(|i| i.rect().center())
+        .collect();
+    inputs.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let at = inputs[n];
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run_steps(2);
+}
+
+/// Typing a match field and leaving it runs the lookup; committing an
+/// invalid value shows the field's custom validation message.
+#[test]
+fn field_commit_runs_lookups_and_validation() {
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    let looked_up = |h: &Harness<'_, App>| {
+        let db = &h.state().doc.as_ref().unwrap().db;
+        let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
+        let f = t.field_by_name("ClientName").unwrap().id;
+        db.value(t.id, 0, f).to_text()
+    };
+    assert_eq!(looked_up(&h), "Ada");
+    // ClientId 1 → 2: Bob once the field is left.
+    retype(&mut h, 0, "2");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    assert_eq!(looked_up(&h), "Bob");
+    shot(&mut h, "40_lookup");
+    // Leaving the field again without a change does not look up.
+    let db = &mut h.state_mut().doc.as_mut().unwrap().db;
+    let t = db.tables.iter_mut().find(|t| t.name == "Invoices").unwrap();
+    let f = t.field_by_name("ClientName").unwrap().id;
+    t.records[0].values.insert(f, "kept".into());
+    click_input(&mut h, 0);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    assert_eq!(looked_up(&h), "kept");
+    // Size XL is not in the value list: committing (New Record) fails
+    // with the custom message, and no record is added.
+    retype(&mut h, 2, "XL");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    h.get_by_label(tr("New Record")).click();
+    h.run_steps(3);
+    shot(&mut h, "41_validation");
+    let alert = h.state().alert.clone();
+    assert_eq!(alert, Some(("Pick S, M or L".to_string(), true)));
+    h.get_by_label("Pick S, M or L");
+    let db = &h.state().doc.as_ref().unwrap().db;
+    let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
+    assert_eq!(t.records.len(), 1);
 }

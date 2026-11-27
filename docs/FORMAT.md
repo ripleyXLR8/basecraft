@@ -268,8 +268,8 @@ from fields set in FileMaker's Field Options dialog (increment 3, maximum
 
 | Byte | Meaning |
 |-----:|---------|
-| 0 | operation: 1 Total, 2 Average, 3 Count, 4 Minimum, 5 Maximum, 6 Standard Deviation, 7 Fraction of Total, 8 List (1, 2, 3, 7 seen in files FileMaker wrote; the others from the dialog order) |
-| 1 | options: 0x04 running total or count, 0x10 restart for each sorted group, 0x01 a second field is set |
+| 0 | operation: 1 Total, 2 Average, 3 Count, 4 Minimum, 5 Maximum, 6 Standard Deviation, 7 Fraction of Total, 9 List (all checked in FileMaker's Table view; 8 shows a count and is not in the dialog, 10 and above show nothing) |
+| 1 | options: 0x04 running total or count, 0x10 restart for each sorted group, 0x01 the dialog's other option: weighted average, fraction subtotaled (both with a second field), standard deviation by population (none); 0x04 on a standard deviation gives changing, meaningless values; 0x02, 0x08, 0x20, 0x40, 0x80 change nothing |
 | 2–15 | the summarized field, as a 14-byte reference (below) |
 | 16–29 | the second field: the sort field a running summary restarts on, the field a Fraction of Total is subtotaled by (both on the table's occurrence), the weight of a weighted Average (no occurrence); `02 01 00 00 00 00 02 01 00 00 00 00 00 01` when unset |
 
@@ -281,6 +281,15 @@ bytes, and the repetition (u16). The padding holds leftovers in older
 files (`FE 7F`, `BE BF EF`); FileMaker 26 writes zeros. The XML names
 the options RunningTotal, RunningCount, WeightedAverage,
 FractionalSubtotal and `restartEachGroup`.
+
+What FileMaker shows (Table view of `tools/oracle/summary_demo.sh`): a
+running summary in a record is the value up to that record in the found
+set's order, restarting at each group of the second field only when the
+found set is sorted by it; in a sub-summary (`GetSummary`) it is the value
+at the group's last record. A fraction of total is empty for a record
+with no value, and a subtotaled one is empty unless the found set is
+sorted by its field (then: divided by the group's total). A weighted
+average is Σ(value × weight) / Σ weight.
 
 **Lookups** (option bit 10.2) keep their definition in key 8:
 
@@ -421,6 +430,7 @@ step's UUID and source UUID.
 | Set Variable (141) | `[128]` k1 name (`$x`, `$$g`), `[129].[5]` value, `[130].[5]` repetition |
 | Set Field (76) | inline field, `[128].[5]` value; repetition calculation at position 10 (`[138].[5]`, not observed stored) |
 | Insert Text (61) | `[128]` k1 text; inline field, or `[160]` k1 target variable |
+| Insert Calculated Result (77), Insert Current Date/Time/User Name (13, 14, 60), Paste (48), Relookup Field Contents (40), Replace Field Contents (91), Set Field By Name (147) | not observed: the script engine reads them like Set Field and Insert Text (inline field, `[160]` k1 variable, calculations at `[128]`, `[129]`…; Set Field By Name: target name, then value) |
 | If (68), Else If (125), Exit Loop If (72) | `[128].[5]` condition; Else If also `[128]` k3 = u32 index of the End If |
 | Loop (71) | node key 129 = flush (1 always) |
 | Perform Script (1) | inline script, `[128].[5]` parameter |

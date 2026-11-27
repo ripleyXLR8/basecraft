@@ -81,3 +81,10 @@ from files we authored ourselves.
   formats) opened with `Start-Fm`. Expressions that produce lone UTF-16 surrogates or
   control characters can garble the field; wrap them in `Code ( ... )`. The results feed
   `crates/calc/tests/oracle.tsv`.
+* `summary_demo.sh <out.fmp12> <basecraft-cli> <template.fmp12>`: a Sales table with every
+  summary option (running, restarting, weighted, subtotaled, by population) and `GetSummary`
+  calculations, in a copy of a template; `cargo run -p fmp12 --example fieldsonlayout --
+  <out.fmp12> Sales <shown.fmp12>` puts its fields on its layout (styled like an edit box of the
+  template, which FileMaker needs to show numbers). Open it, choose the Sales layout, Table
+  view, and read the values through UI Automation (`AutomationId` `Field: Sales::…`, value
+  pattern), unsorted and after the Region column's menu › Sort ascending.

@@ -18,4 +18,6 @@ from files we authored ourselves.
 * `Test-FmOpen <file>` (in `fmui.ps1`): opens a file and reports `OPEN` or the text of the blocking dialog.
 * `mutate.py`, `xmldiff.py`, `attrib_fields.py`: reverse oracle. Flip bits in copies, export XML, attribute the differences.
 * `token_sweep_analyze.py`: reads the XML of files whose calculation token bytes were overwritten (one way calc_tables.rs was built).
-* `idxdec.py`: decodes a root index sector next to the first chunks of its children.
+* Index and leaf experiments are Rust examples of `fmp12`:
+  `cargo run -p fmp12 --example index -- <file>` (separators next to each child's first entry),
+  `swaproot <in> <out>` (rebuild only the root index), `releaf <in> [out]` (re-pack every leaf in place).

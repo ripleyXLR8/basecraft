@@ -12,6 +12,10 @@ fn main() {
                 Chunk::Pop => {
                     path.pop();
                 }
+                Chunk::Marker => {
+                    println!("{}\t{}\tnode\t", s.id, path.join("."));
+                    break;
+                }
                 Chunk::Data(d) => {
                     println!("{}\t{}\tdata\t{}", s.id, path.join("."), h(d));
                     break;

@@ -17,6 +17,9 @@ pub enum Chunk<'a> {
     Push(&'a [u8]),
     /// Leave the current sub-path.
     Pop,
+    /// Op 0x80: the current path exists as a node. It sorts before
+    /// everything under that path.
+    Marker,
 }
 
 /// Decodes a "path integer" (1 to 3 bytes).
@@ -56,6 +59,12 @@ impl<'a> Cursor<'a> {
 
 /// Decodes a whole sector payload into chunks.
 pub fn parse(payload: &[u8]) -> Result<Vec<Chunk<'_>>, Error> {
+    Ok(parse_spans(payload)?.into_iter().map(|(c, _)| c).collect())
+}
+
+/// Like [`parse`], with the bytes each chunk was decoded from (opcode
+/// included, pop flag kept). The pop implied by a flag has an empty span.
+pub fn parse_spans(payload: &[u8]) -> Result<Vec<(Chunk<'_>, &[u8])>, Error> {
     let mut c = Cursor {
         buf: payload,
         pos: 0,
@@ -203,12 +212,13 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Chunk<'_>>, Error> {
                 Chunk::Push(c.take(n)?)
             }
             0x3D | 0x40 => Chunk::Pop,
-            0x80 | 0x88 => continue, // no-op
+            0x80 => Chunk::Marker,
+            0x88 => continue, // no-op
             _ => return Err(Error::UnknownOpcode { op: raw, at }),
         };
-        out.push(chunk);
+        out.push((chunk, &payload[at..c.pos]));
         if pop_after {
-            out.push(Chunk::Pop);
+            out.push((Chunk::Pop, &payload[c.pos..c.pos]));
         }
     }
     Ok(out)

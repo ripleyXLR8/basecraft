@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Chunk::Data(d) => println!("[{p}] data {}", show(d)),
                 Chunk::Kv { key, data } => println!("[{p}] {key} = {}", show(data)),
                 Chunk::KvLong { key, data } => println!("[{p}] <{}> = {}", show(key), show(data)),
+                Chunk::Marker => println!("[{p}] node"),
                 Chunk::Push(_) | Chunk::Pop => {}
             }
         })?,
@@ -73,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Chunk::KvLong { key, data } => {
                     println!("{p}	kvl	{}	{}	{}", h(key), h(data), f.offset_of(data))
                 }
-                Chunk::Push(_) | Chunk::Pop => {}
+                Chunk::Push(_) | Chunk::Pop | Chunk::Marker => {}
             }
         })?,
         "tables" => {

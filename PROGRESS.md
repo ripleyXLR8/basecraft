@@ -195,7 +195,8 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Writing exact index keys (FileMaker collation tables) | ⏳ |
 | Files saved by BaseCraft, edited and saved again by FileMaker, read back | ✅ verified |
 | Auto-enter values (serials, UUIDs, stamps) on records created by BaseCraft | ⏳ |
-| Repeating fields, container data | ⏳ |
+| Repeating fields and container data (`Database::save`, `containers::save_containers`: new files, shared copies, use counts) | ✅ verified in FileMaker: it reads the repetitions and pictures BaseCraft wrote (GetContainerAttribute MD5), adds its own records, repetitions and files after them, and BaseCraft reads those back |
+| Files marked cleanly closed (page 0 flag 0x800 = `AC`, file sequence number) | ✅ verified: FileMaker opens and closes them unchanged (an unclean file gets checked and rewritten) |
 | Calculation compiler: source text → token stream (key 5) and compiled form (key 6) FileMaker evaluates (`fmp12::calc::compile`) | ✅ 1,890 FileMaker-compiled calculations and all 5,214 template calculations (fields, scripts, layouts, comments included) byte for byte; one compiler for schema and scripts |
 | Scripts (`fmp12::scripts_save`): edited step lists and parameters | ✅ verified in FileMaker: opens without warning, Save a Copy as XML shows the steps as written, the calculations evaluate |
 | New, deleted, renamed scripts | ✅ verified in FileMaker: `[17].[1]` key 8 (MD5 over the catalog members' names in id order, FORMAT.md §8) written by `save_scripts`; non-Latin names in the long form. The accounts/privileges catalogs (`[23]`) carry their own digests and are not written by BaseCraft |

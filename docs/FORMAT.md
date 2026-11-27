@@ -33,6 +33,12 @@ BaseCraft's writer (`write::build`) copies sector 0, sets the flag to `AC`
 and keeps a sequence number at least that of its sectors (it stamps them
 all 1), so FileMaker opens its files as cleanly closed.
 
+Checked in FileMaker Pro 26: a copy FileMaker was killed on had `00` at
+0x800 and sectors stamped up to 2162 over a file number of 2090; merely
+opening and closing it, FileMaker rewrote it (7 → 6 sectors, number 2194,
+flag `AC`): the consistency check. The same file saved by BaseCraft (`AC`)
+opened and closed byte for byte unchanged.
+
 Body sector layout:
 
 | Offset | Length | Meaning |

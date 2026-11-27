@@ -1,6 +1,6 @@
 # Progress
 
-**Estimated progress to 1.0: ~80 %**, weighted by milestone (see the README table).
+**Estimated progress to 1.0: ~83 %**, weighted by milestone (see the README table).
 
 Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 
@@ -14,7 +14,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | 🚧 |
 | M4 | GUI: Browse / Find / List / Table views | 🚧 |
 | M5 | Script engine and Script Workspace | 🚧 |
-| M6 | Layout mode | 🚧 |
+| M6 | Layout mode | 🚧 (most of FileMaker's Layout mode; data formats, web viewers, charts, button bars to come) |
 | M7 | Write `.fmp12` files that FileMaker Pro opens | 🚧 |
 | M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | 🚧 |
 | M9 | Out of scope for now: Server hosting, WebDirect, ODBC, plug-ins, AI steps | — |
@@ -43,7 +43,8 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Layout object nesting (tab controls, panels, portals, button bars): 501/504 match XML | ✅ |
 | Portal definition (table occurrence, rows) | ✅ |
 | Layout objects: button actions (single step or Perform Script with parameter) | ✅ |
-| Layout objects: formatting, object option bits | 🚧 |
+| Layout objects: option bits (anchors, lock, sliding, hide when printing), child lists, portal, tab control and button fields | ✅ |
+| Layout objects: field data formats (node key 13) | ⏳ |
 | Scripts: catalog, folders, step list (type, enabled, options), long step lists | ✅ |
 | Script step parameters: control flow, variables, fields, layouts, records, finds, sorts, dialogs (see M5) | ✅ |
 | Script step parameters: other steps (windows, import/export, files…) | ⏳ |
@@ -158,16 +159,24 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Enter/leave: Edit Layout button, View › Layout Mode, Ctrl+L; "Save changes to layout…?" (Save / Don't Save / Cancel) on exit or layout switch | ✅ |
 | Canvas: rulers, grid, part labels in the left margin (English/French names), objects drawn with their theme look, field names in fields | ✅ |
 | Selection: click, Shift-click, marquee; handles; move with the mouse or the arrow keys (Shift = 10 pt); resize from the handles; Delete | ✅ |
-| Undo/redo within the session (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, Edit menu) | ✅ |
-| Part resizing by dragging a part boundary (parts and objects below follow) | ✅ |
+| Undo/redo within the session (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, Edit menu) for every layout edit | ✅ |
+| Edit menu: Cut, Copy, Paste (also across layouts), Duplicate (Ctrl+D), Delete, Select All | ✅ |
+| Arrange menu: Bring to Front / Forward, Send Backward / to Back; Align (edges, centres); Distribute (horizontally, vertically); Resize To (smallest/largest width, height); Group / Ungroup (group objects, kind 8); Lock / Unlock | ✅ |
+| Objects dropped into a portal or the front tab panel go inside it; dragged out, back to the layout | ✅ |
+| Parts: resize by dragging a boundary or in the Inspector; Insert › Part… (header, footer, title header/footer, leading/trailing grand summary, leading/trailing sub-summary by a field) at its place in FileMaker's part order; select a part label and Delete (its objects go too) | ✅ verified in FileMaker |
 | Layout bar: layout pop-up, New Layout/Report, Layout Setup (name, table occurrence), Exit Layout | ✅ |
-| Tools: selection, text (edited in place, double-click to edit again), field (Specify Field, optional label), rectangle, line, button (Go to Layout or Perform Script; double-click to edit) | ✅ |
-| Inspector: Position (name, left/top/right/bottom/width/height, layout width), Appearance (named style, fill, border, text colour overrides), Data (field, control style, value list) | ✅ |
-| Save to `.fmp12`: object list, per-object nodes (text, name, label, UUIDs), parts, layout name, table occurrence, width, last object id, spatial index and tab order | ✅ tested by re-reading; 🔍 to verify in FileMaker |
+| Layouts menu: New Layout/Report… (name, occurrence), Duplicate Layout, Delete Layout…, Layout Setup…; written to the file at once (`schema_edit::Editor::new_layout`, `duplicate_layout`, `delete_layout`, `rename_layout` with its collation-keyed name index) | ✅ verified in FileMaker |
+| Tools and Insert menu: selection, text (edited in place), line, rectangle, oval, field (Specify Field, optional label), button (Go to Layout or Perform Script with a label; double-click to edit), portal (related occurrence, rows, fields placed in the first row), tab control (one panel per tab name) | ✅ verified in FileMaker |
+| Inspector › Position: name, left/top/right/bottom/width/height in points, autosizing anchors, lock, slide left, slide up, hide when printing (object option bits, decoded in FileMaker) | ✅ |
+| Inspector › Styles: theme, named styles of the object's type, clear local changes | ✅ |
+| Inspector › Appearance: fill, line (style none/solid/dashed/dotted/double, colour, width), corner radius; text font (font catalog), size, bold, italic, underline, strikethrough, colour, alignment (left, centre, right, justify) — written as local `.self` properties FileMaker reads (XML `LocalCSS`) | ✅ verified in FileMaker |
+| Inspector › Data: field, control style (edit box, drop-down list, pop-up menu, checkbox set, radio button set, drop-down calendar), value list; portal occurrence, first row, rows | ✅ |
+| Inspector › Data: number and date display formats (object node key 13) | ⏳ kept as they are, not decoded |
+| Rulers, grid (show, snap to grid), guides dragged from the rulers (snap within 5 pt; dragged back onto the ruler to remove) | ✅ (guides are kept for the session; FileMaker stores its own guides in a place not decoded) |
+| Save to `.fmp12`: object list, container child lists (field 6), per-object nodes (text, name, button/tab labels, UUIDs), parts (added, removed, reordered) and their object lists, layout name, table occurrence, width, last object id, spatial index and tab order | ✅ verified in FileMaker |
 | Protobuf encoder (`pb::Msg::encode`, `pb::MsgBuf`): all 418 template layouts and 5,544 objects re-encode byte for byte | ✅ |
-| New layouts written to the file (needs the layout catalog `[4].[1]` and its collation-keyed name index) | ⏳ session only |
-| Name index `[4].[1].[1]` after a rename (collation keys) | ⏳ left as is |
-| Other tools (oval, portal, tab control, web viewer…), alignment, grouping, arrange (z-order), fonts, part add/delete, tab order editing | ⏳ |
+| Layout object nesting read from the containers' child lists: 633/633 objects match the XML | ✅ |
+| Web viewer, chart, popover, button bar and slide control tools; tab order editing; conditional formatting; script triggers on objects; sliding "only objects directly above" | ⏳ |
 
 ## M7 — Writing `.fmp12`
 
@@ -296,13 +305,25 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Workspace step editors: Set Field, Set Variable, If / Else If / Exit Loop If, Go to Layout, Go to Record, Perform Script, Show Custom Dialog, Sort, Perform Find, Enter Find Mode, Comment, Commit, Insert Text, Go to Field/Object, Pause/Resume, Refresh Window; calculation editor with fields, functions and Get flags | ✅ |
 | Data Viewer (Tools menu): watch expressions evaluated in the window's context (Get functions, $$ globals) | ✅ |
 | Script Workspace and Data Viewer in their own OS windows (egui immediate viewports) on desktop, with title, icon, size remembered between openings, Ctrl+Shift+S / menu bring them to the front, closing the window closes them, Ctrl+S in the workspace saves its scripts; in-page windows in the browser and the UI tests | ✅ |
-| UI driven headless through `egui_kittest` (`crates/app/src/ui_tests.rs`): workspace edit / run / save, dialog and pause, Data Viewer, Preview, open trigger; `BASECRAFT_SHOTS=<dir>` also renders PNGs | ✅ |
+| UI driven headless through `egui_kittest` (`crates/app/src/ui_tests.rs`): workspace edit / run / save, dialog and pause, Data Viewer, Preview, open trigger, Layout mode (canvas clicks and drags, Inspector, Arrange, Insert and Layouts menus); `BASECRAFT_SHOTS=<dir>` also renders PNGs | ✅ |
 | Script debugger | ⏳ |
 
 Layout writing check (2026-11-27): a file whose "Contact List" layout BaseCraft
 edited (object moved, text changed, object deleted, body taller, new text,
 rectangle and button) opens in FileMaker Pro 26 without a warning. FileMaker's
 Layout mode shows every edit.
+
+Layout mode check (2026-11-27, `tools/oracle/layout_check.ps1`,
+`Test-FmLayout`, on the file `BASECRAFT_LAYOUT_DEMO=<out> cargo test -p
+basecraft layout_demo_file` builds from the Contacts template through the
+designer): FileMaker Pro 26 opens it without a warning; the layout pop-up
+shows the new layout and the duplicated, renamed one, not the deleted one;
+Browse and Layout mode show the added parts (leading and trailing grand
+summary, footer), fields with labels, a pop-up menu, a portal on a related
+occurrence with two fields, a tab control with two tabs and a field on the
+first, a button with its label running a script, underlined and bold
+italic red centred text, a rounded locked rectangle, an oval and a line in
+a group; Save a Copy as XML lists them with their kinds and options.
 
 Schema writing check (2026-11-27, `tools/oracle/schema_demo.sh` +
 `Test-FmSchema` in `schema_check.ps1`): a file made by `basecraft-cli new-file`

@@ -24,22 +24,24 @@ pub mod prop {
     pub const BACKGROUND_COLOR: u32 = 7;
     /// Border colour of the top side; right, bottom and left follow (21–23).
     pub const BORDER_COLOR: u32 = 20;
-    /// Border style of the top side (`Enum`: 1 none, 5 solid); then 25–27.
+    /// Border style of the top side (`Enum`: 1 none, 2 hidden, 3 dotted,
+    /// 4 dashed, 5 solid, 6 double); then 25–27.
     pub const BORDER_STYLE: u32 = 24;
     /// Border width of the top side; then 29–31.
     pub const BORDER_WIDTH: u32 = 28;
-    /// Top-left corner radius (`Pair`); then top-right, bottom-right, bottom-left.
+    /// Top-right corner radius (`Pair`); then bottom-right, bottom-left, top-left
+    /// (checked in FileMaker's XML).
     pub const BORDER_RADIUS: u32 = 32;
     /// `Enum`: index into the font catalog, font id = 128 + value ([`super::fonts`]).
     pub const FONT_FAMILY: u32 = 64;
-    /// `Enum`: 2 bold.
+    /// `Enum`: 1 normal, 2 bold.
     pub const FONT_WEIGHT: u32 = 65;
-    /// `Enum`: 1 normal.
+    /// `Enum`: 1 normal, 2 italic.
     pub const FONT_STYLE: u32 = 67;
     pub const FONT_SIZE: u32 = 69;
     pub const COLOR: u32 = 70;
     pub const LINE_HEIGHT: u32 = 72;
-    /// `Enum`: 1 left, 2 center, 3 right.
+    /// `Enum`: 1 left, 2 center, 3 right, 4 justify.
     pub const TEXT_ALIGN: u32 = 74;
     /// `Enum`: 1 none, 3 uppercase.
     pub const TEXT_TRANSFORM: u32 = 75;
@@ -49,6 +51,11 @@ pub mod prop {
     pub const MARGIN: u32 = 105;
     /// `Enum`: 0 top, 1 center, 2 bottom.
     pub const VERTICAL_ALIGN: u32 = 611;
+    /// `-fm-strikethrough`, `Enum`: 0 off, other values on.
+    pub const STRIKETHROUGH: u32 = 504;
+    /// `-fm-underline`, `Enum`: 0 none, 1 underline, 2 word-underline,
+    /// 3 double-underline.
+    pub const UNDERLINE: u32 = 505;
 }
 
 /// CSS name of a property id, as found in FileMaker's theme files.
@@ -68,19 +75,24 @@ pub fn css_name(id: u32) -> Option<&'static str> {
         29 => "border-right-width",
         30 => "border-bottom-width",
         31 => "border-left-width",
-        32 => "border-top-left-radius",
-        33 => "border-top-right-radius",
-        34 => "border-bottom-right-radius",
-        35 => "border-bottom-left-radius",
+        32 => "border-top-right-radius",
+        33 => "border-bottom-right-radius",
+        34 => "border-bottom-left-radius",
+        35 => "border-top-left-radius",
         36 => "border-image-source",
         64 => "font-family",
         65 => "font-weight",
+        66 => "font-stretch",
         67 => "font-style",
+        68 => "font-variant",
         69 => "font-size",
         70 => "color",
+        71 => "direction",
         72 => "line-height",
+        73 => "block-progression",
         74 => "text-align",
         75 => "text-transform",
+        100 => "display",
         101 => "padding-top",
         102 => "padding-right",
         103 => "padding-bottom",
@@ -98,15 +110,30 @@ pub fn css_name(id: u32) -> Option<&'static str> {
         121 => "position",
         122 => "box-shadow",
         123 => "box-sizing",
+        124 => "vertical-align",
+        500 => "-fm-digit-set",
+        504 => "-fm-strikethrough",
+        505 => "-fm-underline",
+        506 => "-fm-glyph-variant",
+        509 => "-fm-character-direction",
+        512 => "-fm-use-default-appearance",
         513 => "-fm-icon",
         514 => "-fm-icon-color",
         515 => "-fm-tab-spacing",
+        516 => "-fm-override-with-classic",
+        602 => "-fm-fill-effect",
         610 => "-fm-portal-alt-background",
         611 => "-fm-text-vertical-align",
+        612 => "-fm-tategaki",
+        614 => "-fm-borders-between-reps",
+        615 => "-fm-borders-baseline",
         616 => "-fm-body-alt-background",
+        617 => "-fm-texty-field",
         619 => "-fm-use-body-current-row-style",
         620 => "-fm-use-portal-current-row-style",
         621 => "-fm-icon-padding",
+        625 => "-fm-grid-width",
+        626 => "-fm-grid-height",
         _ => return None,
     })
 }
@@ -462,13 +489,19 @@ fn length_msg(l: &Length) -> MsgBuf {
 }
 
 /// Property entry `{1: id, value field}`; `None` for values this writer
-/// does not encode (pairs, shadows, raw).
+/// does not encode (shadows, raw).
 fn prop_msg(id: u32, v: &Value) -> Option<MsgBuf> {
     let mut m = MsgBuf(vec![(1, Field::Varint(id as u64))]);
     match v {
         Value::Enum(x) => m.0.push((3, Field::Varint(*x as u64))),
         Value::Color(c) => m.set_msg(5, &color_msg(c)),
         Value::Length(l) => m.set_msg(6, &length_msg(l)),
+        Value::Pair(a, b) => {
+            let mut p = MsgBuf::default();
+            p.set_msg(1, &length_msg(a));
+            p.set_msg(2, &length_msg(b));
+            m.set_msg(13, &p);
+        }
         _ => return None,
     }
     Some(m)

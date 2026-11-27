@@ -1,7 +1,7 @@
 //! Resolves FileMaker theme styles into what egui needs to paint an object.
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Stroke, StrokeKind, Vec2};
-use fmp12::theme::{INNER_BORDER, NORMAL, ObjectStyle, PropsExt, SELF, TEXT, Theme, prop};
+use fmp12::theme::{INNER_BORDER, NORMAL, ObjectStyle, PropsExt, SELF, TEXT, Theme, Value, prop};
 
 /// Paint attributes of one layout object (or part, or layout background).
 #[derive(Debug, Clone)]
@@ -68,13 +68,24 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
             .length(prop::PADDING + i)
             .map_or(2.0, |x| x.pt(font_size, 0.0) as f32);
     }
-    l.radius = p
-        .length(prop::BORDER_RADIUS)
-        .map_or(0.0, |x| x.pt(font_size, 0.0) as f32);
-    // Text colour may live on the `.text` element or on `.self`.
+    // Corner radii are (horizontal, vertical) pairs; the first corner stands
+    // for all four.
+    l.radius = match p.get(&prop::BORDER_RADIUS) {
+        Some(Value::Pair(x, _) | Value::Length(x)) => x.pt(font_size, 0.0) as f32,
+        _ => 0.0,
+    };
+    // Text colour may live on the `.text` element or on `.self`; the
+    // object's own (local) colour wins over the theme's.
     let text = th.resolve(style, TEXT, NORMAL);
-    if let Some(c) = text
-        .color(prop::COLOR)
+    let local = |e| {
+        style
+            .local
+            .get(&(e, NORMAL))
+            .and_then(|p| p.color(prop::COLOR))
+    };
+    if let Some(c) = local(TEXT)
+        .or_else(|| local(SELF))
+        .or_else(|| text.color(prop::COLOR))
         .or_else(|| p.color(prop::COLOR))
         .filter(|c| c.a > 0.0)
     {
@@ -94,6 +105,22 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
 impl Look {
     pub fn font(&self) -> egui::FontId {
         egui::FontId::proportional(self.font_size.max(6.0))
+    }
+
+    /// Paints an object's shape: an ellipse for ovals (kind 7), else
+    /// [`Look::paint_box`].
+    pub fn paint_shape(&self, painter: &egui::Painter, r: Rect, kind: u64) {
+        if kind != 7 {
+            return self.paint_box(painter, r);
+        }
+        let (c, rad) = (r.center(), r.size() / 2.0);
+        if let Some(bg) = self.background {
+            painter.add(egui::Shape::ellipse_filled(c, rad, bg));
+        }
+        let (w, col) = self.borders[0];
+        if w > 0.0 {
+            painter.add(egui::Shape::ellipse_stroke(c, rad, Stroke::new(w, col)));
+        }
     }
 
     /// Paints background and borders.

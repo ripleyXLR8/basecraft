@@ -631,24 +631,36 @@ index keyed by the u16 source and the name key without its tertiary part
 (like the field type index), `[7]` the set of ids (one empty key per
 id).
 
-## 10. Layouts ✅ (partial)
+## 10. Layouts ✅
 
 Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
 
 * `[4].[5].[L]` key 2 = header (2 TO in XML form, 5 style, 7 local CSS, 8 width), key 11 = theme (`01 n`);
-* `[4].[5].[L].[3].[P]` key 2 = part (1 kind, 4 top, 5 height, 6 break field, 10 style);
+* `[4].[5].[L].[3]` key 0 = number of parts (length-prefixed); `[4].[5].[L].[3].[P]`
+  (P = 1…n, top to bottom) key 2 = part (1 kind, 2 = 0, 3 = 0, 4 top,
+  5 height, 6 break field, 10 style, 11 alternate-row style), key 7 =
+  the part's objects (below);
 * key 7 (or long value `[7]`) = object list, **front to back** (the first object is on top): repeated field 2 = object
   (1 kind, 2 id, 3 options, 4 bounds {1 top, 2 left, 3 bottom, 4 right},
-  5 style {1 local rules, 2 style name, 3 theme object type, 4 display name} (§12), 7 text options,
-  8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);
-* `[4].[5].[L].[5].[obj]` key 1 = static text, `.[3]` = button label calculation.
+  5 style {1 local rules, 2 style name, 3 theme object type, 4 display name} (§12),
+  6 children (repeated), 7 text options, 8 field {2 {1 TO, 2 field, 3 repetition}},
+  13 tab control, 14 tab panel, 15 portal, 16 button);
+* `[4].[5].[L].[5].[obj]` key 1 = static text (also a button's or tab
+  panel's label text), `.[3]` = button label calculation, `.[2]` = tab
+  label calculation.
 
-Part kinds (field 1): 1 Header, 3 Leading sub-summary, 4 Body, 7 Footer,
-12 Top navigation are seen in the templates (a new layout has 1, 4, 7).
-2 Leading grand summary, 5 Trailing sub-summary, 6 Trailing grand summary,
-8 Title header, 9 Title footer and 13 Bottom navigation are assumed from
-FileMaker's part order and not verified. The break field of a sub-summary
-(field 6) is `08 len 00 <TO ref 03 D0 hi lo> len <path-int field>`, e.g.
+Part kinds (field 1): 1 Header, 2 Leading grand summary, 3 Leading
+sub-summary, 4 Body, 5 Trailing sub-summary, 6 Trailing grand summary,
+7 Footer, 8 Title header, 9 Title footer, 12 Top navigation, 13 Bottom
+navigation; parts are stored in that order. 1, 3, 4, 7 and 12 are seen in
+the templates; 2, 6 and 7 were written by BaseCraft and shown by
+FileMaker under their names (Layout mode labels, XML `Part type`). The
+part's style type (§12) follows the kind: 31 title header, 32 header,
+33 leading grand summary, 34 body (35 alternate rows), 101 leading
+sub-summary, 201 trailing sub-summary (assumed), 37 trailing grand
+summary, 38 footer, 39 title footer, 40 top navigation, 41 bottom
+navigation. The break field of a sub-summary (field 6) is
+`08 len 00 <TO ref 03 D0 hi lo> len <path-int field>`, e.g.
 `08 07 00 03 D0 00 02 01 08` = field 8 of occurrence 130.
 
 ### Layout objects in detail
@@ -656,32 +668,68 @@ FileMaker's part order and not verified. The break field of a sub-summary
 * Object list field 1 (repeated varint) = ids of the **top-level** objects,
   ascending in the templates; children of portals, tab panels and button
   bars are not listed. Field 2 = the objects, front to back.
+* **Containers list their direct children** in object field 6 (repeated
+  varint, ascending): a portal its fields, a tab control its panels, a
+  panel its objects, a button bar its segments, a group its members.
+  Children's bounds are relative to the container. Decoding nesting from
+  field 6 gives the XML's nesting for all 633 objects of the oracle files
+  (the geometry alone got 97 %).
 * The list is stored inline (key 7 of `[4].[5].[L]`, empty = `00 07`) up
   to 1000 bytes; above that in `[4].[5].[L].[7]`: key 0 = total length
   (u32 BE), keys 1…n = 1000-byte chunks (largest inline list seen: 834
   bytes; smallest split one: 1,812).
-* Object kinds: 1 field, 2 text, 4 line (style type 50), 5 rectangle (51),
-  9 portal, 10 button, 11 tab control, 12 tab panel, 13 web viewer,
-  18 button bar. A field's control style is field 8.5 (0 edit box,
-  1 drop-down, 2 pop-up, 3 checkbox set, 6 calendar) and its style type
-  follows it (61, 62, 63, 64, 66; 67 container).
+* Object kinds (XML `kind`): 1 field, 2 text, 3 graphic, 4 line (style
+  type 50), 5 rectangle (51), 6 opens in FileMaker (rounded rectangle,
+  🔸), 7 oval (53), 8 group (no style), 9 portal (83), 10 button (80),
+  11 tab control (81), 12 tab panel (82), 13 web viewer, 18 button bar.
+  Kinds 3, 7 and 8 were checked by writing them and reading FileMaker's
+  XML type names. A field's control style is field 8.5 (0 edit box,
+  1 drop-down list, 2 pop-up menu, 3 checkbox set, 4 radio button set,
+  6 drop-down calendar) and its style type follows it (61, 62, 63, 64,
+  65, 66; 67 container); radio sets were checked in FileMaker.
+* **Options** (field 3, XML `<Options>` except bit 0x20000, which the XML
+  drops; checked on 5,544 template objects and by setting each option in
+  FileMaker's Layout mode): autosizing anchors in the top bits, `1 << 28`
+  left, `1 << 29` top, `1 << 30` right, `1 << 31` bottom (left + top =
+  FileMaker's default); `0x2` locked; `0x10` slide up (based on all
+  objects above); `0x20` slide left; `0x200` hide when printing. Seen,
+  meaning unknown: `0x1`, `0x8`, `0x3000` (lines), `0x4000` (fields,
+  buttons).
+* Field 8 of a field: `{1 options (0x1200E0 on edit boxes), 2 reference,
+  3: 1, 4: 0, 5 control style, 6 value list, 7: 1, 8: 1}`.
+* Portal (field 15): `{1: 0, 2 TO (XML form), 3 options (273), 5 first
+  row, 6 rows (double), 7: 1}`.
+* Tab control (field 13): `{1: 264, 2: 0, 3 tab height (45), 5 front
+  panel}`. FileMaker does not draw a tab control whose front panel is not
+  one of its own panels. Tab panel (field 14): `{1: 1, 2 tab offset,
+  3 tab width, 4: 0}`; its label is node key 1 and the calculation `.[2]`.
 * `[4].[5].[L].[5]` key 0 = last object id (length-prefixed integer).
-* `[4].[5].[L].[5].[obj]`: key 1 text, key 7 (`00 02` fields, `00 04`
-  buttons), key 13 (field formatting, `00 00` elsewhere), key 16 = object
-  name (empty: `00 10`), keys 216/217 = UUIDs; `.[3]` button label
-  `{4: 01 00, 5: tokens, 6: tokens}` (a text literal is `13 len text 00`,
-  §11); `.[6]` placeholder; `.[17]` button step parameters.
+* `[4].[5].[L].[5].[obj]`: key 1 text, key 7 = position in the tab order
+  (`00 n`, 1-based), key 13 (field formatting, `00 00` elsewhere: number,
+  date and time formats, the XML's `<ExtendedAttributes><Formatting>`; not
+  decoded), key 16 = object name (empty: `00 10`), keys 216/217 = UUIDs;
+  `.[3]` button label or field tooltip `{4: 01 00, 5: tokens, 6: tokens}`
+  (a text literal is `13 len text 00`, §11); `.[6]` placeholder; `.[17]`
+  button step parameters. A button without node key 1 shows no label.
 * `[4].[5].[L].[10]`: a spatial index of the fields, buttons, tab controls
   and button bars: byte-string key = top, left (u16, absolute), id − 1
   (u16); value = `00 len 01 id …` (`len` = length of `01 id`), then
   `00 00 00 00 01` (other tails seen). Portal children are not listed.
-* `[4].[5].[L].[21]`: tab order, key n → the same object reference.
-* Buttons (object field 16): `{1, 2, 3: step {1 id, 2 arg, 3 options,
-  4 14-byte inline block}, 4, 5, 6}`. The inline block is `len 01 id` then
-  one byte `BE` or `6F` that does not depend on the target.
+* `[4].[5].[L].[21]`: tab order, key 128 + n → the n-th object, the same
+  object reference.
+* `[4].[5].[L].[3].[P]` key 7: the top-level objects whose top edge lies
+  in the part (`top ≤ y < top + height`), ascending ids: u32 count, then
+  `len 01 path-int id` each. The rule reproduces all 726 template parts.
+* Buttons (object field 16): `{1 options, 2, 3: step {1 id, 2 arg,
+  3 options, 4 14-byte inline block}, 4 icon type (none = text only,
+  1 SVG), 5 icon size, 6}`. The inline block is `len 01 id` then one byte
+  `BE` or `6F` that does not depend on the target.
+* `[4].[5].[L].[13]` holds a second copy of parts, objects and indexes
+  (meaning not settled; left as is).
 * `[4].[1].[7].[L]` repeats the layout's name (key 16) and a message whose
-  field 2 is its table occurrence; `[4].[1].[1]` indexes layout names by
-  collation key.
+  field 2 is its table occurrence; key 240 = 0 layout, 1 folder,
+  2 separator; `[4].[1].[1]` indexes layout names by collation key (§14),
+  `[4].[1].[3]` is the display order.
 
 ### Charts (`fmp12::charts`) ✅ read
 
@@ -726,21 +774,45 @@ fixture `crates/fmp12/tests/fixtures/charts.fmp12`, 14 charts).
   background; delimited data are return-separated lists of the current
   record.
 
-### Writing (`fmp12::save::save_layouts`) 🔍
+### Writing (`fmp12::save::save_layouts`, `schema_edit`) ✅
 
 FileMaker writes minimal protobuf, so decode → encode gives the same
 bytes for every layout message of the 66 templates (`tests/layouts.rs`).
 The writer keeps the raw messages and patches only the fields that
-changed: an object's bounds (field 4), style (5), field reference and
-control (8), button step (16.3); a part's top, height and style (4, 5,
-10); the header's table occurrence (2) and width (8). New objects are
-built on an existing object of the same kind and style type (from the
-same layout if possible), which keeps the fields we do not understand;
-their node copies keys 7 and 13 of the prototype and gets fresh UUIDs.
-Deleted objects lose their node and their index and tab-order entries;
-moved ones get their index key shifted by the move. A rename rewrites
-both name keys but not the name index (collation keys are not
-implemented). Not yet verified in FileMaker.
+changed: an object's options (3), bounds (4), style (5), children (6),
+field reference and control (8), tab (14), portal (15), button step
+(16.3); a part's kind, top, height, break field and style; the header's
+table occurrence (2) and width (8). New objects are built on an existing
+object of the same kind and style type (from the same layout if
+possible), which keeps the fields we do not understand, or from scratch
+with the template values above; their node copies key 13 of the
+prototype and gets fresh UUIDs; new fields are added to the end of the
+tab order. A new tab control's front panel is its first panel. Deleted
+objects lose their node and their index and tab-order entries (the tab
+order is renumbered); moved ones get their index key shifted by the
+move. The part object lists are recomputed. When parts are added,
+removed or reordered, `[L].[3]` is rewritten (`{1 kind, 2: 0, 3: 0,
+4 top, 5 height, [6 break], 10 {3 type}, 11 {3 type}}` for a new part).
+A rename goes through `schema_edit::Editor::rename_layout` (both name
+keys and the name index). New, duplicated and deleted layouts are
+`Editor::new_layout` (a copy of the file's first plain layout without
+objects, with empty part lists), `duplicate_layout` (every entry of the
+layout and its catalog entry, fresh UUIDs) and `delete_layout`.
+
+Text and shape styles go into the object's local style (§12) on the
+`.self` element, as FileMaker's Inspector does.
+
+Checked in FileMaker Pro 26 (`tools/oracle/layout_check.ps1`, the file
+built by `BASECRAFT_LAYOUT_DEMO=<out> cargo test -p basecraft
+layout_demo_file` from the Contacts template): it opens without a
+warning; the layout pop-up lists the new and the duplicated (renamed)
+layout and not the deleted one; Browse and Layout mode show the new
+parts, the fields with their labels, a pop-up menu, a portal on a related
+occurrence with its two fields (`Addresses [1..3+]`), a tab control with
+two tabs and a field on the first, a button running a script with its
+label, underlined text, a rounded and locked rectangle, an oval and a
+line grouped, and a field in bold italic red centred text; Save a Copy as
+XML lists them with their kinds and options.
 
 ## 11. Calculations ✅
 
@@ -881,7 +953,9 @@ Units: 0 none (zero values), 1 `%`, 6 `pt`, 7 `em`, 9 `line`.
 
 ### Property ids
 
-Confidence: ✅ matched against CSS values across several themes,
+Confidence: ✅ matched against CSS values across several themes, or
+written into a local style and read back from FileMaker's XML
+(`<LocalCSS>` prints the CSS FileMaker understood),
 🔸 consistent with the CSS but few samples.
 
 | Id | CSS property | Values | |
@@ -889,18 +963,23 @@ Confidence: ✅ matched against CSS values across several themes,
 | 1 | background-image | 18 | ✅ |
 | 7 | background-color | colour | ✅ |
 | 20–23 | border-{top,right,bottom,left}-color | colour | ✅ |
-| 24–27 | border-{top,right,bottom,left}-style | 1 none, 5 solid | ✅ |
+| 24–27 | border-{top,right,bottom,left}-style | 1 none, 2 hidden, 3 dotted, 4 dashed, 5 solid, 6 double | ✅ |
 | 28–31 | border-{top,right,bottom,left}-width | length | ✅ |
-| 32–35 | border-{top-left,top-right,bottom-right,bottom-left}-radius | pair | ✅ (corner order 🔸) |
+| 32–35 | border-{top-right,bottom-right,bottom-left,top-left}-radius | pair | ✅ |
 | 36 | border-image-source | 12 | ✅ |
 | 64 | font-family | font id − 128 (`[25]`) | ✅ |
-| 65 | font-weight | 2 bold | ✅ |
-| 67 | font-style | 1 normal | 🔸 |
+| 65 | font-weight | 1 normal, 2 bold, 3 `100`, 4 `200` | ✅ |
+| 66 | font-stretch | 2 wider, 3 narrower | ✅ |
+| 67 | font-style | 1 normal, 2 italic | ✅ |
+| 68 | font-variant | 2 small-caps | ✅ |
 | 69 | font-size | length | ✅ |
 | 70 | color | colour | ✅ |
+| 71 | direction | 2 rtl | ✅ |
 | 72 | line-height | length (`line`) | ✅ |
-| 74 | text-align | 1 left, 2 center, 3 right | ✅ |
+| 73 | block-progression | 2 rl, 3 lr | ✅ |
+| 74 | text-align | 1 left, 2 center, 3 right, 4 justify | ✅ |
 | 75 | text-transform | 1 none, 3 uppercase | 🔸 |
+| 100 | display | 2 block | ✅ |
 | 101–104 | padding-{top,right,bottom,left} | length | ✅ |
 | 105–108 | margin-{top,right,bottom,left} | length | ✅ |
 | 109, 110 | width, height | length | ✅ |
@@ -908,6 +987,14 @@ Confidence: ✅ matched against CSS values across several themes,
 | 121 | position | 3 absolute | 🔸 |
 | 122 | box-shadow | 19 | ✅ |
 | 123 | box-sizing | 1 border-box | 🔸 |
+| 124 | vertical-align | 2 super | ✅ |
+| 504 | -fm-strikethrough | 0 off, other values on | ✅ |
+| 505 | -fm-underline | 0 none, 1 underline, 2 word-underline, 3 double-underline | ✅ |
+| 506 | -fm-glyph-variant | 2 superscript | ✅ |
+| 509 | -fm-character-direction | 2 rtl | ✅ |
+| 512, 516, 612, 614, 615, 617 | -fm-use-default-appearance, -fm-override-with-classic, -fm-tategaki, -fm-borders-between-reps, -fm-borders-baseline, -fm-texty-field | bool | ✅ |
+| 602 | -fm-fill-effect | integer | ✅ |
+| 625, 626 | -fm-grid-width, -fm-grid-height | integer | ✅ |
 | 513 | -fm-icon | 2 down-arrow, 3 calendar, 5 radio, 6 modern-check | 🔸 |
 | 514 | -fm-icon-color | colour | ✅ |
 | 515 | -fm-tab-spacing | integer | 🔸 |

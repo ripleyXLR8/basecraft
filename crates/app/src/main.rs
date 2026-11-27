@@ -280,6 +280,14 @@ impl App {
                     }
                 }
                 d.file = f;
+                // Layouts as written (new parts get their node keys).
+                if let Ok(ls) = fmp12::layouts::layouts(&d.file) {
+                    d.db.layouts = ls;
+                    design::reload_layouts(d);
+                    if let Some(ds) = self.designer.as_mut() {
+                        ds.reloaded(d);
+                    }
+                }
             }
             Err(e) => {
                 self.error = Some(e.to_string());
@@ -883,31 +891,18 @@ impl App {
                 self.layout = i;
                 self.designer = self.doc.as_ref().map(|d| design::Designer::new(d, i));
             }
-            design::Then::NewLayout => {
+            // Layouts menu: written to the file (unsaved edits of the
+            // current layout were saved or dropped by the question before).
+            design::Then::Op(op) => {
                 let Some(d) = self.doc.as_mut() else { return };
-                let Some(base) = d.layouts.get(self.layout).cloned() else {
-                    return;
-                };
-                let id = d.db.layouts.iter().map(|l| l.id).max().unwrap_or(0) + 1;
-                let to = (base.table_occurrence & 0xFFF) as u32;
-                let to_name =
-                    d.db.occurrences
-                        .iter()
-                        .find(|o| o.id == to)
-                        .map_or(tr("Layout").to_string(), |o| o.name.clone());
-                let name = (2..)
-                    .map(|n| format!("{to_name} {n}"))
-                    .find(|n| d.layouts.iter().all(|l| &l.name != n))
-                    .unwrap_or_default();
-                let l = design::blank_layout(&base, id, name);
-                d.layouts.push(l.clone());
-                d.db.layouts.push(l);
-                self.layout = d.layouts.len() - 1;
-                self.designer = Some(design::Designer::new(d, self.layout));
-                self.messages.push((
-                    String::new(),
-                    tr("New layouts are kept for this session only: writing new layouts to the file is not supported yet.").to_string(),
-                ));
+                match design::run_layout_op(d, self.layout, &op) {
+                    Ok(i) => {
+                        self.layout = i;
+                        self.designer = Some(design::Designer::new(d, i));
+                        self.dirty = true;
+                    }
+                    Err(e) => self.error = Some(e),
+                }
             }
         }
     }
@@ -964,6 +959,39 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
+                let any = ds.has_selection();
+                if ui
+                    .add_enabled(any, egui::Button::new(tr("Cut")).shortcut_text("Ctrl+X"))
+                    .clicked()
+                {
+                    ds.copy();
+                    ds.delete_selection();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(any, egui::Button::new(tr("Copy")).shortcut_text("Ctrl+C"))
+                    .clicked()
+                {
+                    ds.copy();
+                    ui.close();
+                }
+                if ui
+                    .add(egui::Button::new(tr("Paste")).shortcut_text("Ctrl+V"))
+                    .clicked()
+                {
+                    ds.paste();
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        any,
+                        egui::Button::new(tr("Duplicate")).shortcut_text("Ctrl+D"),
+                    )
+                    .clicked()
+                {
+                    ds.duplicate();
+                    ui.close();
+                }
                 if ui
                     .add(egui::Button::new(tr("Delete")).shortcut_text("Del"))
                     .clicked()
@@ -1005,11 +1033,20 @@ impl App {
                 }
             });
             ui.menu_button(tr("Insert"), |ui| {
+                if let Some(ds) = self.designer.as_mut() {
+                    ds.insert_menu(ui);
+                    return;
+                }
                 ui.label(tr("Not implemented yet"));
             });
             ui.menu_button(tr("Format"), |ui| {
                 ui.label(tr("Not implemented yet"));
             });
+            // Layout mode adds the Layouts and Arrange menus.
+            if let (Some(ds), Some(d)) = (self.designer.as_mut(), self.doc.as_ref()) {
+                ui.menu_button(tr("Layouts"), |ui| ds.layouts_menu(ui, d));
+                ui.menu_button(tr("Arrange"), |ui| ds.arrange_menu(ui));
+            }
             ui.menu_button(tr("Records"), |ui| self.records_menu(ui));
             ui.menu_button(tr("Scripts"), |ui| {
                 let ws = egui::Button::new(tr("Script Workspace…")).shortcut_text("Ctrl+Shift+S");
@@ -1226,8 +1263,10 @@ impl App {
                             }
                         }
                     });
-                if ui.button(tr("New Layout/Report")).clicked() {
-                    then = Some(design::Then::NewLayout);
+                if ui.button(tr("New Layout/Report")).clicked()
+                    && let (Some(ds), Some(d)) = (self.designer.as_mut(), self.doc.as_ref())
+                {
+                    ds.open_new_layout(d);
                 }
                 if ui.button(tr("Layout Setup…")).clicked()
                     && let Some(ds) = self.designer.as_mut()
@@ -1635,7 +1674,16 @@ impl App {
             return;
         };
         ds.dialogs(ctx, d, &scripts);
-        let Some(then) = ds.ask else { return };
+        if let Some(t) = ds.pending.take() {
+            // Deleting the layout needs no "save changes?" first.
+            if t == design::Then::Op(design::LayoutOp::Delete) {
+                self.finish_layout(t);
+            } else {
+                self.leave_layout(t);
+            }
+            return;
+        }
+        let Some(then) = ds.ask.clone() else { return };
         let mut answer = None;
         egui::Modal::new(egui::Id::NULL.with("save_layout")).show(ctx, |ui| {
             ui.set_max_width(420.0);
@@ -1769,7 +1817,7 @@ fn draw_object(
     dirty: &mut bool,
     events: &mut Vec<(u64, u16)>,
 ) {
-    lk.paint_box(painter, r);
+    lk.paint_shape(painter, r, o.kind);
     if o.kind != 1 {
         if let Some(txt) = &o.text {
             lk.paint_text(painter, r, txt);

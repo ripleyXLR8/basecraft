@@ -236,13 +236,7 @@ impl App {
                 format!("« {name} » {rule}")
             })
             .collect();
-        self.alert = Some((
-            msg.join(
-                "
-",
-            ),
-            errs.iter().all(|e| e.can_override),
-        ));
+        self.alert = Some((msg.join("\n"), errs.iter().all(|e| e.can_override)));
         false
     }
 

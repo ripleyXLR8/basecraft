@@ -112,10 +112,13 @@ pub struct Access {
     pub session: Option<fmp12::security::Session>,
     pub denied: Option<u32>,
     /// The file's accounts and privileges, with the changes script steps
-    /// made (Add Account, Change Password…); [`Database::save`] writes
-    /// them when `changed`.
+    /// made (Add Account, Change Password…).
     pub security: Option<fmp12::security::Security>,
-    pub changed: bool,
+    /// Those changes, each with the account that made it: FileMaker
+    /// commits a step's change as the account running it, so
+    /// [`Database::save`] writes them in order, each authorized by its own
+    /// session.
+    pub pending: Vec<(fmp12::security::Session, fmp12::security::Security)>,
 }
 
 /// Names for decompiling calculations into `calc`-parsable source.
@@ -238,7 +241,7 @@ impl Database {
                 session,
                 denied: None,
                 security: Some(fmp12::security::Security::load(file)?),
-                changed: false,
+                pending: Vec::new(),
             },
         })
     }

@@ -77,6 +77,8 @@ function Test-FmSecurity([string]$file, [string]$Logins, [string]$Xml) {
   $exported = $false
   foreach ($pair in $Logins.Split(',')) {
     $acc, $pw = $pair.Split(':', 2)
+    # A fresh copy each time (FileMaker changes the files it opens).
+    for ($i = 0; $i -lt 30 -and (Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue); $i++) { Stop-Fm; Start-Sleep 1 }
     Copy-Item $file $copy -Force
     $start = Start-FmLogin $copy
     $r = [ordered]@{ Login = $acc; Start = $start; Result = $null; Shot = $null }

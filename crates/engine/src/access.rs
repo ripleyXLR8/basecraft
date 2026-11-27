@@ -5,12 +5,17 @@ use fmp12::security::{self, Level, PrivilegeSet, Security, Session};
 
 use crate::{Database, Value};
 
+/// "Command is invalid" (an empty account name).
+pub const INVALID: u32 = 5;
 /// FileMaker's "insufficient privileges".
 pub const PRIVILEGES: u32 = 9;
 /// FileMaker's "record access is denied".
 pub const RECORD_DENIED: u32 = 200;
-/// "User account and/or password does not exist".
-pub const NO_ACCOUNT: u32 = 213;
+/// No such account (FileMaker 26 gives 212 to Delete Account, Reset
+/// Account Password and Enable Account).
+pub const NO_ACCOUNT: u32 = 212;
+/// An account of that name exists (Add Account).
+pub const NAME_EXISTS: u32 = 12;
 /// "User does not have sufficient privileges to modify administrator account".
 pub const ADMIN_ACCOUNT: u32 = 217;
 /// "Field access is denied".
@@ -40,6 +45,27 @@ impl Database {
         Self::load_with(file, Some(session))
     }
 
+    /// Opens a file with an account that must change its password (or
+    /// whose password expired): logs in with the old password and sets the
+    /// new one, saved with the file.
+    pub fn load_changing_password(
+        file: &fmp12::File,
+        account: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<Self, fmp12::Error> {
+        let mut sec = Security::load(file)?;
+        let session = sec
+            .change_password(account, old, new)
+            .map_err(|e| match e {
+                security::ChangeError::Login(e) => fmp12::Error::Login(e),
+                e => fmp12::Error::Security(e.to_string()),
+            })?;
+        let mut db = Self::load_with(file, Some(session))?;
+        db.record(sec);
+        Ok(db)
+    }
+
     /// The account logged in, `None` for a database built in memory.
     pub fn session(&self) -> Option<&Session> {
         self.access.session.as_ref()
@@ -51,7 +77,7 @@ impl Database {
     pub fn refresh_security(&mut self, file: &fmp12::File) -> Result<(), fmp12::Error> {
         let sec = Security::load(file)?;
         self.set_security(sec);
-        self.access.changed = false;
+        self.access.pending.clear();
         Ok(())
     }
 
@@ -83,9 +109,8 @@ impl Database {
         let name = self.session().ok_or(PRIVILEGES)?.account_name().to_string();
         let mut sec = self.access.security.clone().ok_or(PRIVILEGES)?;
         let s = sec.change_password(&name, old, new).map_err(|e| e.code())?;
-        self.set_security(sec);
+        self.record(sec);
         self.access.session = Some(s);
-        self.access.changed = true;
         Ok(())
     }
 
@@ -133,9 +158,19 @@ impl Database {
         if !ok {
             return Err(ADMIN_ACCOUNT);
         }
-        self.set_security(sec);
-        self.access.changed = true;
+        self.record(sec);
         Ok(())
+    }
+
+    /// Keeps a change made by the logged-in account, for [`Database::save`].
+    fn record(&mut self, sec: Security) {
+        if let Some(s) = self.access.session.clone() {
+            match self.access.pending.last_mut() {
+                Some((by, last)) if *by == s => *last = sec.clone(),
+                _ => self.access.pending.push((s, sec.clone())),
+            }
+        }
+        self.set_security(sec);
     }
 
     /// Add Account: a FileMaker account with privilege set `set` (by name).
@@ -149,8 +184,11 @@ impl Database {
         let mut sec = self.access.security.clone().ok_or(PRIVILEGES)?;
         let set = sec.set_named(set).ok_or(PRIVILEGES)?.id;
         self.may_manage(set)?;
-        if name.trim().is_empty() || sec.account_named(name).is_some() {
-            return Err(PRIVILEGES);
+        if sec.account_named(name).is_some() {
+            return Err(NAME_EXISTS);
+        }
+        if name.trim().is_empty() {
+            return Err(crate::access::INVALID);
         }
         let mut a = security::Account::new(name, password, set);
         a.must_change = must_change;
@@ -191,16 +229,13 @@ impl Database {
 
     /// Writes the accounts changed by script steps into `bytes` (the rest
     /// of [`Database::save`]), as the logged-in account.
-    pub(crate) fn save_security(&self, bytes: Vec<u8>) -> Result<Vec<u8>, fmp12::Error> {
-        let (true, Some(sec), Some(s)) = (
-            self.access.changed,
-            self.access.security.as_ref(),
-            self.access.session.as_ref(),
-        ) else {
-            return Ok(bytes);
-        };
-        let file = fmp12::File::from_bytes(bytes)?;
-        security::save(&file, s, sec).map_err(|e| fmp12::Error::Security(e.to_string()))
+    pub(crate) fn save_security(&self, mut bytes: Vec<u8>) -> Result<Vec<u8>, fmp12::Error> {
+        for (s, sec) in &self.access.pending {
+            let file = fmp12::File::from_bytes(bytes)?;
+            bytes =
+                security::save(&file, s, sec).map_err(|e| fmp12::Error::Security(e.to_string()))?;
+        }
+        Ok(bytes)
     }
 
     fn set(&self) -> Option<&PrivilegeSet> {
@@ -312,8 +347,15 @@ impl Database {
         let f = flag.to_ascii_lowercase();
         Some(match f.as_str() {
             "accountname" => Value::text(s.account_name()),
+            // FileMaker gives the built-in sets' English names, whatever
+            // the file's language ("[Data Entry Only]" in a French file).
             "accountprivilegesetname" | "currentprivilegesetname" | "privilegesetname" => {
-                Value::text(s.privileges().name.clone())
+                Value::text(match s.privileges().id {
+                    1 => "[Full Access]".to_string(),
+                    2 => "[Data Entry Only]".to_string(),
+                    3 => "[Read-Only Access]".to_string(),
+                    _ => s.privileges().name.clone(),
+                })
             }
             "accountextendedprivileges" | "currentextendedprivileges" | "extendedprivileges" => {
                 Value::text(s.extended().join("\r"))
@@ -381,6 +423,29 @@ mod tests {
         assert_eq!(db.session().unwrap().account_name(), "Admin");
     }
 
+    /// An account that must change its password opens the file only with
+    /// a new one, which the saved file keeps (FileMaker's change dialog).
+    #[test]
+    fn must_change_password_at_login() {
+        let f = blank();
+        let s = Security::load(&f).unwrap();
+        let admin = s.login("Admin", "").unwrap();
+        let mut new = s.clone();
+        let mut carol = security::Account::new("carol", "test123", 2);
+        carol.must_change = true;
+        new.add_account(carol);
+        let f = fmp12::File::from_bytes(security::save(&f, &admin, &new).unwrap()).unwrap();
+        assert!(matches!(
+            Database::load_as(&f, "carol", "test123"),
+            Err(fmp12::Error::Login(security::LoginError::MustChange))
+        ));
+        assert!(Database::load_changing_password(&f, "carol", "wrong", "test456").is_err());
+        let db = Database::load_changing_password(&f, "carol", "test123", "test456").unwrap();
+        let out = fmp12::File::from_bytes(db.save(&f).unwrap()).unwrap();
+        assert!(Security::check(&out).unwrap().is_empty());
+        assert!(Database::load_as(&out, "carol", "test456").is_ok());
+    }
+
     #[test]
     fn privileges_are_enforced() {
         let f = protected();
@@ -410,7 +475,7 @@ mod tests {
         assert_eq!(
             ro.eval_source("Get ( AccountPrivilegeSetName )", t, 0, None)
                 .to_text(),
-            "[Accès en lecture seule]"
+            "[Read-Only Access]"
         );
     }
 }

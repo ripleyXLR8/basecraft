@@ -83,6 +83,11 @@ pub fn t(key: &'static str) -> &'static str {
             "Les jeux de privilèges prédéfinis ne peuvent pas être modifiés."
         }
         "Confirm Full Access Login" => "Confirmer la connexion avec accès intégral",
+        "Confirm new password:" => "Confirmer le nouveau mot de passe :",
+        "The new passwords do not match." => "Les nouveaux mots de passe ne correspondent pas.",
+        "The password for this account must be changed." => {
+            "Le mot de passe de ce compte doit être modifié."
+        }
         "Enter a full access account name and password to save these changes." => {
             "Saisissez le nom et le mot de passe d'un compte à accès intégral pour enregistrer ces modifications."
         }
@@ -92,10 +97,11 @@ pub fn t(key: &'static str) -> &'static str {
 }
 
 /// FileMaker's alert for an account name and password that do not open
-/// the file (French text as FileMaker 26 shows it).
+/// the file, also shown for an inactive account (French text as FileMaker
+/// 26 shows it).
 pub fn wrong_password() -> &'static str {
     if i18n::french() {
-        "Le nom de compte et le mot de passe que vous avez saisis ne permettent pas d'ouvrir ce fichier. Saisissez-les de nouveau."
+        "Le nom de compte et le mot de passe fournis ne permettent pas d'accéder à ce fichier."
     } else {
         security::LoginError::Invalid.message()
     }
@@ -117,6 +123,8 @@ pub struct Login {
     pub path: Option<std::path::PathBuf>,
     pub account: String,
     pub password: String,
+    /// The account must change its password: the new one, typed twice.
+    pub change: Option<(String, String)>,
     pub error: Option<String>,
 }
 
@@ -196,6 +204,7 @@ impl App {
             path: None,
             account: String::new(),
             password: String::new(),
+            change: None,
             error: None,
         });
     }
@@ -229,6 +238,17 @@ impl App {
                     submit = true;
                 }
                 ui.end_row();
+                if let Some((new, again)) = l.change.as_mut() {
+                    for (label, v, id) in [
+                        ("New password:", new, "login_new"),
+                        ("Confirm new password:", again, "login_again"),
+                    ] {
+                        let lab = ui.label(t(label));
+                        ui.add(egui::TextEdit::singleline(v).password(true).id_salt(id))
+                            .labelled_by(lab.id);
+                        ui.end_row();
+                    }
+                }
             });
             if let Some(e) = &l.error {
                 ui.colored_label(egui::Color32::RED, e);
@@ -249,7 +269,16 @@ impl App {
         if !submit {
             return;
         }
-        let r = Database::load_as(&l.file, &l.account, &l.password);
+        let r = match &l.change {
+            Some((new, again)) if new != again => {
+                l.error = Some(t("The new passwords do not match.").to_string());
+                return;
+            }
+            Some((new, _)) => {
+                Database::load_changing_password(&l.file, &l.account, &l.password, new)
+            }
+            None => Database::load_as(&l.file, &l.account, &l.password),
+        };
         match r {
             Ok(db) => {
                 let Some(l) = self.security.login.take() else {
@@ -260,13 +289,18 @@ impl App {
                     d.path = l.path;
                 }
             }
-            Err(fmp12::Error::Login(e)) => {
-                l.error = Some(match e {
-                    security::LoginError::Invalid => wrong_password().to_string(),
-                    e => e.to_string(),
-                });
-                l.password.clear();
+            // FileMaker asks for a new password, then opens the file.
+            Err(fmp12::Error::Login(security::LoginError::MustChange)) if l.change.is_none() => {
+                l.change = Some(Default::default());
+                l.error = Some(t("The password for this account must be changed.").to_string());
             }
+            // Wrong name or password, or an inactive account: one alert.
+            Err(fmp12::Error::Login(_)) => {
+                l.error = Some(wrong_password().to_string());
+                l.password.clear();
+                l.change = None;
+            }
+            Err(fmp12::Error::Security(e)) => l.error = Some(e),
             Err(e) => {
                 self.error = Some(e.to_string());
                 self.security.login = None;

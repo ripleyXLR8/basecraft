@@ -158,10 +158,33 @@ fn only_full_access_writes() {
     let f2 = fmp12::File::from_bytes(security::save(&file, &admin, &new).unwrap()).unwrap();
     let s2 = Security::load(&f2).unwrap();
     let clerk = s2.login("clerk", "test123").unwrap();
-    assert!(matches!(
-        security::save(&f2, &clerk, &s2),
-        Err(security::SaveError::NotFullAccess)
-    ));
+    // Without full access (or "manage accounts"): no new account, no
+    // change to a set, no other account's password.
+    let mut more = s2.clone();
+    more.add_account(Account::new("x", "test123", 3));
+    let mut set = s2.clone();
+    set.sets[2].set_flag(security::flag::PRINT, false);
+    let mut other = s2.clone();
+    for a in other.accounts.iter_mut().filter(|a| a.name == "Admin") {
+        a.set_password("test123");
+    }
+    for bad in [more, set, other] {
+        assert!(matches!(
+            security::save(&f2, &clerk, &bad),
+            Err(security::SaveError::NotFullAccess)
+        ));
+    }
+    // Its own password (Change Password): allowed.
+    let mut own = s2.clone();
+    own.change_password("clerk", "test123", "test456").unwrap();
+    let f3 = fmp12::File::from_bytes(security::save(&f2, &clerk, &own).unwrap()).unwrap();
+    assert!(Security::check(&f3).unwrap().is_empty());
+    assert!(
+        Security::load(&f3)
+            .unwrap()
+            .login("clerk", "test456")
+            .is_ok()
+    );
     // The last full access account cannot go.
     let mut bad = s2.clone();
     bad.accounts.retain(|a| a.name != "Admin");

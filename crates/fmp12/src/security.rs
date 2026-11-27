@@ -1079,7 +1079,12 @@ fn parse(entries: &[Entry]) -> Security {
             description: text_at(&m, &[], 3),
             active: stamp.micros & INACTIVE == 0,
             must_change: stamp.micros & MUST_CHANGE != 0,
-            stamp,
+            // The flags live in `active` and `must_change` ([`Account::status`]
+            // puts them back), so equal accounts compare equal.
+            stamp: Stamp {
+                micros: stamp.micros & !(INACTIVE | MUST_CHANGE),
+                ..stamp
+            },
             password: get(&m, &[], 6).cloned().unwrap_or_default(),
         });
     }

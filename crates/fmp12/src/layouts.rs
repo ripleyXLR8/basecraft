@@ -60,6 +60,10 @@ pub struct LayoutObject {
     pub label: Option<Vec<u8>>,
     /// Portal: (table occurrence as in XML, rows shown, first row).
     pub portal: Option<(u64, u32, u32)>,
+    /// Raw button message (field 16), see [`crate::scripts::button_action`].
+    pub button_raw: Option<Vec<u8>>,
+    /// Button action: a single step (Perform Script for a script button).
+    pub button: Option<crate::scripts::Step>,
 }
 
 impl Bounds {
@@ -154,13 +158,16 @@ struct Raw {
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
     labels: BTreeMap<u32, Vec<u8>>,
+    /// Button step parameters: `[4].[5].[L].[5].[obj].[17]`.
+    actions: BTreeMap<u32, crate::scripts::RawParams>,
 }
 
 fn style_name(m: &Msg) -> String {
     m.str(2).unwrap_or_default().to_string()
 }
 
-fn object(m: &Msg, texts: &BTreeMap<u32, String>, labels: &BTreeMap<u32, Vec<u8>>) -> LayoutObject {
+fn object(m: &Msg, r: &Raw) -> LayoutObject {
+    let (texts, labels) = (&r.texts, &r.labels);
     let b = m.msg(4).unwrap_or_default();
     let id = m.uint(2).unwrap_or(0);
     LayoutObject {
@@ -195,6 +202,14 @@ fn object(m: &Msg, texts: &BTreeMap<u32, String>, labels: &BTreeMap<u32, Vec<u8>
                 p.uint(5).unwrap_or(1) as u32,
             )
         }),
+        button_raw: m.bytes(16).map(<[u8]>::to_vec),
+        button: m.bytes(16).and_then(|b| {
+            let params = u32::try_from(id)
+                .ok()
+                .and_then(|i| r.actions.get(&i).cloned())
+                .unwrap_or_default();
+            crate::scripts::button_action(b, params)
+        }),
     }
 }
 
@@ -202,6 +217,11 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
     let mut raw: BTreeMap<u32, Raw> = BTreeMap::new();
     file.walk(|path, c| {
         let Some(p) = int_path(path) else { return };
+        if let [4, 5, l, 5, obj, 17, rest @ ..] = p.as_slice() {
+            let a = raw.entry(*l).or_default().actions.entry(*obj).or_default();
+            crate::scripts::add_param(a, rest, c);
+            return;
+        }
         let Chunk::Kv { key, data } = c else { return };
         match p.as_slice() {
             [4, 5, l] => {
@@ -261,9 +281,9 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     style_raw: m.bytes(10).unwrap_or_default().to_vec(),
                 })
                 .collect();
-            let blob: Vec<u8> = r.objects.into_values().flatten().collect();
+            let blob: Vec<u8> = r.objects.values().flatten().copied().collect();
             let mut objects: Vec<LayoutObject> = Msg::parse(&blob)
-                .map(|m| m.msgs(2).map(|o| object(&o, &r.texts, &r.labels)).collect())
+                .map(|m| m.msgs(2).map(|o| object(&o, &r)).collect())
                 .unwrap_or_default();
             link_parents(&mut objects);
             Layout {

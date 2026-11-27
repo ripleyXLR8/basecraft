@@ -45,6 +45,17 @@ pub struct Table {
 }
 
 impl Table {
+    /// An empty table (databases built in code, tests).
+    pub fn new(id: u32, name: &str, fields: Vec<Field>) -> Table {
+        Table {
+            id,
+            name: name.to_string(),
+            fields,
+            records: Vec::new(),
+            next_record_id: 0,
+        }
+    }
+
     pub fn field(&self, id: u32) -> Option<&Field> {
         self.fields.iter().find(|f| f.id == id)
     }
@@ -245,6 +256,7 @@ impl Database {
                 to: f.context,
                 record,
                 vars: BTreeMap::new(),
+                env: None,
             };
             return calc::evaluate(src, &mut ctx).unwrap_or_else(|_| Value::text("?"));
         }
@@ -296,6 +308,7 @@ impl Database {
             to,
             record: record.unwrap_or(usize::MAX),
             vars: BTreeMap::new(),
+            env: None,
         };
         calc::evaluate(src, &mut ctx).unwrap_or_else(|_| Value::text("?"))
     }
@@ -303,6 +316,20 @@ impl Database {
     /// Evaluates a calculation stored as a token stream (layout labels,
     /// script parameters…) for `record` of `table`, from occurrence `to`.
     pub fn eval_tokens(&self, tokens: &[u8], table: u32, to: u32, record: Option<usize>) -> Value {
+        self.eval_tokens_in(tokens, table, to, record, None)
+            .unwrap_or_else(|_| Value::text("?"))
+    }
+
+    /// Like [`Database::eval_tokens`], with a script's variables and `Get`
+    /// flags (`env`), and the error FileMaker would report.
+    pub fn eval_tokens_in(
+        &self,
+        tokens: &[u8],
+        table: u32,
+        to: u32,
+        record: Option<usize>,
+        env: Option<&mut dyn Env>,
+    ) -> Result<Value, calc::EvalError> {
         let schema: Vec<fmp12::schema::Table> = self
             .tables
             .iter()
@@ -316,17 +343,17 @@ impl Database {
             tables: &schema,
             tos: &self.occurrences,
         };
-        let Ok(src) = fmp12::calc::decompile(tokens, to, &names) else {
-            return Value::text("?");
-        };
+        let src = fmp12::calc::decompile(tokens, to, &names)
+            .map_err(|e| calc::EvalError::new(calc::error::code::GENERIC, e.to_string()))?;
         let mut ctx = RecordContext {
             db: self,
             table,
             to,
             record: record.unwrap_or(usize::MAX),
             vars: BTreeMap::new(),
+            env,
         };
-        calc::evaluate(&src, &mut ctx).unwrap_or_else(|_| Value::text("?"))
+        calc::evaluate(&src, &mut ctx)
     }
 
     /// New Record with FileMaker's auto-enter options applied (creation
@@ -610,17 +637,27 @@ pub fn typed(raw: &str, dt: DataType) -> Value {
     }
 }
 
+/// What a running script adds to calculations: its `$local` and `$$global`
+/// variables and `Get` flags (ScriptParameter, LastError, FoundCount…).
+pub trait Env {
+    fn variable(&mut self, name: &str, repetition: usize) -> Value;
+    fn set_variable(&mut self, name: &str, repetition: usize, value: Value);
+    /// `None` falls back to the calculation engine's built-in flags.
+    fn get(&mut self, flag: &str) -> Option<Value>;
+}
+
 /// Evaluation context bound to one record.
-struct RecordContext<'a> {
+struct RecordContext<'a, 'e> {
     db: &'a Database,
     table: u32,
     /// Context table occurrence of the calculation.
     to: u32,
     record: usize,
     vars: BTreeMap<(String, usize), Value>,
+    env: Option<&'e mut dyn Env>,
 }
 
-impl calc::Context for RecordContext<'_> {
+impl calc::Context for RecordContext<'_, '_> {
     fn field(
         &mut self,
         table: Option<&str>,
@@ -707,7 +744,14 @@ impl calc::Context for RecordContext<'_> {
             .ok_or_else(|| calc::EvalError::new(106, format!("table {table} missing")))
     }
 
+    fn get(&mut self, flag: &str) -> Option<Value> {
+        self.env.as_mut()?.get(flag)
+    }
+
     fn variable(&mut self, name: &str, repetition: usize) -> Value {
+        if let Some(e) = self.env.as_mut() {
+            return e.variable(name, repetition);
+        }
         self.vars
             .get(&(name.to_string(), repetition))
             .cloned()
@@ -715,6 +759,9 @@ impl calc::Context for RecordContext<'_> {
     }
 
     fn set_variable(&mut self, name: &str, repetition: usize, value: Value) {
+        if let Some(e) = self.env.as_mut() {
+            return e.set_variable(name, repetition, value);
+        }
         self.vars.insert((name.to_string(), repetition), value);
     }
 }

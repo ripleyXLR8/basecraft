@@ -1,0 +1,12 @@
+[package]
+name = "script"
+version = "0.1.0"
+description = "FileMaker script engine: runs decoded scripts against an engine::Database"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calc = { version = "0.1.0", path = "../calc" }
+engine = { version = "0.1.0", path = "../engine" }
+fmp12 = { version = "0.1.0", path = "../fmp12" }

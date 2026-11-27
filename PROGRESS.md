@@ -1,6 +1,6 @@
 # Progress
 
-**Estimated progress to 1.0: ~34 %**, weighted by milestone (see the README table).
+**Estimated progress to 1.0: ~37 %**, weighted by milestone (see the README table).
 
 Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 
@@ -30,6 +30,8 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Table names | ✅ |
 | Field names | ✅ |
 | Record values (plain and long) | ✅ |
+| Record storage: values as text in the file's locale, long/non-Latin-1 sub-path form, record-id sets, last id, field value indexes (FORMAT.md §13) | ✅ (from records typed in FileMaker) |
+| File locale (`[2]` key 13): separators, date order, AM/PM | ✅ 11 languages |
 | Repeating fields | ⏳ |
 | Field types and options (type, data type, storage, index, auto-enter, validation) | ✅ |
 | Calculation token streams → source text (253 functions, 140 `Get()` flags, operators, literals, field refs, Let) | ✅ |
@@ -95,7 +97,13 @@ ApplicationArchitecture.
 | Index (separator) sectors: encoding with pop flags, exact first-key separators | ✅ all 66 template roots re-encode byte for byte |
 | Full rewrite (`fmdump <file> rewrite <out>`) opens in FileMaker Pro 26 | ✅ 10 templates verified; XML export identical for Contacts, Tasks, Assets (DDR_INFO order and ids aside) |
 | Multi-level index trees (level ≥ 2) | 🚧 implemented, no template is deep enough to verify |
-| Writing changed content (new or edited values) | ⏳ |
+| Writing records: add, edit, delete (`fmp12::save::save_records`, `engine::Database::save`) | ✅ verified: FileMaker opens the file and shows the right count, values and related records |
+| Bookkeeping: record-id set, last record id, change counter, modification count kept | ✅ |
+| Field indexes after edits: dropped and marked for rebuild (FileMaker rebuilds them on demand) | ✅ verified (portal, find, unique key) |
+| Writing exact index keys (FileMaker collation tables) | ⏳ |
+| Files saved by OpenMaker, edited and saved again by FileMaker, read back | ✅ verified |
+| Auto-enter values (serials, UUIDs, stamps) on records created by OpenMaker | ⏳ |
+| Repeating fields, container data | ⏳ |
 
 ## M3 — Data engine (`crates/engine`)
 | Feature | State |
@@ -108,7 +116,8 @@ ApplicationArchitecture.
 | Related records through the relationship graph (multi-hop, `=` joins); related fields and aggregates in calculations | ✅ |
 | Portals in the GUI, sorted relationships, other join operators | ⏳ |
 | Summary fields, auto-enter, validation enforcement | ⏳ |
-| Storage formats of dates/times/numbers in records (no sample data yet) | ⏳ |
+| Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
+| Stored calculations re-evaluated for new and edited records on save | ✅ |
 ## M4 — GUI (`crates/app`)
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |
 | Layout drawn at stored coordinates: parts, fields, text, buttons | ✅ |

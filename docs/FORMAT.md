@@ -178,8 +178,8 @@ Every catalog follows the same pattern:
 
 | Path | XML catalog | Status |
 |------|-------------|--------|
-| `[2]` | file-level settings | 🔍 |
-| `[3].[16]` | BaseTableCatalog | ✅ names |
+| `[2]` | file-level settings; key 13 = locale (§13) | 🔍 |
+| `[3].[16]` | BaseTableCatalog; `[3].[16].[5].[T]` key 251 = change counter (§13) | ✅ names |
 | `[3].[17]` | TableOccurrenceCatalog | 🔍 |
 | `[3].[251]` | RelationshipCatalog | 🔍 |
 | `[4]` | LayoutCatalog; `[4].[5].[L].[5].[n]` = LayoutObject | 🔍 |
@@ -194,9 +194,13 @@ Every catalog follows the same pattern:
 | `[38]` | BaseDirectoryCatalog | 🔍 |
 | `[65]` | CustomMenuCatalog | 🔍 |
 | `[T].[3].[5].[F]` | FieldCatalog of table T | ✅ names |
-| `[T].[3].[1]` | field index (collation keys) | 🔍 |
-| `[T].[5].[R]` | record R: key F = value of field F | ✅ |
-| `[T].[5].[R].[F]` | long value of field F, keys/segments 1…n (key 0 = style runs) | ✅ |
+| `[T].[3].[1]` | index of the table's *field names* (collation keys) | 🔍 |
+| `[T]` key 0 | last record id ever used (§13) | ✅ |
+| `[T].[1].[F]` | index of field F's values (§13) | ✅ |
+| `[T].[5].[R]` | record R: key F = value of field F (§13) | ✅ |
+| `[T].[5].[R].[F]` | long value of field F: key 0 = sizes, keys 1…n = chunks (§13) | ✅ |
+| `[T].[13]` | set of record ids (§13) | ✅ |
+| `[TO].[7]` | per-table-occurrence record list cache (`D0 hi lo` element, §13) | 🔍 |
 | `[node].[16]` | long name split over keys 1…n when it does not fit inline | ✅ |
 
 ## 5. Field definitions ✅
@@ -447,3 +451,102 @@ Unknown: 2 (field 14, icons), 510/511 (pairs), 613 (in every local style, 0),
 States: 1 `:normal`, 2 `:hover`, 3 `:pressed`, 4 `:focus`, 6 `:disabled`,
 7 `:checked` (also `:active`; the later CSS rule wins), 15 `:droptarget`,
 16 `:activefocus`, 18 `:placeholder`.
+
+## 13. Records ✅
+
+Decoded from records typed into copies of the Inventory and Meetings
+templates with FileMaker Pro 26, diffing the file after each change
+(`fmdump <file> entries`). Writer: `crates/fmp12/src/save.rs`.
+
+### Values
+
+All values are **text**, numbers, dates, times and timestamps included, in
+the file's own formats (the locale below), not the user's:
+
+| Field type | Typed (French UI) | Stored, English file | Stored, French file |
+|---|---|---|---|
+| Date | `01/02/2026` | `2/1/2026` | `01/02/2026` |
+| Time | `9:05:30` | `9:05:30` | `09:05:30` |
+| Time | `14:30` | `14:30:00` | `14:30:00` |
+| Timestamp (auto-enter) | — | `11/27/2026 2:13:33 PM` | `27/11/2026 14:35:26` |
+| Number | `12.75`, `-3.5`, `2024` | `12.75`, `-3.5`, `2024` | |
+
+Text is SCSU, XOR 0x5A (§3); CR separates lines. A value is stored
+**inline** at `[T].[5].[R]` with key = field id when its SCSU form has one
+byte per UTF-16 unit (ASCII, Latin-1) and at most 1000 bytes (ops 06/07).
+Otherwise (an em dash, `✓`, CJK…, or more than 1000 bytes) it moves to
+`[T].[5].[R].[F]`:
+
+* key 0 = SCSU byte count, UTF-16 count (u32 BE each), plus a third u32,
+  always 4, when the value is over 1000 bytes;
+* keys 1…n = the bytes in 1000-byte chunks (a chunk may end inside an SCSU
+  sequence, so concatenate before decoding).
+
+FileMaker's SCSU quotes a character of a static window with SQn (`05 14` =
+U+2014). OpenMaker encodes ASCII/Latin-1 as single bytes, static-window
+characters with SQn and anything else with SQU; re-encoding all the records
+FileMaker wrote gives its exact bytes (`tests/records.rs`).
+
+Other record keys: **252** = number of modifications (length-prefixed
+integer, `01 01`, `01 02`, written from the second editing session on).
+Calculation results of stored calculation fields are stored like any value
+(`Units In | Out` = `25`); FileMaker does not recompute them when it opens a
+file, so a writer must store them.
+
+**Repeating fields**: none of the templates has one; not yet observed.
+
+### Locale (`[2]` key 13)
+
+u32 language (21 English, 24 French, 25 German, 31 Japanese…), 6 bytes, list
+separator (1 byte: `,` or `;`), then UTF-16 BE characters: two quote marks,
+thousands separator, decimal separator, date separator, time separator; then
+`02`, the **date order** (0 M/D/Y, 1 D/M/Y, 2 Y/M/D), 4 format bytes, and
+the AM and PM strings (length byte + XOR-ed text; `" AM"`/`" PM"` in
+English, empty in French). Verified on the 11 languages of Meetings.
+
+### Record ids and counters
+
+* Record ids start at 1 and are **never reused**: `[T]` key 0 is the last id
+  ever used, a length-prefixed integer (`01 28` = 40, `02 01 2C` = 300). It
+  does not decrease when records are deleted. FileMaker gives the next new
+  record that id + 1.
+* `[T].[13]` = the set of live record ids, in the **id-set** form below.
+* `[3].[16].[5].[T]` key 251 (u32) grows when the table's records change,
+  about once per transaction or session (1→2→3→4, then +39 for 38 new
+  records). OpenMaker adds 1 per save.
+* `[TO].[7]` (TO element `D0 hi lo`): key 0 `01 02`; `.[1]` key 3 = last
+  record id again, an empty node `.[1].[80 0B 80 02 + u32 counter 251]`,
+  key FF empty; `.[2]` key 3 `01 00`. FileMaker refreshes it itself: a file
+  whose cache is stale opens with the right records and FileMaker rewrites
+  it on the next change. OpenMaker leaves it alone.
+
+**Id sets** (also the postings of an index): one id below 256 is a Kv with
+a 1-byte key and an empty value (`00 id`). Two or more ids are a bitmap in
+key 0, u32 BE words, word *i* bit *j* (least significant first) = id
+32*i* + *j*: `{1, 2}` = `03 00 00000006`, ids 1–40 = `05 00 FFFFFFFE
+000001FF`. Sets with ids beyond what fits in one value (2040) were not
+observed.
+
+### Field indexes (`[T].[1].[F]`)
+
+* `[F]` key 16 = u64 number of entries, u64 number of distinct keys.
+  `[F].[0].[key]` = **value index**: one entry per line of the value, the
+  key is `01` followed by 2-byte primary collation weights (case and accent
+  blind: `é` = `e` = `126B`, `a` = `120F`, `0`–`9` = `1205`–`120E`,
+  space `020A`, `-` `0223`, `—` `022C`), so `""` (empty value) = `01`. The
+  item is the id set of the records. Keys stop after 109 characters; a
+  longer value also gets an entry `FF 80`.
+* `[F]` key 17 and `[F].[1].[key]` = **word index**, same layout, built
+  when a find needs it (the field then shows "All" indexing).
+
+FileMaker **trusts** a stored index: with a stale one, a related record we
+added did not show in a portal (the match field's index did not list it).
+A *missing* index on a field marked indexed is read as empty (the portal
+showed nothing). But a field marked unindexed with automatic indexing on
+(option byte 8, bits 3/5/7 clear, bit 6 clear) gets its index **rebuilt
+on demand**, and FileMaker marks it indexed again (Minimal for the portal,
+All after a find). So `save_records` removes `[T].[1].[F]` of every field
+whose values changed (all fields when a record is added or deleted) and
+clears its index bits. Fields with automatic indexing off keep their stale
+index (not handled). Writing exact index keys would need FileMaker's
+collation table for every index language.

@@ -70,6 +70,8 @@ pub struct Database {
     pub relationships: Vec<fmp12::graph::Relationship>,
     pub layouts: Vec<fmp12::layouts::Layout>,
     pub themes: Vec<fmp12::theme::Theme>,
+    /// Formats the file stores dates, times and numbers in.
+    pub locale: fmp12::schema::Locale,
 }
 
 /// Names for decompiling calculations into `calc`-parsable source.
@@ -148,10 +150,12 @@ impl Database {
                 .into_iter()
                 .map(|(id, values)| Record { id, values })
                 .collect();
+            let last = fmp12::save::last_record_id(file, t.id)?;
             tables.push(Table {
                 id: t.id,
                 name: t.name.clone(),
-                next_record_id: records.iter().map(|r| r.id).max().unwrap_or(0),
+                // FileMaker never reuses the id of a deleted record.
+                next_record_id: records.iter().map(|r| r.id).fold(last, u32::max),
                 fields,
                 records,
             });
@@ -161,12 +165,54 @@ impl Database {
             relationships: fmp12::graph::relationships(file)?,
             layouts: fmp12::layouts::layouts(file)?,
             themes: fmp12::theme::themes(file)?,
+            locale: fmp12::schema::locale(file)?,
             occurrences,
         })
     }
 
     pub fn table(&self, id: u32) -> Option<&Table> {
         self.tables.iter().find(|t| t.id == id)
+    }
+
+    /// The bytes of `original` (the file this database was loaded from)
+    /// with the current records of every table: new, edited and deleted
+    /// records are written, everything else is kept. Stored calculations
+    /// of new and edited records are evaluated first, as FileMaker does on
+    /// commit (it does not recompute them when opening a file).
+    /// ponytail: results are written in US formats (`Value::to_text`), and
+    /// auto-enter options (serials, UUIDs, stamps) are not applied yet.
+    pub fn save(&self, original: &fmp12::File) -> Result<Vec<u8>, fmp12::Error> {
+        let schema = fmp12::schema::tables(original)?;
+        let mut data = BTreeMap::new();
+        for t in &self.tables {
+            let old = match schema.iter().find(|s| s.id == t.id) {
+                Some(s) => fmp12::schema::records(original, s)?,
+                None => Default::default(),
+            };
+            let calcs: Vec<&Field> = t
+                .fields
+                .iter()
+                .filter(|f| f.calc.is_some() && f.def.stored() && !f.def.global())
+                .collect();
+            let input = |v: &BTreeMap<u32, String>| -> BTreeMap<u32, String> {
+                v.iter()
+                    .filter(|(f, s)| !s.is_empty() && !calcs.iter().any(|c| c.id == **f))
+                    .map(|(f, s)| (*f, s.clone()))
+                    .collect()
+            };
+            let mut recs = BTreeMap::new();
+            for (i, r) in t.records.iter().enumerate() {
+                let mut values = r.values.clone();
+                if old.get(&r.id).is_none_or(|o| input(o) != input(&values)) {
+                    for c in &calcs {
+                        values.insert(c.id, self.value(t.id, i, c.id).to_text());
+                    }
+                }
+                recs.insert(r.id, values);
+            }
+            data.insert(t.id, recs);
+        }
+        fmp12::save::save_records(original, &data)
     }
 
     /// Base table of a table occurrence.
@@ -197,7 +243,7 @@ impl Database {
             .get(record)
             .and_then(|r| r.values.get(&field))
             .map_or("", |s| s.as_str());
-        typed(raw, f.data_type)
+        typed_in(raw, f.data_type, &self.locale)
     }
 }
 
@@ -286,7 +332,55 @@ impl Database {
     }
 }
 
-/// Converts stored text to a typed value.
+/// Converts text stored in a file with the given formats to a typed value:
+/// FileMaker stores `14/07/2025` in a French file, `7/14/2025` in an
+/// English one.
+pub fn typed_in(raw: &str, dt: DataType, loc: &fmp12::schema::Locale) -> Value {
+    typed(&to_us(raw, dt, loc), dt)
+}
+
+/// Rewrites a stored value from the file's formats into the US formats
+/// `typed` reads (M/D/Y dates, `.` decimal point, AM/PM).
+fn to_us(raw: &str, dt: DataType, loc: &fmp12::schema::Locale) -> String {
+    use fmp12::schema::DateOrder;
+    let date = |d: &str| {
+        let g: Vec<&str> = d
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|p| !p.is_empty())
+            .collect();
+        match (loc.date_order, g.as_slice()) {
+            (DateOrder::Dmy, [d, m, y]) => format!("{m}/{d}/{y}"),
+            (DateOrder::Ymd, [y, m, d]) => format!("{m}/{d}/{y}"),
+            _ => d.to_string(),
+        }
+    };
+    let time = |t: &str| {
+        let t = t.trim();
+        for (suffix, us) in [(&loc.am, "AM"), (&loc.pm, "PM")] {
+            let s = suffix.trim();
+            if let Some(rest) = t.strip_suffix(s).filter(|_| !s.is_empty()) {
+                return format!("{} {us}", rest.trim_end());
+            }
+        }
+        t.to_string()
+    };
+    match dt {
+        DataType::Number if loc.decimal != '.' => raw
+            .chars()
+            .filter(|c| *c != '.')
+            .map(|c| if c == loc.decimal { '.' } else { c })
+            .collect(),
+        DataType::Date => date(raw),
+        DataType::Time => time(raw),
+        DataType::Timestamp => match raw.trim().split_once(' ') {
+            Some((d, t)) => format!("{} {}", date(d), time(t)),
+            None => date(raw),
+        },
+        _ => raw.to_string(),
+    }
+}
+
+/// Converts stored text in US formats to a typed value.
 pub fn typed(raw: &str, dt: DataType) -> Value {
     if raw.is_empty() {
         return Value::empty();

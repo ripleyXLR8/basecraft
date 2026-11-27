@@ -273,25 +273,128 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
         .collect())
 }
 
+/// Stored values of a table's records, as text (FileMaker stores numbers,
+/// dates, times and timestamps as text too, FORMAT.md §13). Keys of a
+/// record that are not fields of the table (e.g. 252, a modification
+/// count) are left out.
 pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
     let t = table.id;
-    let mut out = Records::new();
+    let mut raw: BTreeMap<u32, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
     // ponytail: repeating-field repetitions (2-byte keys) not split yet.
     file.walk(|path, c| {
         let Some(p) = int_path(path) else { return };
         match (p.as_slice(), c) {
             ([pt, 5, r], Chunk::Kv { key, data }) if *pt == t => {
-                out.entry(*r).or_default().insert(*key, text(data));
+                raw.entry(*r).or_default().insert(*key, data.to_vec());
             }
+            ([pt, 5, r], Chunk::Marker) if *pt == t => {
+                raw.entry(*r).or_default();
+            }
+            // Long value: chunks 1…n, concatenated before decoding (a
+            // chunk may end inside an SCSU sequence).
             ([pt, 5, r, f], Chunk::Kv { key, data }) if *pt == t && *key >= 1 => {
-                let e = out.entry(*r).or_default().entry(*f).or_default();
+                let e = raw.entry(*r).or_default().entry(*f).or_default();
                 if *key == 1 {
                     e.clear();
                 }
-                e.push_str(&text(data));
+                e.extend_from_slice(data);
             }
             _ => {}
         }
     })?;
-    Ok(out)
+    Ok(raw
+        .into_iter()
+        .map(|(r, vals)| {
+            let vals = vals
+                .into_iter()
+                .filter(|(f, _)| table.fields.contains_key(f))
+                .map(|(f, b)| (f, text(&b)));
+            (r, vals.collect())
+        })
+        .collect())
+}
+
+/// Order of day, month and year in the file's date format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DateOrder {
+    #[default]
+    Mdy,
+    Dmy,
+    Ymd,
+}
+
+/// The file's saved formats (`[2]` key 13). Records store dates, times,
+/// timestamps and numbers as text in these formats (FORMAT.md §13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locale {
+    /// Language id, as in field option bytes 4–7 (21 = English).
+    pub language: u32,
+    pub list_separator: char,
+    pub thousands: char,
+    pub decimal: char,
+    pub date_separator: char,
+    pub time_separator: char,
+    pub date_order: DateOrder,
+    /// Suffixes of 12-hour times, e.g. " AM"; empty for a 24-hour locale.
+    pub am: String,
+    pub pm: String,
+}
+
+impl Default for Locale {
+    /// English (United States), the format of the English templates.
+    fn default() -> Self {
+        Locale {
+            language: 21,
+            list_separator: ',',
+            thousands: ',',
+            decimal: '.',
+            date_separator: '/',
+            time_separator: ':',
+            date_order: DateOrder::Mdy,
+            am: " AM".into(),
+            pm: " PM".into(),
+        }
+    }
+}
+
+/// Decodes the locale block: u32 language, 6 bytes, list separator (1 byte),
+/// then UTF-16 BE quotes (2), thousands, decimal, date and time separators,
+/// `02`, date order (0 MDY, 1 DMY, 2 YMD), 4 format bytes, then the AM and
+/// PM strings (length byte + XOR-ed text).
+pub fn parse_locale(b: &[u8]) -> Option<Locale> {
+    let u16c = |i: usize| char::from_u32(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]) as u32);
+    let mut i = 29;
+    let mut pascal = || {
+        let n = *b.get(i)? as usize;
+        let s = text(b.get(i + 1..i + 1 + n)?);
+        i += 1 + n;
+        Some(s)
+    };
+    let (am, pm) = (pascal()?, pascal()?);
+    Some(Locale {
+        language: u32::from_be_bytes(b.get(..4)?.try_into().ok()?),
+        list_separator: *b.get(10)? as char,
+        thousands: u16c(15)?,
+        decimal: u16c(17)?,
+        date_separator: u16c(19)?,
+        time_separator: u16c(21)?,
+        date_order: match b.get(24)? {
+            1 => DateOrder::Dmy,
+            2 => DateOrder::Ymd,
+            _ => DateOrder::Mdy,
+        },
+        am,
+        pm,
+    })
+}
+
+/// The file's locale, or English (US) when the block is missing.
+pub fn locale(file: &File) -> Result<Locale, Error> {
+    let mut out = None;
+    file.walk(|path, c| {
+        if let (Some([2]), Chunk::Kv { key: 13, data }) = (int_path(path).as_deref(), c) {
+            out = parse_locale(data);
+        }
+    })?;
+    Ok(out.unwrap_or_default())
 }

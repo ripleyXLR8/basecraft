@@ -253,6 +253,48 @@ fn sep_key(e: &Entry) -> Vec<u8> {
     }
 }
 
+/// Key bytes an item sorts by, as written (no opcode); empty for a node
+/// marker or an empty node.
+fn item_key(b: &[u8]) -> &[u8] {
+    match b.first() {
+        Some(0x1B) if b.get(1) == Some(&0) => &b[2..3],
+        Some(0x00..=0x07) => &b[1..2],
+        Some(0x08..=0x0F) => &b[1..3],
+        Some(0x10..=0x17) => &b[1..4],
+        Some(0x19..=0x1F) => &b[2..2 + b[1] as usize],
+        _ => &[],
+    }
+}
+
+/// FileMaker's store order: path elements, then the item's key, compared
+/// as byte strings element by element (a prefix sorts first).
+pub fn sort_key(e: &Entry) -> Vec<&[u8]> {
+    let mut k: Vec<&[u8]> = e.path.iter().map(|p| p.as_slice()).collect();
+    let key = item_key(&e.item);
+    if !e.item.is_empty() && e.item[0] != 0x80 {
+        k.push(key);
+    }
+    k
+}
+
+/// Sorts entries into FileMaker's store order (stable).
+pub fn sort(entries: &mut Vec<Entry>) {
+    drop_leftovers(entries);
+    entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+}
+
+/// Removes empty nodes whose path also holds content: FileMaker leaves them
+/// at sector boundaries (a push popped at once), out of store order. Other
+/// empty nodes are content (e.g. `[TO].[7].[1].[…]` cache keys) and stay.
+pub fn drop_leftovers(entries: &mut Vec<Entry>) {
+    let full: std::collections::HashSet<Vec<Vec<u8>>> = entries
+        .iter()
+        .filter(|e| !e.item.is_empty())
+        .map(|e| e.path.clone())
+        .collect();
+    entries.retain(|e| !e.item.is_empty() || !full.contains(&e.path));
+}
+
 fn sep(e: &Entry, child: u32) -> Sep {
     Sep {
         path: e.path.clone(),

@@ -21,3 +21,6 @@ from files we authored ourselves.
 * Index and leaf experiments are Rust examples of `fmp12`:
   `cargo run -p fmp12 --example index -- <file>` (separators next to each child's first entry),
   `swaproot <in> <out>` (rebuild only the root index), `releaf <in> [out]` (re-pack every leaf in place).
+* Saving records: `cargo run -p engine --example edit -- <in> <out> new:Products "set:Products:+:Name=x" del:Products:3 …`
+  writes a copy through `Database::save`; open it with `Test-FmOpen` and read
+  fields back through UI Automation (`Edit` controls named `Field: Table::Field`).

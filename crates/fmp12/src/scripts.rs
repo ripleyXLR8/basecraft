@@ -57,20 +57,17 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
     let mut step_bytes: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     file.walk(|path, c| {
         let Some(p) = int_path(path) else { return };
-        match (p.as_slice(), c) {
-            ([17, 5, id], Chunk::Kv { key, data }) => {
-                let s = out.entry(*id).or_insert_with(|| Script {
-                    id: *id,
-                    ..Default::default()
-                });
-                match key {
-                    16 => s.name = text(data),
-                    240 => s.options = data.iter().fold(0, |a, b| (a << 8) | *b as u64),
-                    4 => step_bytes.entry(*id).or_default().extend_from_slice(data),
-                    _ => {}
-                }
+        if let ([17, 5, id], Chunk::Kv { key, data }) = (p.as_slice(), c) {
+            let s = out.entry(*id).or_insert_with(|| Script {
+                id: *id,
+                ..Default::default()
+            });
+            match key {
+                16 => s.name = text(data),
+                240 => s.options = data.iter().fold(0, |a, b| (a << 8) | *b as u64),
+                4 => step_bytes.entry(*id).or_default().extend_from_slice(data),
+                _ => {}
             }
-            _ => {}
         }
     })?;
     for (id, b) in step_bytes {

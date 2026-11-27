@@ -21,8 +21,8 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
     vec![
         (
             "open_file",
-            "Open a FileMaker .fmp12 file. Other tools act on the open file.",
-            s(json!({ "path": { "type": "string" } }), &["path"]),
+            "Open a FileMaker .fmp12 file. Other tools act on the open file. A protected file (one that does not log in by itself) needs `account` and `password`; privileges of that account then apply.",
+            s(json!({ "path": { "type": "string" }, "account": { "type": "string" }, "password": { "type": "string" } }), &["path"]),
         ),
         (
             "describe_database",
@@ -108,6 +108,62 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
                    "sort": { "type": "array", "items": { "type": "string" } } }),
                 &["layout", "path"],
             ),
+        ),
+        (
+            "list_security",
+            "Accounts and privilege sets of the open file (File › Manage › Security): record, field, layout, script and value list access, other privileges, extended privileges. Needs full access.",
+            s(json!({}), &[]),
+        ),
+        (
+            "add_account",
+            "Add a FileMaker account with a password and a privilege set (default [Data Entry Only]). Needs full access. Changes stay in memory until save_file.",
+            s(
+                json!({ "name": { "type": "string" }, "password": { "type": "string" },
+                   "privilege_set": { "type": "string" }, "active": { "type": "boolean" },
+                   "must_change_password": { "type": "boolean" }, "description": { "type": "string" } }),
+                &["name", "password"],
+            ),
+        ),
+        (
+            "update_account",
+            "Change an account: rename, new password, privilege set, active, must change password at next login, description. Needs full access. Changes stay in memory until save_file.",
+            s(
+                json!({ "name": { "type": "string" }, "rename": { "type": "string" }, "password": { "type": "string" },
+                   "privilege_set": { "type": "string" }, "active": { "type": "boolean" },
+                   "must_change_password": { "type": "boolean" }, "description": { "type": "string" } }),
+                &["name"],
+            ),
+        ),
+        (
+            "delete_account",
+            "Delete an account. Needs full access; at least one active [Full Access] account stays. Changes stay in memory until save_file.",
+            s(json!({ "name": { "type": "string" } }), &["name"]),
+        ),
+        (
+            "set_privileges",
+            "Create (`create`: true, optionally `copy_of` a set) or change a privilege set. `records`: all, view, none or a list like \"create,view,edit\"; `tables`: {Table: actions}; `limits`: [\"Table:edit=calculation\"]; `fields`: {\"Table::Field\": modifiable|view|none}; `layouts`/`scripts`/`value_lists`: default access (modifiable, view or executable, none); `layout_access`/`script_access`: {name: access}; `menus`: all, editing, minimum; `allow`/`deny`: print, export, change-password, manage-extended, override-validation, create-layouts, create-scripts, create-value-lists; `extended`: keywords such as fmapp. Needs full access. Changes stay in memory until save_file.",
+            s(
+                json!({ "name": { "type": "string" }, "create": { "type": "boolean" }, "copy_of": { "type": "string" },
+                   "rename": { "type": "string" }, "description": { "type": "string" },
+                   "records": { "type": "string" },
+                   "tables": { "type": "object", "additionalProperties": { "type": "string" } },
+                   "limits": { "type": "array", "items": { "type": "string" } },
+                   "fields": { "type": "object", "additionalProperties": { "type": "string" } },
+                   "layouts": { "type": "string" }, "scripts": { "type": "string" }, "value_lists": { "type": "string" },
+                   "layout_access": { "type": "object", "additionalProperties": { "type": "string" } },
+                   "script_access": { "type": "object", "additionalProperties": { "type": "string" } },
+                   "menus": { "type": "string", "enum": ["all", "editing", "minimum"] },
+                   "allow": { "type": "array", "items": { "type": "string" } },
+                   "deny": { "type": "array", "items": { "type": "string" } },
+                   "extended": { "type": "array", "items": { "type": "string" } },
+                   "min_password": { "type": "integer" }, "expire_days": { "type": "integer" } }),
+                &["name"],
+            ),
+        ),
+        (
+            "delete_privilege_set",
+            "Delete a privilege set no account uses (not a built-in one). Needs full access. Changes stay in memory until save_file.",
+            s(json!({ "name": { "type": "string" } }), &["name"]),
         ),
         (
             "list_scripts",
@@ -219,12 +275,16 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
         let path = str_of("path").ok_or("path is required")?;
         let table = str_of("table").unwrap_or_else(|| "Table".into());
         let r = crate::schema::new_file(&path, &table)?;
-        *doc = Some(Doc::open(&path)?);
+        *doc = Some(Doc::open(&path, None)?);
         return Ok(r);
     }
     if name == "open_file" {
         let path = str_of("path").ok_or("path is required")?;
-        let d = Doc::open(&path)?;
+        let login = str_of("account").map(|account| crate::Login {
+            account,
+            password: str_of("password").unwrap_or_default(),
+        });
+        let d = Doc::open(&path, login.as_ref())?;
         let summary = json!({ "opened": path, "tables": d.db.tables.iter()
             .map(|t| json!({ "name": t.name, "records": t.records.len() })).collect::<Vec<_>>() });
         *doc = Some(d);
@@ -524,6 +584,92 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
             }
             "run-script"
         }
+        "list_security" => {
+            let mut a = crate::security::accounts(d, &[])?;
+            a["privilege_sets"] = crate::security::privileges(d, &[])?["privilege_sets"].take();
+            return Ok(a);
+        }
+        "add_account" | "update_account" | "delete_account" => {
+            args.push(
+                match name {
+                    "add_account" => "add",
+                    "update_account" => "set",
+                    _ => "delete",
+                }
+                .into(),
+            );
+            args.push(str_of("name").ok_or("name is required")?);
+            if let Some(p) = str_of("password") {
+                args.extend(["--new-password".into(), p]);
+            }
+            if let Some(v) = str_of("privilege_set") {
+                args.extend(["--set".into(), v]);
+            }
+            if let Some(v) = str_of("rename") {
+                args.extend(["--rename".into(), v]);
+            }
+            if let Some(v) = str_of("description") {
+                args.extend(["--description".into(), v]);
+            }
+            match flag("active") {
+                Some(true) => args.push("--active".into()),
+                Some(false) => args.push("--inactive".into()),
+                None => {}
+            }
+            match flag("must_change_password") {
+                Some(true) => args.push("--must-change".into()),
+                Some(false) => args.push("--no-must-change".into()),
+                None => {}
+            }
+            return crate::security::accounts(d, &args);
+        }
+        "set_privileges" | "delete_privilege_set" => {
+            let sub = match (name, flag("create")) {
+                ("delete_privilege_set", _) => "delete",
+                (_, Some(true)) => "add",
+                _ => "set",
+            };
+            args.push(sub.into());
+            args.push(str_of("name").ok_or("name is required")?);
+            for (k, opt) in [
+                ("copy_of", "--copy-of"),
+                ("rename", "--rename"),
+                ("description", "--description"),
+                ("records", "--records"),
+                ("layouts", "--layouts"),
+                ("scripts", "--scripts"),
+                ("value_lists", "--value-lists"),
+                ("menus", "--menus"),
+            ] {
+                if let Some(v) = str_of(k) {
+                    args.extend([opt.into(), v]);
+                }
+            }
+            for (k, opt) in [
+                ("tables", "--table-access"),
+                ("fields", "--field-access"),
+                ("layout_access", "--layout-access"),
+                ("script_access", "--script-access"),
+            ] {
+                for p in pairs(k) {
+                    args.extend([opt.into(), p]);
+                }
+            }
+            for (k, opt) in [("limits", "--limit"), ("allow", "--allow"), ("deny", "--deny")] {
+                for v in list(k) {
+                    args.extend([opt.into(), v]);
+                }
+            }
+            if a.get("extended").is_some() {
+                args.extend(["--extended".into(), list("extended").join(",")]);
+            }
+            for (k, opt) in [("min_password", "--min-password"), ("expire_days", "--expire-days")] {
+                if let Some(n) = a.get(k).and_then(Json::as_u64) {
+                    args.extend([opt.into(), n.to_string()]);
+                }
+            }
+            return crate::security::privileges(d, &args);
+        }
         "save_file" => {
             if let Some(p) = str_of("path") {
                 args.extend(["-o".into(), p]);
@@ -567,8 +713,8 @@ fn handle(doc: &mut Option<Doc>, msg: &Json) -> Option<Json> {
 }
 
 /// Runs the server until stdin closes. `file` is opened at start if given.
-pub fn serve(file: Option<&str>) -> Res<Json> {
-    let mut doc = file.map(Doc::open).transpose()?;
+pub fn serve(file: Option<&str>, login: Option<&crate::Login>) -> Res<Json> {
+    let mut doc = file.map(|f| Doc::open(f, login)).transpose()?;
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {

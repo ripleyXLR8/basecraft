@@ -2,6 +2,7 @@
 //! file, with FileMaker's record, found-set, find, sort and calculation
 //! semantics.
 
+mod access;
 pub mod export;
 mod find;
 mod host;
@@ -96,6 +97,18 @@ pub struct Database {
     pub privilege_sets: Vec<fmp12::security::PrivilegeSet>,
     /// Formats the file stores dates, times and numbers in.
     pub locale: fmp12::schema::Locale,
+    /// The logged-in account and the last action its privileges refused.
+    pub access: Access,
+}
+
+pub use access::{Action, DENIED_MESSAGE, FIELD_DENIED, RECORD_DENIED};
+
+/// Who is logged in (`None`: a database built in memory, no restrictions)
+/// and the error of the last refused action.
+#[derive(Debug, Clone, Default)]
+pub struct Access {
+    pub session: Option<fmp12::security::Session>,
+    pub denied: Option<u32>,
 }
 
 /// Names for decompiling calculations into `calc`-parsable source.
@@ -123,7 +136,22 @@ impl Database {
         Self::load(&fmp12::File::open(path)?)
     }
 
+    /// Loads a file, logged in by its File Options ("Log in using").
+    /// A protected file gives [`fmp12::Error::LoginRequired`]: open it with
+    /// [`Database::load_as`].
     pub fn load(file: &fmp12::File) -> Result<Self, fmp12::Error> {
+        let sec = fmp12::security::Security::load(file)?;
+        if sec.accounts.is_empty() {
+            return Self::load_with(file, None);
+        }
+        let session = sec.login_auto().ok_or(fmp12::Error::LoginRequired)?;
+        Self::load_with(file, Some(session))
+    }
+
+    fn load_with(
+        file: &fmp12::File,
+        session: Option<fmp12::security::Session>,
+    ) -> Result<Self, fmp12::Error> {
         let schema = fmp12::schema::tables(file)?;
         let occurrences = fmp12::graph::table_occurrences(file)?;
         // Calculation token streams of calculated fields: (table, field) -> (key 4, key 5).
@@ -199,6 +227,10 @@ impl Database {
             privilege_sets: fmp12::security::privilege_sets(file)?,
             locale: fmp12::schema::locale(file)?,
             occurrences,
+            access: Access {
+                session,
+                denied: None,
+            },
         })
     }
 
@@ -218,7 +250,7 @@ impl Database {
         let mut ed = Editor::open(file)?;
         let out = edit(&mut ed)?;
         let new = fmp12::File::from_bytes(ed.finish())?;
-        let mut fresh = Database::load(&new)?;
+        let mut fresh = Database::load_with(&new, self.access.session.clone())?;
         for t in fresh.tables.iter_mut() {
             let Some(old) = self.tables.iter_mut().find(|o| o.id == t.id) else {
                 continue;
@@ -600,6 +632,10 @@ impl Database {
     /// New Record with FileMaker's auto-enter options applied (creation
     /// stamps, serial numbers, auto-enter calculations). Returns its index.
     pub fn new_record(&mut self, table: u32) -> Option<usize> {
+        if !self.can(Action::Create, table, None) {
+            self.access.denied = Some(RECORD_DENIED);
+            return None;
+        }
         let ti = self.tables.iter().position(|t| t.id == table)?;
         let r = self.tables[ti].new_record();
         let fields = self.tables[ti].fields.clone();
@@ -639,6 +675,10 @@ impl Database {
     /// match field changed copy their value again, then modification
     /// stamps are applied.
     pub fn set_values(&mut self, table: u32, record: usize, values: &[(u32, String)]) {
+        if let Some(code) = self.edit_denied(table, record, values) {
+            self.access.denied = Some(code);
+            return;
+        }
         let Some(ti) = self.tables.iter().position(|t| t.id == table) else {
             return;
         };
@@ -805,6 +845,10 @@ impl Database {
         else {
             return Vec::new();
         };
+        if !self.can(Action::Delete, table, Some(record)) {
+            self.access.denied = Some(RECORD_DENIED);
+            return Vec::new();
+        }
         let mut gone: Vec<(u32, u32)> = vec![(table, id)];
         let mut i = 0;
         while let Some(&(t, rid)) = gone.get(i) {
@@ -873,10 +917,10 @@ impl Database {
                 CreationDate | ModificationDate => now("CurrentDate"),
                 CreationTime | ModificationTime => now("CurrentTime"),
                 CreationTimestamp | ModificationTimestamp => now("CurrentTimestamp"),
-                // ponytail: no accounts yet; FileMaker's default account is "Admin".
-                CreationName | ModificationName | CreationAccountName | ModificationAccountName => {
-                    "Admin".to_string()
-                }
+                CreationName | ModificationName | CreationAccountName | ModificationAccountName => self
+                    .session()
+                    .map_or("Admin", |s| s.account_name())
+                    .to_string(),
             });
         }
         if !creating {
@@ -1399,7 +1443,10 @@ impl calc::Context for RecordContext<'_, '_> {
     }
 
     fn get(&mut self, flag: &str) -> Option<Value> {
-        self.env.as_mut()?.get(flag)
+        self.env
+            .as_mut()
+            .and_then(|e| e.get(flag))
+            .or_else(|| self.db.account_flag(flag))
     }
 
     fn variable(&mut self, name: &str, repetition: usize) -> Value {
@@ -1579,6 +1626,7 @@ pub(crate) mod tests {
             themes: vec![],
             value_lists: vec![],
             accounts: vec![],
+            access: Default::default(),
             privilege_sets: vec![],
             locale: Locale::default(),
         }

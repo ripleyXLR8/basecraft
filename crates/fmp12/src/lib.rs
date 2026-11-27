@@ -42,6 +42,11 @@ pub enum Error {
     Truncated(usize),
     UnknownOpcode { op: u8, at: usize },
     Sector { id: u32, source: Box<Error> },
+    /// The file has accounts and does not log in by itself: open it with
+    /// an account name and password.
+    LoginRequired,
+    /// The account name and password were refused.
+    Login(security::LoginError),
 }
 
 impl std::fmt::Display for Error {
@@ -56,6 +61,10 @@ impl std::fmt::Display for Error {
                 write!(f, "unknown opcode 0x{op:02X} at offset {at}")
             }
             Error::Sector { id, source } => write!(f, "sector {id}: {source}"),
+            Error::LoginRequired => {
+                f.write_str("this file is protected: open it with an account name and password")
+            }
+            Error::Login(e) => e.fmt(f),
         }
     }
 }

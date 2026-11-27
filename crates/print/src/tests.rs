@@ -122,6 +122,7 @@ fn db(rows: &[(&str, &str, &str)]) -> Database {
         themes: vec![],
         value_lists: vec![],
         accounts: vec![],
+        access: Default::default(),
         privilege_sets: vec![],
         locale: Default::default(),
     }

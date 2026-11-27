@@ -21,6 +21,8 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+pub mod text;
+
 use calc::Value;
 use engine::{Database, Request};
 use fmp12::scripts::{

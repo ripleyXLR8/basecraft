@@ -2,11 +2,14 @@
 //!
 //! Browse, Find and Layout modes over a `.fmp12` file: layouts drawn at
 //! their real coordinates, editable fields, new/delete record, find
-//! requests, sort, and layout editing (`design.rs`). File › Save writes
-//! records and layouts back to the `.fmp12`.
+//! requests, sort, and layout editing (`design.rs`). Scripts run
+//! interactively (custom dialogs and pauses wait for the user), script
+//! triggers fire on layout, record, mode and field events, and the Script
+//! Workspace (`workspace.rs`) edits scripts. File › Save writes records,
+//! layouts and scripts back to the `.fmp12`.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
@@ -17,6 +20,8 @@ mod design;
 mod i18n;
 mod look;
 mod preview;
+mod workspace;
+use fmp12::triggers::event;
 use i18n::tr;
 use look::Look;
 
@@ -39,6 +44,18 @@ struct Doc {
     /// Where the file came from (desktop only).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     path: Option<std::path::PathBuf>,
+    /// Script triggers of layouts, objects and the file.
+    triggers: fmp12::triggers::Triggers,
+}
+
+/// A script run waiting for the user (custom dialog or pause).
+struct Active {
+    run: script::Run,
+    wait: script::Suspend,
+    /// Text typed in the dialog's input fields.
+    inputs: Vec<String>,
+    /// When a timed pause started (seconds, `egui` input time).
+    since: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -84,8 +101,20 @@ struct App {
     pending_step: Option<fmp12::scripts::Step>,
     /// Script chosen in the Scripts menu, run after drawing.
     pending_script: Option<u32>,
-    /// Custom dialogs shown by the last script (title, message).
+    /// Messages for the user (title, message).
     messages: Vec<(String, String)>,
+    /// Script run suspended on a dialog or a pause.
+    active: Option<Active>,
+    /// Scripts started by triggers, run one after the other: (script,
+    /// parameter calculation).
+    trigger_queue: VecDeque<(u32, Option<fmp12::scripts::Calc>)>,
+    /// Field object events of this frame (object id, trigger event).
+    obj_events: Vec<(u64, u16)>,
+    /// Script Workspace window.
+    workspace: workspace::Workspace,
+    /// The running script was started by a trigger: its layout changes do
+    /// not fire more triggers (no trigger loops).
+    from_trigger: bool,
     /// Sort applied to the found set (for sub-summaries in Preview).
     last_sort: Vec<(u32, Order)>,
     /// Preview mode: current page and page count.
@@ -159,6 +188,7 @@ impl App {
                     .cloned()
                     .collect();
                 let engine = script::Engine::load(&file).ok();
+                let triggers = fmp12::triggers::triggers(&file).unwrap_or_default();
                 *self = App {
                     engine,
                     doc: Some(Doc {
@@ -167,10 +197,24 @@ impl App {
                         layouts,
                         file,
                         path: None,
+                        triggers,
                     }),
                     incoming: self.incoming.clone(),
                     ..Default::default()
                 };
+                // The first window opens on the first layout: its layout
+                // triggers, then the file's OnFirstWindowOpen.
+                self.fire(event::LAYOUT_ENTER);
+                self.fire(event::MODE_ENTER);
+                self.fire(event::RECORD_LOAD);
+                if let Some(t) = self
+                    .doc
+                    .as_ref()
+                    .and_then(|d| d.triggers.file(event::FIRST_WINDOW_OPEN))
+                    .cloned()
+                {
+                    self.trigger_queue.push_back((t.script, t.parameter));
+                }
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -182,13 +226,25 @@ impl App {
             return;
         }
         let Some(d) = self.doc.as_mut() else { return };
-        // In Layout mode, saving the file saves the layout first.
+        // In Layout mode, saving the file saves the layout first; an open
+        // Script Workspace saves its scripts.
         if let Some(ds) = self.designer.as_mut() {
             ds.apply(d);
         }
+        if self.workspace.dirty
+            && let Some(e) = self.engine.as_mut()
+        {
+            e.scripts = self.workspace.scripts.clone();
+            self.workspace.dirty = false;
+        }
+        let scripts = self.engine.as_ref().map(|e| e.scripts.clone());
         let saved = d.db.save(&d.file).and_then(|b| {
             let f = fmp12::File::from_bytes(b)?;
-            fmp12::save::save_layouts(&f, &d.db.layouts)
+            let b = fmp12::save::save_layouts(&f, &d.db.layouts)?;
+            match &scripts {
+                Some(list) => fmp12::scripts_save::save_scripts(&fmp12::File::from_bytes(b)?, list),
+                None => Ok(b),
+            }
         });
         let bytes = match saved {
             Ok(b) => b,
@@ -198,7 +254,16 @@ impl App {
             }
         };
         match fmp12::File::from_bytes(bytes.clone()) {
-            Ok(f) => d.file = f,
+            Ok(f) => {
+                // Scripts as written (steps get their parameter nodes).
+                if let (Some(e), Ok(list)) = (self.engine.as_mut(), fmp12::scripts::scripts(&f)) {
+                    e.scripts = list;
+                    if !self.workspace.dirty {
+                        self.workspace.scripts = e.scripts.clone();
+                    }
+                }
+                d.file = f;
+            }
             Err(e) => {
                 self.error = Some(e.to_string());
                 return;
@@ -254,6 +319,7 @@ impl App {
         let errs = d.db.validate(t, r);
         if errs.is_empty() {
             self.editing = None;
+            self.fire(event::RECORD_COMMIT);
             return true;
         }
         let tbl = d.db.table(t);
@@ -276,29 +342,26 @@ impl App {
         false
     }
 
-    /// Runs a script (or a button step) with the window state of the app,
-    /// then copies the resulting layout, mode, found set and record back.
-    fn run_script_with(
+    /// Runs `f` with the app as script host: the window state (layout,
+    /// mode, found set, record) goes in, and comes back out changed.
+    fn with_host<R>(
         &mut self,
-        f: impl FnOnce(&mut script::Engine, &mut AppHost) -> script::Outcome,
-    ) {
-        if !self.commit() {
-            return;
-        }
-        let (Some(t), Some(mut engine)) = (self.table(), self.engine.take()) else {
-            return;
-        };
+        f: impl FnOnce(&mut script::Engine, &mut AppHost) -> R,
+    ) -> Option<R> {
+        let t = self.table()?;
+        let mut engine = self.engine.take()?;
         let found = self.found(t).clone();
         let pos = *self.current.get(&t).unwrap_or(&0);
         let mode = self.mode();
         let sorted = self.sorted.get(&t).copied().unwrap_or(false);
-        let Some(d) = self.doc.as_mut() else {
+        let layout_id = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.layouts.get(self.layout))
+            .map(|l| l.id);
+        let (Some(d), Some(layout_id)) = (self.doc.as_mut(), layout_id) else {
             self.engine = Some(engine);
-            return;
-        };
-        let Some(layout_id) = d.layouts.get(self.layout).map(|l| l.id) else {
-            self.engine = Some(engine);
-            return;
+            return None;
         };
         let mut window = script::Window::new(&d.db, layout_id);
         window.found = found;
@@ -312,29 +375,202 @@ impl App {
         let mut host = AppHost {
             db: &mut d.db,
             window,
-            dialogs: Vec::new(),
         };
-        let outcome = f(&mut engine, &mut host);
-        let AppHost {
-            window, dialogs, ..
-        } = host;
+        let out = f(&mut engine, &mut host);
+        let window = host.window;
         self.engine = Some(engine);
-        self.messages.extend(dialogs);
+        let old_layout = self.layout;
         if let Some(i) = d.layouts.iter().position(|l| l.id == window.layout) {
             self.layout = i;
         }
         self.mode = Some(match window.mode {
             script::Mode::Find => Mode::Find,
-            _ => Mode::Browse,
+            script::Mode::Preview => Mode::Preview,
+            script::Mode::Browse => Mode::Browse,
         });
+        if mode == Mode::Find && window.mode == script::Mode::Find {
+            // Requests built by the script show in the find form.
+            self.requests = window
+                .requests
+                .iter()
+                .map(|r| (r.criteria.iter().cloned().collect(), r.omit))
+                .collect();
+        }
         if let Some(t2) = self.table() {
             self.found.insert(t2, window.found);
             self.current.insert(t2, window.current);
             self.sorted.insert(t2, window.sorted);
         }
         self.dirty = true;
-        if outcome.last_error != 0 && outcome.halted {
-            self.error = Some(format!("{} {}", tr("Script error"), outcome.last_error));
+        if self.layout != old_layout && !self.from_trigger {
+            self.fire(event::LAYOUT_ENTER);
+            self.fire(event::RECORD_LOAD);
+        }
+        Some(out)
+    }
+
+    /// Starts a script or a button step and runs it until it ends or waits.
+    fn start_run(
+        &mut self,
+        trigger: bool,
+        start: impl FnOnce(&mut script::Engine, &mut AppHost) -> script::Run,
+    ) {
+        if self.active.is_some() || !self.commit() {
+            return;
+        }
+        self.from_trigger = trigger;
+        let r = self.with_host(|e, h| {
+            let mut run = start(e, h);
+            let st = run.resume(e, h, script::Answer::Start);
+            (run, st)
+        });
+        if let Some((run, st)) = r {
+            self.after(run, st, 0.0);
+        }
+    }
+
+    /// Answers the waiting run and continues it.
+    fn answer(&mut self, a: script::Answer, now: f64) {
+        let Some(mut act) = self.active.take() else {
+            return;
+        };
+        if let Some(st) = self.with_host(|e, h| act.run.resume(e, h, a)) {
+            self.after(act.run, st, now);
+        }
+    }
+
+    fn after(&mut self, run: script::Run, st: script::Status, now: f64) {
+        match st {
+            script::Status::Finished(o) => {
+                if o.last_error != 0 && o.halted {
+                    self.error = Some(format!("{} {}", tr("Script error"), o.last_error));
+                }
+            }
+            script::Status::Suspended(wait) => {
+                let inputs = match &wait {
+                    script::Suspend::Dialog(d) => d.inputs.iter().map(|i| i.2.clone()).collect(),
+                    script::Suspend::Pause(_) => Vec::new(),
+                };
+                self.active = Some(Active {
+                    run,
+                    wait,
+                    inputs,
+                    since: now,
+                });
+            }
+        }
+    }
+
+    /// Queues the current layout's trigger for `ev` (in the current mode).
+    fn fire(&mut self, ev: u16) {
+        let Some(d) = self.doc.as_ref() else { return };
+        let Some(l) = d.layouts.get(self.layout) else {
+            return;
+        };
+        let bit = match self.mode() {
+            Mode::Find => fmp12::triggers::mode::FIND,
+            Mode::Preview => fmp12::triggers::mode::PREVIEW,
+            Mode::Browse | Mode::Layout => fmp12::triggers::mode::BROWSE,
+        };
+        if self.mode() == Mode::Layout {
+            return;
+        }
+        if let Some(t) = d.triggers.layout(l.id, ev, bit) {
+            self.trigger_queue
+                .push_back((t.script, t.parameter.clone()));
+        }
+    }
+
+    /// Queues an object's trigger for `ev`.
+    fn fire_object(&mut self, object: u64, ev: u16) {
+        let Some(d) = self.doc.as_ref() else { return };
+        let Some(l) = d.layouts.get(self.layout) else {
+            return;
+        };
+        if let Some(t) = d.triggers.object(l.id, object, ev) {
+            self.trigger_queue
+                .push_back((t.script, t.parameter.clone()));
+        }
+    }
+
+    /// Starts the next triggered script when nothing runs.
+    fn run_triggers(&mut self) {
+        if self.active.is_some() {
+            return;
+        }
+        let Some((script, param)) = self.trigger_queue.pop_front() else {
+            return;
+        };
+        let value = param.and_then(|c| {
+            let t = self.table()?;
+            let rec = self.current_record();
+            let d = self.doc.as_ref()?;
+            let to = (d.layouts.get(self.layout)?.table_occurrence & 0xFFF) as u32;
+            Some(d.db.eval_tokens(&c.0, t, to, rec))
+        });
+        self.start_run(true, |e, h| e.start(h, script, value));
+    }
+
+    /// The dialog or the pause bar of the waiting script.
+    fn script_wait_ui(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let mut answer = None;
+        let Some(act) = self.active.as_mut() else {
+            return;
+        };
+        match &act.wait {
+            script::Suspend::Dialog(d) => {
+                let d = d.clone();
+                egui::Modal::new(egui::Id::NULL.with("script_dialog")).show(ctx, |ui| {
+                    ui.set_min_width(320.0);
+                    ui.set_max_width(480.0);
+                    if !d.title.is_empty() {
+                        ui.heading(&d.title);
+                    }
+                    if !d.message.is_empty() {
+                        ui.label(&d.message);
+                    }
+                    for (i, (_, label, _)) in d.inputs.iter().enumerate() {
+                        if !label.is_empty() {
+                            ui.label(label);
+                        }
+                        if let Some(v) = act.inputs.get_mut(i) {
+                            ui.text_edit_singleline(v);
+                        }
+                    }
+                    ui.add_space(6.0);
+                    // FileMaker puts button 1 (the default) on the right.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        for (i, b) in d.buttons.iter().enumerate() {
+                            let r = ui.button(b);
+                            if r.clicked()
+                                || i == 0 && ui.input(|x| x.key_pressed(egui::Key::Enter))
+                            {
+                                answer = Some(script::Answer::Dialog(script::DialogAnswer {
+                                    button: i + 1,
+                                    inputs: act.inputs.clone(),
+                                }));
+                            }
+                        }
+                    });
+                });
+            }
+            script::Suspend::Pause(secs) => {
+                if let Some(s) = secs {
+                    if act.since == 0.0 {
+                        act.since = now;
+                    }
+                    let left = act.since + s - now;
+                    if left <= 0.0 {
+                        answer = Some(script::Answer::Continue);
+                    } else {
+                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+                    }
+                }
+            }
+        }
+        if let Some(a) = answer {
+            self.answer(a, now);
         }
     }
 
@@ -374,6 +610,7 @@ impl App {
         let n = f.len();
         self.current.insert(t, n - 1);
         self.dirty = true;
+        self.fire(event::RECORD_LOAD);
     }
 
     fn delete_record(&mut self) {
@@ -422,6 +659,7 @@ impl App {
         self.omit = false;
         self.requests = vec![(BTreeMap::new(), false)];
         self.req = 0;
+        self.fire(event::MODE_ENTER);
     }
 
     /// Stores the edited request and switches to request `i` (a new one past the end).
@@ -463,6 +701,8 @@ impl App {
         self.found.insert(t, found);
         self.current.insert(t, 0);
         self.mode = Some(Mode::Browse);
+        self.fire(event::MODE_ENTER);
+        self.fire(event::RECORD_LOAD);
     }
 
     /// Records › Omit Record: removes the current record from the found set.
@@ -695,6 +935,12 @@ impl App {
                 }
             });
             ui.menu_button(tr("Scripts"), |ui| {
+                let ws = egui::Button::new(tr("Script Workspace…")).shortcut_text("Ctrl+Shift+S");
+                if ui.add_enabled(self.engine.is_some(), ws).clicked() {
+                    self.open_workspace();
+                    ui.close();
+                }
+                ui.separator();
                 let list: Vec<(u32, String)> = self
                     .engine
                     .as_ref()
@@ -724,8 +970,30 @@ impl App {
         });
     }
 
+    fn open_workspace(&mut self) {
+        if let Some(e) = self.engine.as_ref() {
+            self.workspace.show_scripts(&e.scripts);
+        }
+    }
+
     /// Status toolbar: navigation, counts, record commands.
     fn status_toolbar(&mut self, ui: &mut egui::Ui) {
+        if matches!(
+            self.active.as_ref().map(|a| &a.wait),
+            Some(script::Suspend::Pause(_))
+        ) {
+            let now = ui.input(|i| i.time);
+            ui.horizontal(|ui| {
+                ui.colored_label(Color32::from_rgb(0, 90, 180), tr("Script paused"));
+                if ui.button(tr("Continue")).clicked() {
+                    self.answer(script::Answer::Continue, now);
+                }
+                if ui.button(tr("Cancel")).clicked() {
+                    self.answer(script::Answer::Cancel, now);
+                }
+            });
+            ui.separator();
+        }
         if let Some(ds) = self.designer.as_mut() {
             ui.horizontal(|ui| ds.tools(ui));
             return;
@@ -741,9 +1009,11 @@ impl App {
         ui.horizontal(|ui| {
             if ui.button("◀").clicked() && pos > 0 && self.commit() {
                 self.current.insert(t, pos - 1);
+                self.fire(event::RECORD_LOAD);
             }
             if ui.button("▶").clicked() && pos + 1 < found && self.commit() {
                 self.current.insert(t, pos + 1);
+                self.fire(event::RECORD_LOAD);
             }
             ui.label(if found == 0 {
                 "0".to_string()
@@ -818,6 +1088,7 @@ impl App {
                     }
                     if ui.button(tr("Exit Preview")).clicked() {
                         self.mode = Some(Mode::Browse);
+                        self.fire(event::MODE_ENTER);
                     }
                 }
                 Mode::Find => {
@@ -838,6 +1109,7 @@ impl App {
                     ui.checkbox(&mut self.omit, tr("Omit"));
                     if ui.button(tr("Cancel")).clicked() {
                         self.mode = Some(Mode::Browse);
+                        self.fire(event::MODE_ENTER);
                     }
                 }
             }
@@ -920,9 +1192,11 @@ impl App {
             {
                 if in_preview {
                     self.mode = Some(Mode::Browse);
+                    self.fire(event::MODE_ENTER);
                 } else if self.commit() {
                     self.mode = Some(Mode::Preview);
                     self.page = 0;
+                    self.fire(event::MODE_ENTER);
                 }
             }
             let mut edit = false;
@@ -934,8 +1208,11 @@ impl App {
                 self.enter_layout();
             }
         });
-        if let Some(i) = chosen.filter(|_| self.commit()) {
+        if let Some(i) = chosen.filter(|i| *i != self.layout && self.commit()) {
+            self.fire(event::LAYOUT_EXIT);
             self.layout = i;
+            self.fire(event::LAYOUT_ENTER);
+            self.fire(event::RECORD_LOAD);
         }
     }
 
@@ -1202,6 +1479,7 @@ impl App {
                                     Some((ptable, Some(rr))),
                                     &mut self.request,
                                     &mut self.dirty,
+                                    &mut self.obj_events,
                                 );
                             }
                         }
@@ -1241,6 +1519,7 @@ impl App {
                             owner,
                             &mut self.request,
                             &mut self.dirty,
+                            &mut self.obj_events,
                         );
                     }
                 }
@@ -1352,12 +1631,11 @@ fn owner_of(
     Some((ft, first))
 }
 
-/// The app as a script host. Custom dialogs are answered with their
-/// default button and shown to the user after the script ends.
+/// The app as a script host. Dialogs and pauses suspend the run (see
+/// `App::start_run`), so `Host::dialog` is not used.
 struct AppHost<'a> {
     db: &'a mut Database,
     window: script::Window,
-    dialogs: Vec<(String, String)>,
 }
 
 impl script::Host for AppHost<'_> {
@@ -1366,14 +1644,6 @@ impl script::Host for AppHost<'_> {
     }
     fn window(&mut self) -> &mut script::Window {
         &mut self.window
-    }
-    fn dialog(&mut self, d: &script::Dialog) -> script::DialogAnswer {
-        // ponytail: egui cannot block mid-script; FileMaker would wait for a click.
-        self.dialogs.push((d.title.clone(), d.message.clone()));
-        script::DialogAnswer {
-            button: 1,
-            inputs: Vec::new(),
-        }
     }
 }
 
@@ -1394,6 +1664,7 @@ fn draw_object(
     owner: Option<(u32, Option<usize>)>,
     request: &mut BTreeMap<u32, String>,
     dirty: &mut bool,
+    events: &mut Vec<(u64, u16)>,
 ) {
     lk.paint_box(painter, r);
     if o.kind != 1 {
@@ -1461,6 +1732,7 @@ fn draw_object(
                         if let Some(v) = picked {
                             *s = v;
                             changed = true;
+                            events.push((o.id, event::OBJECT_MODIFY));
                         }
                     }
                     None => {
@@ -1473,8 +1745,16 @@ fn draw_object(
                                 Color32::from_gray(170),
                             );
                         }
-                        if ui.put(inner, lk.edit(s)).changed() {
+                        let r = ui.put(inner, lk.edit(s));
+                        if r.gained_focus() {
+                            events.push((o.id, event::OBJECT_ENTER));
+                        }
+                        if r.changed() {
                             changed = true;
+                            events.push((o.id, event::OBJECT_MODIFY));
+                        }
+                        if r.lost_focus() {
+                            events.push((o.id, event::OBJECT_EXIT));
                         }
                     }
                 }
@@ -1568,6 +1848,16 @@ impl eframe::App for App {
                 });
             }
         }
+        if self.engine.is_some()
+            && ctx.input_mut(|i| {
+                i.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::S,
+                )
+            })
+        {
+            self.open_workspace();
+        }
         if self.doc.is_some()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
         {
@@ -1583,11 +1873,29 @@ impl eframe::App for App {
             }
         }
         self.layout_dialogs(&ctx);
+        for (o, ev) in std::mem::take(&mut self.obj_events) {
+            self.fire_object(o, ev);
+        }
         if let Some(step) = self.pending_step.take() {
-            self.run_script_with(|e, h| e.run_step(h, &step));
+            self.start_run(false, |e, h| e.start_step(h, &step));
         }
         if let Some(id) = self.pending_script.take() {
-            self.run_script_with(|e, h| e.perform(h, id, None));
+            self.start_run(false, |e, h| e.start(h, id, None));
+        }
+        self.run_triggers();
+        self.script_wait_ui(&ctx);
+        if let Some(d) = self.doc.as_ref() {
+            self.workspace.ui(&ctx, d);
+        }
+        if std::mem::take(&mut self.workspace.save)
+            && let Some(e) = self.engine.as_mut()
+        {
+            e.scripts = self.workspace.scripts.clone();
+            self.workspace.dirty = false;
+            self.dirty = true;
+        }
+        if let Some(id) = self.workspace.run.take() {
+            self.pending_script = Some(id);
         }
         if let Some((title, msg)) = self.messages.first().cloned() {
             egui::Modal::new(egui::Id::NULL.with("script_dialog")).show(&ctx, |ui| {
@@ -1732,4 +2040,122 @@ fn main() {
             fail(&format!("failed to start BaseCraft: {e:?}"));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use fmp12::scripts::{Calc, DialogButton, Script, Step, StepParams, id};
+
+    fn template(name: &str) -> Option<App> {
+        let p =
+            std::path::PathBuf::from(r"C:\Program Files\FileMaker\FileMaker Pro\DynamicTemplates")
+                .join(name)
+                .join("en.fmp12");
+        let bytes = std::fs::read(p).ok()?;
+        let mut app = App::default();
+        app.open(name.into(), bytes);
+        Some(app)
+    }
+
+    /// Contacts runs "Sort by Name" from the Contact List's OnLayoutEnter
+    /// trigger when it opens.
+    #[test]
+    fn layout_enter_trigger_on_open() {
+        let Some(mut app) = template("Contacts") else {
+            return;
+        };
+        assert_eq!(app.trigger_queue.front().map(|t| t.0), Some(3));
+        app.run_triggers();
+        let t = app.table().unwrap();
+        assert_eq!(app.sorted.get(&t), Some(&true));
+        assert!(app.active.is_none());
+    }
+
+    /// A custom dialog waits for the user; the answer resumes the script.
+    #[test]
+    fn dialog_waits_for_the_user() {
+        let Some(mut app) = template("Tasks") else {
+            return;
+        };
+        app.trigger_queue.clear();
+        let lit = |s: &str| Some(Calc(fmp12::save::text_literal_tokens(s)));
+        let mut d = Step::new(id::SHOW_CUSTOM_DIALOG);
+        d.params = StepParams::ShowCustomDialog {
+            title: lit("Hello"),
+            message: lit("Pick one"),
+            buttons: vec![
+                DialogButton {
+                    label: lit("OK"),
+                    commit: true,
+                },
+                DialogButton {
+                    label: lit("Cancel"),
+                    commit: false,
+                },
+            ],
+            input: None,
+        };
+        let mut set = Step::new(id::SET_VARIABLE);
+        set.params = StepParams::SetVariable {
+            name: "$$choice".into(),
+            // Get ( LastMessageChoice )
+            value: Some(Calc(vec![0x9B, 0x04, 0x9C, 0x21, 0x05])),
+            repetition: None,
+        };
+        let e = app.engine.as_mut().unwrap();
+        e.scripts.push(Script {
+            id: 99,
+            name: "Ask".into(),
+            options: 8,
+            steps: vec![d, set],
+        });
+        app.start_run(false, |e, h| e.start(h, 99, None));
+        let Some(Active {
+            wait: script::Suspend::Dialog(dlg),
+            ..
+        }) = app.active.as_ref()
+        else {
+            panic!("no dialog")
+        };
+        assert_eq!(dlg.buttons, ["OK", "Cancel"]);
+        app.answer(
+            script::Answer::Dialog(script::DialogAnswer {
+                button: 2,
+                inputs: Vec::new(),
+            }),
+            0.0,
+        );
+        assert!(app.active.is_none());
+        let g = &app.engine.as_ref().unwrap().globals;
+        assert_eq!(
+            g.get(&("$$choice".into(), 1)).map(|v| v.to_text()),
+            Some("2".into())
+        );
+    }
+
+    /// Scripts edited in the workspace go through save_scripts.
+    #[test]
+    fn workspace_scripts_are_saved() {
+        let Some(mut app) = template("Tasks") else {
+            return;
+        };
+        app.open_workspace();
+        let n = app.workspace.scripts.len();
+        app.workspace.scripts.push(Script {
+            id: 50,
+            name: "From the workspace".into(),
+            options: 8,
+            steps: vec![Step::new(id::BEEP)],
+        });
+        app.workspace.save = true;
+        let e = app.engine.as_mut().unwrap();
+        e.scripts = app.workspace.scripts.clone();
+        let d = app.doc.as_ref().unwrap();
+        let b = fmp12::scripts_save::save_scripts(&d.file, &e.scripts).unwrap();
+        let back = fmp12::scripts::scripts(&fmp12::File::from_bytes(b).unwrap()).unwrap();
+        assert_eq!(back.len(), n + 1);
+        assert_eq!(back.last().unwrap().steps[0].id, id::BEEP);
+    }
 }

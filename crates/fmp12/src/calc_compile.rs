@@ -21,6 +21,22 @@
 use crate::calc_tables::{FUNCTIONS, FUNCTIONS2, GET_FLAGS, OPS};
 use crate::save::{encode_text, path_elem};
 
+/// Every function name the compiler knows, and every `Get` flag, sorted
+/// (for a calculation editor's function list).
+pub fn function_names() -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut f: Vec<&str> = FUNCTIONS
+        .iter()
+        .map(|(_, n)| *n)
+        .chain(FUNCTIONS2.iter().map(|(_, _, n)| *n))
+        .filter(|n| *n != "Get")
+        .collect();
+    f.sort_unstable_by_key(|n| n.to_lowercase());
+    f.dedup();
+    let mut g: Vec<&str> = GET_FLAGS.iter().map(|(_, n)| *n).collect();
+    g.sort_unstable_by_key(|n| n.to_lowercase());
+    (f, g)
+}
+
 /// Resolves field names while compiling.
 pub trait Resolve {
     /// (table occurrence, field id) of `TO::Field` (`to` given) or of a

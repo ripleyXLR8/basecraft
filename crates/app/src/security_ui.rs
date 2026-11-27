@@ -83,10 +83,10 @@ pub fn t(key: &'static str) -> &'static str {
             "Les jeux de privilèges prédéfinis ne peuvent pas être modifiés."
         }
         "Confirm Full Access Login" => "Confirmer la connexion avec accès intégral",
-        "Confirm new password:" => "Confirmer le nouveau mot de passe :",
+        "Confirm new password:" => "Confirmation du mot de passe :",
         "The new passwords do not match." => "Les nouveaux mots de passe ne correspondent pas.",
         "The password for this account must be changed." => {
-            "Le mot de passe de ce compte doit être modifié."
+            "Vous devez modifier le mot de passe de votre compte FileMaker avant d'ouvrir ce fichier. Veuillez entrer votre ancien mot de passe une fois et votre nouveau mot de passe deux fois."
         }
         "Enter a full access account name and password to save these changes." => {
             "Saisissez le nom et le mot de passe d'un compte à accès intégral pour enregistrer ces modifications."

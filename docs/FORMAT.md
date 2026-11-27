@@ -1375,6 +1375,20 @@ their digest, the name index (§14 collation keys), display order, count
 and last id; untouched members keep their bytes. "Log in using" is
 turned off when its account's password or name changes.
 
+Checked in FileMaker Pro 26 (`tools/oracle/security_check.ps1`,
+example `secdemo`): a copy of Tasks where BaseCraft added a set
+"Clerks" and four accounts opens without warning. alice (Clerks,
+"test123") logs in and the no-access layout shows « <Accès refusé> »;
+a wrong password and the inactive bob get FileMaker's alert; carol
+(must change) gets FileMaker's « Modifier mot de passe » dialog; Admin
+logs in with the password BaseCraft set. Save a Copy as XML shows Clerks
+as written: Tasks create and view, edit limited by `Tasks::Status ≠
+"Done"`, no delete, one field view only and one no access, the other
+tables view only, "Task Details" no access and the other layouts view
+only, the first script no access and the others executable, value lists
+view only, print yes, export no, editing menus only; the accounts with
+their sets, carol's "change password on next login".
+
 ### Account script steps
 
 As FileMaker 26 stores them (steps it wrote from a pasted snippet, and

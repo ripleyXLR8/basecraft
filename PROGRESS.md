@@ -8,7 +8,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 |---|-----------|-------|
 | M0 | Bootstrap: workspace, CI, docs | ✅ |
 | M1 | Read `.fmp12`: schema, data, layouts, scripts | 🚧 |
-| M2 | Calculation engine | ⏳ |
+| M2 | Calculation engine | 🚧 |
 | M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | ⏳ |
 | M4 | GUI: Browse / Find / List / Table views | ⏳ |
 | M5 | Script engine and Script Workspace | ⏳ |
@@ -43,7 +43,32 @@ Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) pars
 Reference: [docs/reference/functions.txt](docs/reference/functions.txt) (234 functions) and
 [docs/reference/get_functions.txt](docs/reference/get_functions.txt) (140 `Get()` flags).
 
+Crate: `crates/calc`. Run `cargo test -p calc registry_coverage -- --nocapture` for the live
+numbers and the list of missing functions.
+
 | Item | Done / total |
 |------|-------------:|
-| Functions | 0 / 234 |
-| `Get()` flags | 0 / 140 |
+| Functions | 142 / 234 |
+| `Get()` flags answered without a host | 10 / 139 |
+
+The 234 reference lines include `Status` twice. The 139 `Get()` flags exclude the
+`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 10
+built-in flags are CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimestamp
+(UTC, because the engine has no time-zone data), CurrentTimeUTCMilliseconds,
+CurrentTimeUTCMicroseconds, UUID, CalculationRepetitionNumber, SystemPlatform and
+ApplicationArchitecture.
+
+| Feature | State |
+|---------|-------|
+| Lexer, parser with error positions and codes, AST, round-trip pretty-printer | ✅ |
+| Operators, precedence, coercions, exact decimal arithmetic (400 digits) | ✅ |
+| If / Case / Choose / Let / While / Evaluate / EvaluationError / IsValid / SetPrecision | ✅ |
+| Text, value-list and word functions | ✅ |
+| Number, financial and math functions (decimal Exp/Ln/Sqrt/Pi; trig through f64) | ✅ |
+| Date, time and timestamp functions (en_US formats) | ✅ |
+| JSON (Set/Get/Delete/ListKeys/ListValues/Format/MakeArray/GetElementType) | ✅ |
+| Base64, hex, URL encoding, CryptDigest, CryptAuthCode, TextEncode/Decode (UTF-8) | ✅ |
+| Aggregates over lists, repetitions and related records (through `Context`) | ✅ |
+| Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped | 🚧 |
+| Schema, design, layout, SQL, AI, sensor and encryption functions | ⏳ |
+| Custom functions, file-locale date/number formats | ⏳ |

@@ -252,3 +252,8 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Buttons run their action (single step or Perform Script) | ✅ |
 | Custom dialogs (shown after the script; default button used) | 🚧 |
 | Script triggers, Script Workspace editor, debugger | ⏳ |
+
+Layout writing check (2026-11-27): a file whose "Contact List" layout BaseCraft
+edited (object moved, text changed, object deleted, body taller, new text,
+rectangle and button) opens in FileMaker Pro 26 without a warning. FileMaker's
+Layout mode shows every edit.

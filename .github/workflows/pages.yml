@@ -19,7 +19,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: jetli/trunk-action@v0.5.0
-      - run: trunk build --release --public-url /openmaker/
+      - run: trunk build --release --public-url /basecraft/
         working-directory: crates/app
       - uses: actions/upload-pages-artifact@v3
         with:

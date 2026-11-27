@@ -1,4 +1,4 @@
-//! UI strings. English keys; French when `OPENMAKER_LANG` or `LANG` starts
+//! UI strings. English keys; French when `BASECRAFT_LANG` or `LANG` starts
 //! with "fr" (desktop) or when the browser language is French (web).
 
 use std::sync::OnceLock;
@@ -10,7 +10,7 @@ fn french() -> bool {
         if let Some(l) = web_sys::window().and_then(|w| w.navigator().language()) {
             return l.to_lowercase().starts_with("fr");
         }
-        ["OPENMAKER_LANG", "LANG", "LC_ALL"]
+        ["BASECRAFT_LANG", "LANG", "LC_ALL"]
             .iter()
             .filter_map(|v| std::env::var(v).ok())
             .any(|v| v.to_lowercase().starts_with("fr"))

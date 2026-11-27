@@ -5,4 +5,4 @@ members = ["crates/*", "tools/fmdump"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/ripleyXLR8/openmaker"
+repository = "https://github.com/ripleyXLR8/basecraft"

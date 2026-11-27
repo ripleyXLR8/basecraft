@@ -6,7 +6,7 @@
 //! fmdump <file> entries        writer view: hex path elements, hex item bytes
 //! fmdump <file> tables         tables and fields
 //! fmdump <file> graph          table occurrences and relationships
-//! fmdump <file> rewrite <out>   re-serialise the file with OpenMaker's writer
+//! fmdump <file> rewrite <out>   re-serialise the file with BaseCraft's writer
 //! fmdump <file> records <tbl>  records of a table (by name)
 
 use fmp12::{Chunk, File, schema};

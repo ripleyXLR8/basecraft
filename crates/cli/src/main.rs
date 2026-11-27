@@ -1,19 +1,19 @@
-//! `openmaker-cli`: drive OpenMaker from scripts and AI agents.
+//! `basecraft-cli`: drive BaseCraft from scripts and AI agents.
 //!
 //! Every command prints one JSON document on stdout. Errors print
 //! `{"error": "..."}` and exit with status 1. Nothing is written to disk
 //! unless `-o <out.fmp12>` or `--in-place` is given.
 //!
 //! ```text
-//! openmaker-cli info    <file>
-//! openmaker-cli records <file> <table> [--find Field=criterion]… [--omit Field=criterion]…
+//! basecraft-cli info    <file>
+//! basecraft-cli records <file> <table> [--find Field=criterion]… [--omit Field=criterion]…
 //!                       [--sort Field[:desc]]… [--limit N]
-//! openmaker-cli eval    <file> <calculation> [--table T] [--record ID]
-//! openmaker-cli new     <file> <table> [Field=value]…        (-o out | --in-place)
-//! openmaker-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
-//! openmaker-cli delete  <file> <table> <id>                   (-o out | --in-place)
-//! openmaker-cli session <file>     JSON-lines commands on stdin, one reply per line
-//! openmaker-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
+//! basecraft-cli eval    <file> <calculation> [--table T] [--record ID]
+//! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place)
+//! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
+//! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)
+//! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
+//! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
 //! ```
 
 use std::io::{BufRead, Write};
@@ -416,7 +416,7 @@ fn main_inner() -> Res<Json> {
         std::process::exit(0);
     }
     let [cmd, file, rest @ ..] = args.as_slice() else {
-        return Err("usage: openmaker-cli <info|records|eval|new|set|delete|session> <file.fmp12> [args] (see README)".into());
+        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|session> <file.fmp12> [args] (see README)".into());
     };
     let mut d = Doc::open(file)?;
     if cmd == "session" {

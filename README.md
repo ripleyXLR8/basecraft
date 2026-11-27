@@ -1,20 +1,20 @@
-# OpenMaker
+# BaseCraft
 
-[![CI](https://github.com/ripleyXLR8/openmaker/actions/workflows/ci.yml/badge.svg)](https://github.com/ripleyXLR8/openmaker/actions/workflows/ci.yml)
+[![CI](https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg)](https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml)
 [![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-43%25-orange)](#progress-to-10)
-[![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-blue)](https://ripleyxlr8.github.io/openmaker/)
+[![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-blue)](https://ripleyxlr8.github.io/basecraft/)
 
-**OpenMaker is an open-source, from-scratch reimplementation, in Rust, of the
+**BaseCraft is an open-source, from-scratch reimplementation, in Rust, of the
 FileMaker Pro 26 desktop database application.** It aims to open, edit and save
 real `.fmp12` files and to behave like the original: calculation language,
 script steps, layouts, find/sort, and Browse / Find / Layout / Preview modes.
 
-> 🇫🇷 *OpenMaker est une recréation libre, en Rust, de FileMaker Pro 26 :
+> 🇫🇷 *BaseCraft est une recréation libre, en Rust, de FileMaker Pro 26 :
 > lecture et écriture des fichiers `.fmp12`, moteur de calcul, scripts,
 > layouts et interface. Avancement détaillé dans [PROGRESS.md](PROGRESS.md).*
 
 > **Not affiliated with Claris.** FileMaker is a trademark of Claris
-> International Inc. OpenMaker contains no Claris code, binaries, artwork,
+> International Inc. BaseCraft contains no Claris code, binaries, artwork,
 > themes, templates or documentation text. File-format compatibility comes
 > from reverse engineering done for interoperability.
 
@@ -53,17 +53,17 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 
 ## Command line for scripts and AI agents
 
-`openmaker-cli` drives OpenMaker without a GUI. Every command prints **JSON**,
+`basecraft-cli` drives BaseCraft without a GUI. Every command prints **JSON**,
 so tools and AI agents can read the results directly. Nothing is written to disk unless
 you pass `-o <out.fmp12>` or `--in-place`; without them, writes are dry runs.
 
 ```sh
-openmaker-cli info    Contacts.fmp12                       # tables, fields, relationships, layouts, value lists
-openmaker-cli records Contacts.fmp12 Contacts --find "First Name=ad" --sort "Last Name:desc" --limit 20
-openmaker-cli eval    Contacts.fmp12 'Upper ( ${Last Name} )' --table Contacts --record 2
-openmaker-cli new     Contacts.fmp12 Contacts "First Name=Ada" "Last Name=Lovelace" -o out.fmp12
-openmaker-cli set     Contacts.fmp12 Contacts 2 "Company=Navy" --in-place
-openmaker-cli delete  Contacts.fmp12 Contacts 2 --in-place
+basecraft-cli info    Contacts.fmp12                       # tables, fields, relationships, layouts, value lists
+basecraft-cli records Contacts.fmp12 Contacts --find "First Name=ad" --sort "Last Name:desc" --limit 20
+basecraft-cli eval    Contacts.fmp12 'Upper ( ${Last Name} )' --table Contacts --record 2
+basecraft-cli new     Contacts.fmp12 Contacts "First Name=Ada" "Last Name=Lovelace" -o out.fmp12
+basecraft-cli set     Contacts.fmp12 Contacts 2 "Company=Navy" --in-place
+basecraft-cli delete  Contacts.fmp12 Contacts 2 --in-place
 ```
 
 * `records` uses FileMaker's find syntax (`=`, `==`, `*`, `<`, `>`, ranges `a...b`,
@@ -75,7 +75,7 @@ openmaker-cli delete  Contacts.fmp12 Contacts 2 --in-place
   with one JSON line each:
 
 ```sh
-openmaker-cli session Contacts.fmp12
+basecraft-cli session Contacts.fmp12
 {"cmd":"records","args":["Contacts","--find","Company=Navy"]}
 {"cmd":"set","args":["Contacts","1","Company=Army"]}
 {"cmd":"save","args":["-o","out.fmp12"]}
@@ -86,7 +86,7 @@ Files written by the CLI open in FileMaker Pro 26.
 
 ### MCP server (Claude and other AI agents)
 
-`openmaker-cli mcp [file.fmp12]` is a [Model Context Protocol](https://modelcontextprotocol.io)
+`basecraft-cli mcp [file.fmp12]` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server on stdio. It exposes these tools:
 
 * `open_file`, `describe_database`;
@@ -97,19 +97,19 @@ server on stdio. It exposes these tools:
 Changes stay in memory until `save_file` is called.
 
 ```sh
-cargo install --path crates/cli                      # installs openmaker-cli
-claude mcp add openmaker -- openmaker-cli mcp         # Claude Code
+cargo install --path crates/cli                      # installs basecraft-cli
+claude mcp add basecraft -- basecraft-cli mcp         # Claude Code
 ```
 
 Claude Desktop (`claude_desktop_config.json`):
 
 ```json
-{ "mcpServers": { "openmaker": { "command": "openmaker-cli", "args": ["mcp"] } } }
+{ "mcpServers": { "basecraft": { "command": "basecraft-cli", "args": ["mcp"] } } }
 ```
 
 ## Web version
 
-OpenMaker also runs in the browser (WebAssembly): **https://ripleyxlr8.github.io/openmaker/**.
+BaseCraft also runs in the browser (WebAssembly): **https://ripleyxlr8.github.io/basecraft/**.
 Open or drop a `.fmp12` file. It stays on your machine, because everything runs
 locally in the page. To build it yourself: `cd crates/app && trunk serve`.
 
@@ -117,8 +117,8 @@ locally in the page. To build it yourself: `cd crates/app && trunk serve`.
 
 ```
 crates/fmp12   .fmp12 (HBAM7) reader, later writer
-crates/app     the OpenMaker desktop application (egui)
-crates/cli     openmaker-cli: JSON command line for scripts and AI agents
+crates/app     the BaseCraft desktop application (egui)
+crates/cli     basecraft-cli: JSON command line for scripts and AI agents
 tools/fmdump   command-line inspector for .fmp12 files
 tools/oracle   scripts that drive a real FileMaker Pro to produce test oracles
 docs/          format specification and reference lists
@@ -130,7 +130,7 @@ found sets, find, sort). Planned: `script` (script engine).
 ## Try it
 
 ```sh
-cargo run -p openmaker -- MyDatabase.fmp12   # GUI (set OPENMAKER_LANG=fr for French)
+cargo run -p basecraft -- MyDatabase.fmp12   # GUI (set BASECRAFT_LANG=fr for French)
 ```
 
 ```sh

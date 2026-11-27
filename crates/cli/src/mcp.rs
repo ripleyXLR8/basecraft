@@ -1,7 +1,7 @@
-//! Model Context Protocol server (`openmaker-cli mcp [file]`).
+//! Model Context Protocol server (`basecraft-cli mcp [file]`).
 //!
 //! Speaks JSON-RPC 2.0 over stdio, one message per line, as MCP's stdio
-//! transport requires. Exposes OpenMaker operations as tools; each tool
+//! transport requires. Exposes BaseCraft operations as tools; each tool
 //! returns the same JSON the command line prints.
 
 use std::io::{BufRead, Write};
@@ -170,8 +170,8 @@ fn handle(doc: &mut Option<Doc>, msg: &Json) -> Option<Json> {
         "initialize" => json!({
             "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "openmaker", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": "OpenMaker reads and writes FileMaker .fmp12 files. Call open_file first, then use the other tools. Writes stay in memory until save_file.",
+            "serverInfo": { "name": "basecraft", "version": env!("CARGO_PKG_VERSION") },
+            "instructions": "BaseCraft reads and writes FileMaker .fmp12 files. Call open_file first, then use the other tools. Writes stay in memory until save_file.",
         }),
         "ping" => json!({}),
         "tools/list" => json!({ "tools": tools().into_iter().map(|(n, d, s)|

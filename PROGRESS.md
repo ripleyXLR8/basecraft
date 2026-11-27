@@ -111,8 +111,8 @@ ApplicationArchitecture.
 | Bookkeeping: record-id set, last record id, change counter, modification count kept | ✅ |
 | Field indexes after edits: dropped and marked for rebuild (FileMaker rebuilds them on demand) | ✅ verified (portal, find, unique key) |
 | Writing exact index keys (FileMaker collation tables) | ⏳ |
-| Files saved by OpenMaker, edited and saved again by FileMaker, read back | ✅ verified |
-| Auto-enter values (serials, UUIDs, stamps) on records created by OpenMaker | ⏳ |
+| Files saved by BaseCraft, edited and saved again by FileMaker, read back | ✅ verified |
+| Auto-enter values (serials, UUIDs, stamps) on records created by BaseCraft | ⏳ |
 | Repeating fields, container data | ⏳ |
 
 ## M3 — Data engine (`crates/engine`)
@@ -153,7 +153,7 @@ ApplicationArchitecture.
 
 | Feature | State |
 |---------|-------|
-| `openmaker-cli`: info, records (find/omit/sort/limit), eval, new, set, delete, JSON output | ✅ |
+| `basecraft-cli`: info, records (find/omit/sort/limit), eval, new, set, delete, JSON output | ✅ |
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
 | Run scripts from the CLI | ⏳ (after M5) |
-| MCP server for AI agents (`openmaker-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |
+| MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |

@@ -1,6 +1,6 @@
 # The `.fmp12` file format (HBAM7)
 
-This is OpenMaker's working specification of the format FileMaker Pro 12–26
+This is BaseCraft's working specification of the format FileMaker Pro 12–26
 uses for `.fmp12` files. We are rebuilding it for interoperability. Sources:
 
 * the public notes and MIT-licensed code of
@@ -52,7 +52,7 @@ followed by the chunk's key bytes. A key is just one more element:
 element `03` < key `07`. The *spelling* of a key matters, not its value.
 FileMaker writes key 216 as `06 D8 …` (1-byte key) but key 134 as
 `0B 00 06 …` (2-byte path integer). Both read back as integers, so a writer
-must keep the original bytes (OpenMaker's writer does).
+must keep the original bytes (BaseCraft's writer does).
 
 ### Index sectors ✅
 
@@ -92,7 +92,7 @@ child's last key and the right child's first key, for instance
 `8003.00.07.d00003.d00002` before a child starting at `8003.07`. They are
 left over from earlier content, so the choice cannot always be reproduced
 from the file alone. Any separator in that interval seems acceptable.
-OpenMaker always writes the exact first key.
+BaseCraft always writes the exact first key.
 
 **Proven with FileMaker Pro 26.** On a copy of Contacts with its original
 leaves and only the root rebuilt by these rules, the file opens. The full
@@ -483,7 +483,7 @@ Otherwise (an em dash, `✓`, CJK…, or more than 1000 bytes) it moves to
   sequence, so concatenate before decoding).
 
 FileMaker's SCSU quotes a character of a static window with SQn (`05 14` =
-U+2014). OpenMaker encodes ASCII/Latin-1 as single bytes, static-window
+U+2014). BaseCraft encodes ASCII/Latin-1 as single bytes, static-window
 characters with SQn and anything else with SQU; re-encoding all the records
 FileMaker wrote gives its exact bytes (`tests/records.rs`).
 
@@ -513,12 +513,12 @@ English, empty in French). Verified on the 11 languages of Meetings.
 * `[T].[13]` = the set of live record ids, in the **id-set** form below.
 * `[3].[16].[5].[T]` key 251 (u32) grows when the table's records change,
   about once per transaction or session (1→2→3→4, then +39 for 38 new
-  records). OpenMaker adds 1 per save.
+  records). BaseCraft adds 1 per save.
 * `[TO].[7]` (TO element `D0 hi lo`): key 0 `01 02`; `.[1]` key 3 = last
   record id again, an empty node `.[1].[80 0B 80 02 + u32 counter 251]`,
   key FF empty; `.[2]` key 3 `01 00`. FileMaker refreshes it itself: a file
   whose cache is stale opens with the right records and FileMaker rewrites
-  it on the next change. OpenMaker leaves it alone.
+  it on the next change. BaseCraft leaves it alone.
 
 **Id sets** (also the postings of an index): one id below 256 is a Kv with
 a 1-byte key and an empty value (`00 id`). Two or more ids are a bitmap in

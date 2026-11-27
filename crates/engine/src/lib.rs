@@ -1,4 +1,4 @@
-//! OpenMaker data engine: an in-memory database loaded from a `.fmp12`
+//! BaseCraft data engine: an in-memory database loaded from a `.fmp12`
 //! file, with FileMaker's record, found-set, find, sort and calculation
 //! semantics.
 

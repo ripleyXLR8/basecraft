@@ -1,7 +1,7 @@
 # Oracle tooling
 
 Scripts that drive a locally installed, licensed (or trial) FileMaker Pro 26
-on Windows to produce **ground truth** for OpenMaker's tests. Nothing here
+on Windows to produce **ground truth** for BaseCraft's tests. Nothing here
 ships Claris content. The outputs stay on your machine unless they were built
 from files we authored ourselves.
 

@@ -17,7 +17,7 @@ public static class W32 {
 "@
 $AE = [System.Windows.Automation.AutomationElement]
 $TS = [System.Windows.Automation.TreeScope]
-$Shot = Join-Path $env:TEMP "openmaker-shots"
+$Shot = Join-Path $env:TEMP "basecraft-shots"
 New-Item -ItemType Directory -Force $Shot | Out-Null
 
 function Get-FmWindows {

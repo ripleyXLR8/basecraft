@@ -1,4 +1,4 @@
-//! OpenMaker desktop application (egui).
+//! BaseCraft desktop application (egui).
 //!
 //! Browse and Find modes over a `.fmp12` file: layouts drawn at their real
 //! coordinates, editable fields, new/delete record, find requests, sort.
@@ -117,7 +117,7 @@ impl App {
             Ok(b) => {
                 let name = p
                     .file_stem()
-                    .map_or("OpenMaker".into(), |s| s.to_string_lossy().into_owned());
+                    .map_or("BaseCraft".into(), |s| s.to_string_lossy().into_owned());
                 self.open(name, b);
                 if let Some(d) = self.doc.as_mut() {
                     d.path = Some(p.to_path_buf());
@@ -1174,7 +1174,7 @@ impl eframe::App for App {
             let name = f
                 .path()
                 .file_name()
-                .map_or("OpenMaker".into(), |n| n.to_string_lossy().into_owned());
+                .map_or("BaseCraft".into(), |n| n.to_string_lossy().into_owned());
             #[cfg(not(target_arch = "wasm32"))]
             match f.bytes() {
                 Ok(b) => self.open(name, b),
@@ -1248,7 +1248,7 @@ impl eframe::App for App {
         let title = self
             .doc
             .as_ref()
-            .map_or("OpenMaker".to_string(), |d| d.name.clone());
+            .map_or("BaseCraft".to_string(), |d| d.name.clone());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 }
@@ -1268,7 +1268,7 @@ fn main() -> eframe::Result {
         app.open_path(std::path::Path::new(&p));
     }
     eframe::run_native(
-        "OpenMaker",
+        "BaseCraft",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([1060.0, 980.0]),
             ..Default::default()
@@ -1277,16 +1277,16 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Browser entry point: runs in the `<canvas id="openmaker">` of index.html.
+/// Browser entry point: runs in the `<canvas id="basecraft">` of index.html.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     use wasm_bindgen::JsCast;
     wasm_bindgen_futures::spawn_local(async {
         let canvas = web_sys::window()
             .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id("openmaker"))
+            .and_then(|d| d.get_element_by_id("basecraft"))
             .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
-            .expect("canvas #openmaker");
+            .expect("canvas #basecraft");
         eframe::WebRunner::new()
             .start(
                 canvas,
@@ -1294,6 +1294,6 @@ fn main() {
                 creator(App::default()),
             )
             .await
-            .expect("failed to start OpenMaker");
+            .expect("failed to start BaseCraft");
     });
 }

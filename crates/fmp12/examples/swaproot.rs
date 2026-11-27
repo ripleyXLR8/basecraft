@@ -1,4 +1,4 @@
-//! Experiment: replace the root index of a 2-level file with OpenMaker's index.
+//! Experiment: replace the root index of a 2-level file with BaseCraft's index.
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let f = fmp12::File::open(&a[1]).unwrap();

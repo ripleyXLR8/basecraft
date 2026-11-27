@@ -114,5 +114,6 @@ ApplicationArchitecture.
 | Find mode (one request), sort by one field ascending/descending | ✅ |
 | Calculated fields displayed live | ✅ |
 | Theme styles (fonts, colours, borders from the embedded theme) | ⏳ |
-| List and Table views, portals, tab controls, popups, value lists | ⏳ |
+| Form, List (body repeated per record) and Table views | ✅ |
+| Portals, tab controls, popups, value lists | ⏳ |
 | Layout mode, Preview mode | ⏳ |

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use engine::{Database, Order, Request};
-use fmp12::layouts::{Bounds, Layout};
+use fmp12::layouts::Layout;
 
 mod i18n;
 use i18n::tr;
@@ -27,8 +27,17 @@ struct Doc {
     layouts: Vec<Layout>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum View {
+    #[default]
+    Form,
+    List,
+    Table,
+}
+
 #[derive(Default)]
 struct App {
+    view: View,
     doc: Option<Doc>,
     error: Option<String>,
     layout: usize,
@@ -330,24 +339,40 @@ impl App {
     }
 
     fn layout_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(doc) = &self.doc else { return };
+        if self.doc.is_none() {
+            return;
+        }
+        let names: Vec<String> = self
+            .doc
+            .as_ref()
+            .unwrap()
+            .layouts
+            .iter()
+            .map(|l| l.name.clone())
+            .collect();
         let mut chosen = None;
         ui.horizontal(|ui| {
             ui.label(tr("Layout:"));
-            let current = doc.layouts.get(self.layout).map_or("", |l| l.name.as_str());
+            let current = names.get(self.layout).map_or("", |n| n.as_str());
             egui::ComboBox::from_id_salt("layout")
                 .selected_text(current)
                 .show_ui(ui, |ui| {
-                    for (i, l) in doc.layouts.iter().enumerate() {
-                        if ui.selectable_label(i == self.layout, &l.name).clicked() {
+                    for (i, n) in names.iter().enumerate() {
+                        if ui.selectable_label(i == self.layout, n).clicked() {
                             chosen = Some(i);
                         }
                     }
                 });
             ui.label(tr("View As:"));
-            ui.add_enabled(false, egui::Button::new(tr("Form")));
-            ui.add_enabled(false, egui::Button::new(tr("List")));
-            ui.add_enabled(false, egui::Button::new(tr("Table")));
+            for (v, label) in [
+                (View::Form, "Form"),
+                (View::List, "List"),
+                (View::Table, "Table"),
+            ] {
+                if ui.selectable_label(self.view == v, tr(label)).clicked() {
+                    self.view = v;
+                }
+            }
             ui.add_enabled(false, egui::Button::new(tr("Preview")));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled(false, egui::Button::new(tr("Edit Layout")));
@@ -358,39 +383,53 @@ impl App {
         }
     }
 
-    /// Draws the current layout in form view, with editable fields.
+    /// Draws the current layout: form (current record), list (body part
+    /// repeated per record) or table (one row per record).
     fn content(&mut self, ui: &mut egui::Ui) {
         let Some(t) = self.table() else { return };
         let record = self.current_record();
+        let found = self.found(t).clone();
         let mode = self.mode();
+        let view = self.view;
         let Some(doc) = self.doc.as_mut() else { return };
         let Some(layout) = doc.layouts.get(self.layout).cloned() else {
             return;
         };
+        if view == View::Table && mode == Mode::Browse {
+            table_view(ui, doc, t, &layout, &found, &mut self.dirty);
+            return;
+        }
+        let (btop, bh) = layout
+            .parts
+            .iter()
+            .find(|p| p.kind == 4)
+            .map_or((0.0, 0.0), |p| (p.top, p.height));
+        let rows: Vec<Option<usize>> = match (view, mode) {
+            (View::List, Mode::Browse) => found.iter().map(|r| Some(*r)).collect(),
+            _ => vec![record],
+        };
+        let extra = rows.len().saturating_sub(1) as f64 * bh;
         let height = layout
             .parts
             .iter()
             .map(|p| p.top + p.height)
-            .fold(0.0, f64::max);
+            .fold(0.0, f64::max)
+            + extra;
         let (resp, painter) = ui.allocate_painter(
             Vec2::new(layout.width as f32, height as f32),
             egui::Sense::hover(),
         );
         let origin = resp.rect.min;
-        let at = |b: &Bounds| {
-            Rect::from_min_max(
-                origin + Vec2::new(b.left as f32, b.top as f32),
-                origin + Vec2::new(b.right as f32, b.bottom as f32),
-            )
-        };
         let bg = if mode == Mode::Find {
             Color32::from_rgb(235, 240, 250)
         } else {
             Color32::from_gray(245)
         };
         painter.rect_filled(resp.rect, 0.0, bg);
+        // Parts below the body move down by the extra list rows.
+        let shift = |y: f64| if y >= btop + bh { y + extra } else { y };
         for p in &layout.parts {
-            let y = origin.y + (p.top + p.height) as f32;
+            let y = origin.y + shift(p.top + p.height) as f32;
             painter.line_segment(
                 [
                     Pos2::new(origin.x, y),
@@ -399,82 +438,183 @@ impl App {
                 Stroke::new(0.5, Color32::from_gray(210)),
             );
         }
-        let font = egui::FontId::proportional(13.0);
-        let frame = Stroke::new(1.0, Color32::from_gray(200));
+        let ctx = DrawCtx {
+            table: t,
+            mode,
+            font: egui::FontId::proportional(13.0),
+        };
         for o in &layout.objects {
-            let r = at(&o.bounds);
-            match o.kind {
-                1 => {
-                    let Some((to, field, _)) = o.field else {
-                        continue;
-                    };
-                    let ft = doc.db.table_of((to & 0xFFF) as u32).map(|x| x.id);
-                    // ponytail: related fields (other base tables) are not editable yet.
-                    if ft != Some(t) {
-                        painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
-                        continue;
-                    }
-                    let field = field as u32;
-                    let is_calc = doc
-                        .db
-                        .table(t)
-                        .and_then(|x| x.field(field))
-                        .is_some_and(|f| f.calc.is_some());
-                    match (mode, record) {
-                        (Mode::Find, _) => {
-                            let s = self.request.entry(field).or_default();
-                            ui.put(r, egui::TextEdit::singleline(s).font(font.clone()));
-                        }
-                        (Mode::Browse, None) => {
-                            painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
-                        }
-                        (Mode::Browse, Some(rec)) if is_calc => {
-                            let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
-                            painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
-                            painter.text(
-                                r.left_center() + Vec2::new(4.0, 0.0),
-                                egui::Align2::LEFT_CENTER,
-                                v,
-                                font.clone(),
-                                Color32::BLACK,
-                            );
-                        }
-                        (Mode::Browse, Some(rec)) => {
-                            if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
-                                let s = tbl.records[rec].values.entry(field).or_default();
-                                if ui
-                                    .put(r, egui::TextEdit::singleline(s).font(font.clone()))
-                                    .changed()
-                                {
-                                    self.dirty = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                2 => {
-                    if let Some(txt) = &o.text {
-                        painter.text(
-                            r.left_center(),
-                            egui::Align2::LEFT_CENTER,
-                            txt,
-                            font.clone(),
-                            Color32::from_gray(90),
-                        );
-                    }
-                }
-                10 | 18 => {
-                    painter.rect_stroke(
-                        r,
-                        4.0,
-                        Stroke::new(1.0, Color32::from_gray(160)),
-                        StrokeKind::Inside,
-                    );
-                }
-                _ => {}
+            let in_body = o.bounds.top >= btop && o.bounds.top < btop + bh;
+            let instances: Vec<(f64, Option<usize>)> = if in_body {
+                rows.iter()
+                    .enumerate()
+                    .map(|(i, r)| (i as f64 * bh, *r))
+                    .collect()
+            } else {
+                vec![(shift(o.bounds.top) - o.bounds.top, record)]
+            };
+            for (dy, rec) in instances {
+                let r = Rect::from_min_max(
+                    origin + Vec2::new(o.bounds.left as f32, (o.bounds.top + dy) as f32),
+                    origin + Vec2::new(o.bounds.right as f32, (o.bounds.bottom + dy) as f32),
+                );
+                draw_object(
+                    ui,
+                    &painter,
+                    doc,
+                    &ctx,
+                    o,
+                    r,
+                    rec,
+                    &mut self.request,
+                    &mut self.dirty,
+                );
             }
         }
     }
+}
+
+struct DrawCtx {
+    table: u32,
+    mode: Mode,
+    font: egui::FontId,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_object(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    doc: &mut Doc,
+    c: &DrawCtx,
+    o: &fmp12::layouts::LayoutObject,
+    r: Rect,
+    record: Option<usize>,
+    request: &mut BTreeMap<u32, String>,
+    dirty: &mut bool,
+) {
+    let t = c.table;
+    let frame = Stroke::new(1.0, Color32::from_gray(200));
+    match o.kind {
+        1 => {
+            let Some((to, field, _)) = o.field else {
+                return;
+            };
+            let ft = doc.db.table_of((to & 0xFFF) as u32).map(|x| x.id);
+            // ponytail: related fields (other base tables) are not shown yet.
+            if ft != Some(t) {
+                painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
+                return;
+            }
+            let field = field as u32;
+            let is_calc = doc
+                .db
+                .table(t)
+                .and_then(|x| x.field(field))
+                .is_some_and(|f| f.calc.is_some());
+            match (c.mode, record) {
+                (Mode::Find, _) => {
+                    let s = request.entry(field).or_default();
+                    ui.put(r, egui::TextEdit::singleline(s).font(c.font.clone()));
+                }
+                (Mode::Browse, None) => {
+                    painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
+                }
+                (Mode::Browse, Some(rec)) if is_calc => {
+                    let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
+                    painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
+                    painter.text(
+                        r.left_center() + Vec2::new(4.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        v,
+                        c.font.clone(),
+                        Color32::BLACK,
+                    );
+                }
+                (Mode::Browse, Some(rec)) => {
+                    if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
+                        let s = tbl.records[rec].values.entry(field).or_default();
+                        if ui
+                            .put(r, egui::TextEdit::singleline(s).font(c.font.clone()))
+                            .changed()
+                        {
+                            *dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+        2 => {
+            if let Some(txt) = &o.text {
+                painter.text(
+                    r.left_center(),
+                    egui::Align2::LEFT_CENTER,
+                    txt,
+                    c.font.clone(),
+                    Color32::from_gray(90),
+                );
+            }
+        }
+        10 | 18 => {
+            painter.rect_stroke(
+                r,
+                4.0,
+                Stroke::new(1.0, Color32::from_gray(160)),
+                StrokeKind::Inside,
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Table view: one column per field of the layout's body, one row per record.
+fn table_view(
+    ui: &mut egui::Ui,
+    doc: &mut Doc,
+    t: u32,
+    layout: &Layout,
+    found: &[usize],
+    dirty: &mut bool,
+) {
+    let mut cols: Vec<(f64, u32)> = layout
+        .objects
+        .iter()
+        .filter(|o| o.kind == 1)
+        .filter_map(|o| {
+            let (to, f, _) = o.field?;
+            (doc.db.table_of((to & 0xFFF) as u32)?.id == t).then_some((o.bounds.left, f as u32))
+        })
+        .collect();
+    cols.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cols.dedup_by_key(|c| c.1);
+    egui::Grid::new("table_view").striped(true).show(ui, |ui| {
+        for (_, f) in &cols {
+            let name = doc
+                .db
+                .table(t)
+                .and_then(|x| x.field(*f))
+                .map_or(String::new(), |f| f.name.clone());
+            ui.strong(name);
+        }
+        ui.end_row();
+        for &rec in found {
+            for (_, f) in &cols {
+                let is_calc = doc
+                    .db
+                    .table(t)
+                    .and_then(|x| x.field(*f))
+                    .is_some_and(|f| f.calc.is_some());
+                if is_calc {
+                    ui.label(doc.db.value(t, rec, *f).to_text());
+                } else if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
+                    let s = tbl.records[rec].values.entry(*f).or_default();
+                    if ui.text_edit_singleline(s).changed() {
+                        *dirty = true;
+                    }
+                }
+            }
+            ui.end_row();
+        }
+    });
 }
 
 impl eframe::App for App {

@@ -36,10 +36,11 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Layouts: parts, objects, styles | ⏳ |
 | Scripts: catalog, folders, step list (type, enabled, options) | ✅ |
 | Script step parameters | 🚧 |
-| Value lists, custom functions, accounts and privileges | ⏳ |
+| Value lists (custom values, from field) | ✅ |
+| Custom functions, accounts and privileges, themes | ⏳ |
 | Container data | ⏳ |
 
-Oracle: all 214 template fields and 32 graph objects, 30 scripts and 85 script steps match FileMaker's XML export.
+Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps and 24 value lists match FileMaker's XML export.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 

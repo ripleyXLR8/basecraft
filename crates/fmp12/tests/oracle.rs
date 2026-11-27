@@ -285,3 +285,62 @@ fn scripts_match_xml() {
     }
     eprintln!("{scripts_checked} scripts, {steps_checked} steps checked against XML");
 }
+
+#[test]
+fn value_lists_match_xml() {
+    use fmp12::valuelists::Source;
+    let mut checked = 0;
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let vls = fmp12::valuelists::value_lists(&file).unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        for x in doc.descendants().filter(|n| n.has_tag_name("ValueList")) {
+            let id: u32 = x.attribute("id").unwrap().parse().unwrap();
+            let v = vls.iter().find(|v| v.id == id).expect("value list");
+            assert_eq!(v.name, x.attribute("name").unwrap());
+            let src = x
+                .children()
+                .find(|n| n.has_tag_name("Source"))
+                .unwrap()
+                .attribute("value")
+                .unwrap();
+            match &v.source {
+                Source::Custom(t) => {
+                    assert_eq!(src, "Custom", "{}", v.name);
+                    let want = x
+                        .descendants()
+                        .find(|n| n.has_tag_name("Text"))
+                        .and_then(|n| n.text())
+                        .unwrap_or("");
+                    assert_eq!(
+                        t.replace('\r', "\n"),
+                        want.replace("\r\n", "\n"),
+                        "{}",
+                        v.name
+                    );
+                }
+                Source::Field { to, field } => {
+                    assert_eq!(src, "FromField", "{}", v.name);
+                    let pf = x
+                        .descendants()
+                        .find(|n| n.has_tag_name("PrimaryField"))
+                        .unwrap();
+                    let fr = pf.first_element_child().unwrap();
+                    assert_eq!(field.to_string(), fr.attribute("id").unwrap(), "{}", v.name);
+                    let tor = fr
+                        .first_element_child()
+                        .unwrap()
+                        .attribute("id")
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap();
+                    assert_eq!(*to, tor & 0xFFF, "{}", v.name);
+                }
+                Source::Unknown(n) => panic!("{}: unknown source {n} vs {src}", v.name),
+            }
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} value lists checked against XML");
+}

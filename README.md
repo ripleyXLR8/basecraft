@@ -1,7 +1,7 @@
 # BaseCraft
 
 [![CI](https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg)](https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml)
-[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-61%25-orange)](#progress-to-10)
+[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-63%25-orange)](#progress-to-10)
 [![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-blue)](https://ripleyxlr8.github.io/basecraft/)
 
 **BaseCraft is an open-source, from-scratch reimplementation, in Rust, of the
@@ -26,14 +26,14 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 |------|-------|
 | `.fmp12` reading: sectors, byte code, text, tables, fields, records | ✅ |
 | `.fmp12` reading: field options, relationships, scripts, value lists, layouts, calculations | ✅ (verified against FileMaker's XML) |
-| Calculation engine (`crates/calc`): all 234 functions present; behaviour being checked against FileMaker | 🚧 |
+| Calculation engine (`crates/calc`): all 234 functions; 1,934 of 1,987 oracle expressions match FileMaker Pro 26 | 🚧 |
 | Data engine (`crates/engine`): records, find, sort, calculated fields | 🚧 |
 | GUI (egui): read-only viewer, layouts drawn in form view | 🚧 |
 | `.fmp12` writing: unchanged rewrite, new/edited/deleted records | 🚧 |
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~61 %** (▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░)
+**Estimated overall progress: ~63 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is
@@ -43,7 +43,7 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 |-----------|-------:|-----:|
 | M0 Bootstrap | 2 | 100 % |
 | M1 Read `.fmp12` | 15 | 82 % |
-| M2 Calculation engine | 12 | 70 % |
+| M2 Calculation engine | 12 | 90 % |
 | M3 Data engine | 12 | 65 % |
 | M4 GUI (browse/find/views) | 15 | 55 % |
 | M5 Script engine | 12 | 50 % |

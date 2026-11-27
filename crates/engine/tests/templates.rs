@@ -278,14 +278,22 @@ fn get_summary_by_break_field() {
     let ti = db.tables.iter().position(|t| t.id == tid).unwrap();
     let (ty, price) = {
         let t = &db.tables[ti];
-        (t.field_by_name("Type").unwrap().id, t.field_by_name("Price").unwrap().id)
+        (
+            t.field_by_name("Type").unwrap().id,
+            t.field_by_name("Price").unwrap().id,
+        )
     };
     for (k, p) in [("Laptop", "1000"), ("Phone", "300"), ("Laptop", "500")] {
         let r = db.new_record(tid).unwrap();
         db.tables[ti].records[r].values.insert(ty, k.into());
         db.tables[ti].records[r].values.insert(price, p.into());
     }
-    let to = db.occurrences.iter().find(|o| o.name == "Assets").unwrap().id;
+    let to = db
+        .occurrences
+        .iter()
+        .find(|o| o.name == "Assets")
+        .unwrap()
+        .id;
     let ev = |s: &str, r| db.eval_source(s, tid, to, Some(r)).to_text();
     assert_eq!(ev("GetSummary ( Total ; Total )", 0), "1800");
     assert_eq!(ev("GetSummary ( Total ; Type )", 0), "1500");

@@ -131,7 +131,7 @@ mod tests {
         let mut db = sample();
         let f = summary_field(&mut db, SummaryOp::FractionOfTotal, AMOUNT);
         let all: Vec<usize> = (0..5).collect();
-        assert_eq!(summarize(&db, T, f, &[1], &all).to_text(), "0.2");
+        assert_eq!(summarize(&db, T, f, &[1], &all).to_text(), ".2"); // FileMaker shows no leading zero
     }
 
     #[test]

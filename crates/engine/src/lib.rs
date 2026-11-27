@@ -215,7 +215,7 @@ impl Database {
                 let mut values = r.values.clone();
                 if old.get(&r.id).is_none_or(|o| input(o) != input(&values)) {
                     for c in &calcs {
-                        values.insert(c.id, self.value(t.id, i, c.id).to_text());
+                        values.insert(c.id, stored_text(&self.value(t.id, i, c.id), &self.locale));
                     }
                 }
                 recs.insert(r.id, values);
@@ -364,8 +364,8 @@ impl Database {
     fn auto_value(&self, table: u32, record: usize, f: &Field, creating: bool) -> Option<String> {
         use fmp12::schema::AutoStamp::*;
         let now = |what: &str| {
-            self.eval_source(&format!("Get ( {what} )"), table, f.context, Some(record))
-                .to_text()
+            let v = self.eval_source(&format!("Get ( {what} )"), table, f.context, Some(record));
+            stored_text(&v, &self.locale)
         };
         if let Some(stamp) = f.def.auto_stamp() {
             let is_creation = (stamp as u8) < ModificationDate as u8;
@@ -490,6 +490,59 @@ impl Database {
 /// Converts text stored in a file with the given formats to a typed value:
 /// FileMaker stores `14/07/2025` in a French file, `7/14/2025` in an
 /// English one.
+/// Formats a value the way FileMaker stores it in this file's formats
+/// (`2/1/2026 2:13:33 PM` in an English file, `01/02/2026 14:35:26` in a
+/// French one).
+pub fn stored_text(v: &Value, loc: &fmp12::schema::Locale) -> String {
+    use fmp12::schema::DateOrder;
+    // ponytail: zero padding follows the observed samples (US unpadded, D/M/Y padded).
+    let pad = loc.date_order != DateOrder::Mdy;
+    let date = |day: i64| {
+        let (y, m, d) = calc::value::civil(day);
+        let (m, d) = if pad {
+            (format!("{m:02}"), format!("{d:02}"))
+        } else {
+            (m.to_string(), d.to_string())
+        };
+        let sep = loc.date_separator;
+        match loc.date_order {
+            DateOrder::Mdy => format!("{m}{sep}{d}{sep}{y}"),
+            DateOrder::Dmy => format!("{d}{sep}{m}{sep}{y}"),
+            DateOrder::Ymd => format!("{y}{sep}{m}{sep}{d}"),
+        }
+    };
+    let time = |t: &calc::num::Num| {
+        use bigdecimal::ToPrimitive;
+        let secs = t.to_f64().unwrap_or(0.0).round() as i64;
+        let (h, mi, se) = (secs / 3600, secs / 60 % 60, secs % 60);
+        let sep = loc.time_separator;
+        if loc.am.is_empty() {
+            format!("{h:02}{sep}{mi:02}{sep}{se:02}")
+        } else {
+            let (h12, suffix) = match h {
+                0 => (12, &loc.am),
+                1..=11 => (h, &loc.am),
+                12 => (12, &loc.pm),
+                _ => (h - 12, &loc.pm),
+            };
+            format!("{h12}{sep}{mi:02}{sep}{se:02}{suffix}")
+        }
+    };
+    match v {
+        Value::Date(d) => date(*d),
+        Value::Time(t) => time(t),
+        Value::Timestamp(ts) => format!(
+            "{} {}",
+            date(calc::value::ts_date(ts)),
+            time(&calc::value::ts_time(ts))
+        ),
+        Value::Number(_) if loc.decimal != '.' => {
+            v.to_text().replace('.', &loc.decimal.to_string())
+        }
+        _ => v.to_text(),
+    }
+}
+
 pub fn typed_in(raw: &str, dt: DataType, loc: &fmp12::schema::Locale) -> Value {
     typed(&to_us(raw, dt, loc), dt)
 }
@@ -696,4 +749,38 @@ pub fn sort(db: &Database, table: u32, found: &mut [usize], keys: &[(u32, Order)
         }
         std::cmp::Ordering::Equal
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fmp12::schema::{DateOrder, Locale};
+
+    #[test]
+    fn stored_text_follows_file_formats() {
+        let ts = calc::value::make_ts(
+            calc::value::day_number(2026, 2, 1),
+            &calc::num::int(14 * 3600 + 5 * 60 + 9),
+        );
+        let en = Locale::default();
+        assert_eq!(
+            stored_text(&Value::Timestamp(ts.clone()), &en),
+            "2/1/2026 2:05:09 PM"
+        );
+        let fr = Locale {
+            date_order: DateOrder::Dmy,
+            decimal: ',',
+            am: String::new(),
+            pm: String::new(),
+            ..Locale::default()
+        };
+        assert_eq!(
+            stored_text(&Value::Timestamp(ts), &fr),
+            "01/02/2026 14:05:09"
+        );
+        assert_eq!(
+            stored_text(&Value::Number(calc::num::parse("12.75").unwrap()), &fr),
+            "12,75"
+        );
+    }
 }

@@ -16,16 +16,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for op in ops {
         let (kind, rest) = op.split_once(':').ok_or("bad op")?;
         let (tname, rest) = rest.split_once(':').unwrap_or((rest, ""));
+        if kind == "new" {
+            // Database::new_record applies auto-enter options.
+            let tid = db
+                .tables
+                .iter()
+                .find(|t| t.name == tname)
+                .ok_or("no such table")?
+                .id;
+            let i = db.new_record(tid).ok_or("no such table")?;
+            last_new = db.table(tid).unwrap().records[i].id;
+            continue;
+        }
         let t = db
             .tables
             .iter_mut()
             .find(|t| t.name == tname)
             .ok_or("no such table")?;
         match kind {
-            "new" => {
-                let i = t.new_record();
-                last_new = t.records[i].id;
-            }
             "set" => {
                 let (id, rest) = rest.split_once(':').ok_or("bad set")?;
                 let (field, value) = rest.split_once('=').ok_or("bad set")?;

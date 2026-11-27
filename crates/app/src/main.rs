@@ -29,6 +29,11 @@ struct Doc {
     db: Database,
     /// Layouts that have a table occurrence (folders excluded).
     layouts: Vec<Layout>,
+    /// The file as last opened or saved; saving rebuilds from it.
+    file: fmp12::File,
+    /// Where the file came from (desktop only).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,6 +109,9 @@ impl App {
                     .file_stem()
                     .map_or("OpenMaker".into(), |s| s.to_string_lossy().into_owned());
                 self.open(name, b);
+                if let Some(d) = self.doc.as_mut() {
+                    d.path = Some(p.to_path_buf());
+                }
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -111,8 +119,9 @@ impl App {
 
     fn open(&mut self, name: String, bytes: Vec<u8>) {
         let name = name.trim_end_matches(".fmp12").to_string();
-        match fmp12::File::from_bytes(bytes).and_then(|f| Database::load(&f)) {
-            Ok(db) => {
+        let loaded = fmp12::File::from_bytes(bytes).and_then(|f| Ok((Database::load(&f)?, f)));
+        match loaded {
+            Ok((db, file)) => {
                 let layouts = db
                     .layouts
                     .iter()
@@ -120,13 +129,74 @@ impl App {
                     .cloned()
                     .collect();
                 *self = App {
-                    doc: Some(Doc { name, db, layouts }),
+                    doc: Some(Doc {
+                        name,
+                        db,
+                        layouts,
+                        file,
+                        path: None,
+                    }),
                     incoming: self.incoming.clone(),
                     ..Default::default()
                 };
             }
             Err(e) => self.error = Some(e.to_string()),
         }
+    }
+
+    /// Saves the records into a new `.fmp12` image. `as_copy` asks where.
+    fn save(&mut self, ctx: &egui::Context, as_copy: bool) {
+        let Some(d) = self.doc.as_mut() else { return };
+        let bytes = match d.db.save(&d.file) {
+            Ok(b) => b,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                return;
+            }
+        };
+        match fmp12::File::from_bytes(bytes.clone()) {
+            Ok(f) => d.file = f,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                return;
+            }
+        }
+        let file_name = format!("{}.fmp12", d.name);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = ctx;
+            let target = match (&d.path, as_copy) {
+                (Some(p), false) => Some(p.clone()),
+                _ => rfd::FileDialog::new()
+                    .add_filter("FileMaker", &["fmp12"])
+                    .set_file_name(&file_name)
+                    .save_file(),
+            };
+            let Some(t) = target else { return };
+            if let Err(e) = std::fs::write(&t, &bytes) {
+                self.error = Some(e.to_string());
+                return;
+            }
+            if !as_copy {
+                d.path = Some(t);
+            }
+        }
+        // In the browser, saving downloads the file.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (ctx, as_copy);
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Some(h) = rfd::AsyncFileDialog::new()
+                    .set_file_name(&file_name)
+                    .save_file()
+                    .await
+                {
+                    let _ = h.write(&bytes).await;
+                }
+            });
+        }
+        self.dirty = false;
+        self.error = None;
     }
 
     /// Base table id of the current layout.
@@ -236,6 +306,17 @@ impl App {
                 if ui.button(tr("Open…")).clicked() {
                     ui.close();
                     self.open_dialog(&ui.ctx().clone());
+                }
+                if ui
+                    .add(egui::Button::new(tr("Save")).shortcut_text("Ctrl+S"))
+                    .clicked()
+                {
+                    ui.close();
+                    self.save(&ui.ctx().clone(), false);
+                }
+                if ui.button(tr("Save a Copy As…")).clicked() {
+                    ui.close();
+                    self.save(&ui.ctx().clone(), true);
                 }
                 if ui.button(tr("Close")).clicked() {
                     ui.close();
@@ -380,10 +461,7 @@ impl App {
                 }
             }
             if self.dirty {
-                ui.colored_label(
-                    Color32::from_rgb(180, 90, 0),
-                    tr("Unsaved changes (in memory)"),
-                );
+                ui.colored_label(Color32::from_rgb(180, 90, 0), tr("Unsaved changes"));
             }
         });
     }
@@ -953,6 +1031,11 @@ impl eframe::App for App {
                     }
                 });
             }
+        }
+        if self.doc.is_some()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+        {
+            self.save(&ctx, false);
         }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         if self.doc.is_some() {

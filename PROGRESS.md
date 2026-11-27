@@ -126,7 +126,8 @@ ApplicationArchitecture.
 | Related records through the relationship graph (multi-hop, `=` joins); related fields and aggregates in calculations | ✅ |
 | Portals in the GUI, sorted relationships, other join operators | ⏳ |
 | Design functions (TableNames, ValueListItems…), ExecuteSQL, GetNthRecord answered from the database | ✅ |
-| Summary fields, auto-enter, validation enforcement | ⏳ |
+| Auto-enter on new records (creation/modification stamps, serials, auto-enter calculations), written in the file's date/time formats; verified in FileMaker | ✅ |
+| Summary fields, validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
 | Stored calculations re-evaluated for new and edited records on save | ✅ |
 ## M4 — GUI (`crates/app`)
@@ -146,4 +147,4 @@ ApplicationArchitecture.
 | Checkboxes, radio buttons, calendars | ⏳ |
 | Layout mode, Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
-| Web: save (download, or File System Access API) | ⏳ |
+| Save from the app: Ctrl+S / Save a Copy As (desktop), download (web) | ✅ |

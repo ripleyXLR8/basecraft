@@ -154,7 +154,8 @@ pub fn encode_record(t: &Trigger) -> Vec<u8> {
 pub fn triggers(file: &File) -> Result<Triggers, Error> {
     let mut out = Triggers::default();
     // (owner path, event node) → (record, parameter)
-    let mut found: BTreeMap<(Vec<u32>, u32), (Option<Trigger>, Option<Calc>)> = BTreeMap::new();
+    type Found = (Option<Trigger>, Option<Calc>);
+    let mut found: BTreeMap<(Vec<u32>, u32), Found> = BTreeMap::new();
     file.walk(|path, c| {
         let Some(p) = int_path(path) else { return };
         let Some(i) = p.windows(2).rposition(|w| w == [48, 5]) else {

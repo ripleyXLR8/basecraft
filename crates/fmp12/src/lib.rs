@@ -18,6 +18,7 @@ pub mod scripts_save;
 pub mod scsu;
 pub mod security;
 pub mod theme;
+pub mod triggers;
 pub mod valuelists;
 pub mod write;
 

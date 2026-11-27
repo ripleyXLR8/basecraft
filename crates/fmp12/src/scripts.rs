@@ -693,6 +693,27 @@ pub fn button_action(raw16: &[u8], params: RawParams) -> Option<Step> {
     Some(step_from(r, params))
 }
 
+/// A new step aimed at a layout (Go to Layout [layout]) or a script
+/// (Perform Script [script]), as FileMaker writes them on buttons: the
+/// target is the inline slot `len 01 path-int`. The byte after the slot is
+/// `BE` or `6F` in FileMaker's files whatever the target (unused).
+pub fn targeted_step(step: u16, target: u32) -> Step {
+    let (arg, options) = match step {
+        id::GO_TO_LAYOUT => (5, 8),
+        _ => (4, 0x40),
+    };
+    let mut r = vec![0u8; STEP_LEN];
+    let e = crate::save::path_elem(target);
+    r[6] = 1 + e.len() as u8;
+    r[7] = 1;
+    r[8..8 + e.len()].copy_from_slice(&e);
+    r[8 + e.len()] = 0xBE;
+    r[20..22].copy_from_slice(&step.to_be_bytes());
+    r[22..24].copy_from_slice(&(arg as u16).to_be_bytes());
+    r[24..28].copy_from_slice(&(options as u32).to_be_bytes());
+    step_from(r, RawParams::default())
+}
+
 /// Collects a button's parameter tree while walking a file.
 pub(crate) fn add_param(p: &mut RawParams, rel: &[u32], c: &Chunk) {
     p.add(rel, c);

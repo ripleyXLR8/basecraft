@@ -9,10 +9,15 @@
 //!   length). Repeated field 2 = object
 //!   (1 = kind, 2 = id, 3 = options, 4 = bounds, 5 = style, 8 = field);
 //! * `[4].[5].[L]` key 11 = theme number (`01 n`), see [`crate::theme`];
-//! * `[4].[5].[L].[5].[obj]` key 1 = static text of a text object.
+//! * `[4].[5].[L].[5].[obj]` key 1 = static text of a text object,
+//!   key 16 = object name.
+//!
+//! Writing: [`encode_objects`] and [`patch_part`] re-encode edited layouts
+//! from the original messages (see [`crate::save::save_layouts`]).
 
 use std::collections::BTreeMap;
 
+use crate::pb::{Field, MsgBuf};
 use crate::{Chunk, Error, File, int_path, pb::Msg, text};
 
 /// Part kinds (field 1). Header, leading sub-summary, body, footer and top
@@ -73,6 +78,8 @@ pub struct LayoutObject {
     /// (table occurrence id as in XML, field id, repetition)
     pub field: Option<(u64, u64, u64)>,
     pub text: Option<String>,
+    /// Object name (Inspector, Position, Name), empty if none.
+    pub name: String,
     /// Containing object (tab panel, portal, button bar…), if any.
     pub parent: Option<u64>,
     /// Field 6 of containers: one of their children (the front tab panel of a
@@ -104,12 +111,16 @@ impl Bounds {
 /// Sets `parent` on every object. Children's bounds are relative to their
 /// container: use [`Layout::absolute`] for page coordinates. Ids are in pre-order and containers carry
 /// their first child; a container's subtree is the run of following ids
-/// that lie inside its bounds.
-fn link_parents(objects: &mut [LayoutObject]) {
+/// that lie inside its bounds. Objects listed in `top` (object list field 1)
+/// are top-level and close every open container.
+fn link_parents(objects: &mut [LayoutObject], top: &std::collections::BTreeSet<u64>) {
     let mut order: Vec<usize> = (0..objects.len()).collect();
     order.sort_by_key(|&i| objects[i].id);
     let mut stack: Vec<usize> = Vec::new();
     for i in order {
+        if top.contains(&objects[i].id) {
+            stack.clear();
+        }
         while let Some(&top) = stack.last() {
             let t = &objects[top];
             let started = objects[i].id > t.id;
@@ -183,6 +194,7 @@ struct Raw {
     parts: BTreeMap<u32, Vec<u8>>,
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
+    names: BTreeMap<u32, String>,
     labels: BTreeMap<u32, Vec<u8>>,
     /// Button step parameters: `[4].[5].[L].[5].[obj].[17]`.
     actions: BTreeMap<u32, crate::scripts::RawParams>,
@@ -216,6 +228,10 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
             )
         }),
         text: u32::try_from(id).ok().and_then(|i| texts.get(&i).cloned()),
+        name: u32::try_from(id)
+            .ok()
+            .and_then(|i| r.names.get(&i).cloned())
+            .unwrap_or_default(),
         parent: None,
         label: u32::try_from(id).ok().and_then(|i| labels.get(&i).cloned()),
         display: m.msg(8).and_then(|f| f.uint(5)).unwrap_or(0),
@@ -288,6 +304,9 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             [4, 5, l, 5, obj] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
             }
+            [4, 5, l, 5, obj] if *key == 16 && !data.is_empty() => {
+                raw.entry(*l).or_default().names.insert(*obj, text(data));
+            }
             _ => {}
         }
     })?;
@@ -309,10 +328,16 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 })
                 .collect();
             let blob: Vec<u8> = r.objects.values().flatten().copied().collect();
-            let mut objects: Vec<LayoutObject> = Msg::parse(&blob)
-                .map(|m| m.msgs(2).map(|o| object(&o, &r)).collect())
-                .unwrap_or_default();
-            link_parents(&mut objects);
+            let list = Msg::parse(&blob).unwrap_or_default();
+            let mut objects: Vec<LayoutObject> = list.msgs(2).map(|o| object(&o, &r)).collect();
+            let top = list
+                .all(1)
+                .filter_map(|v| match v {
+                    crate::pb::Value::Varint(id) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            link_parents(&mut objects, &top);
             Layout {
                 id,
                 name: r.name,
@@ -326,4 +351,222 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             }
         })
         .collect())
+}
+
+/// Bounds message `{1 top, 2 left, 3 bottom, 4 right}` (doubles), patched
+/// over `old` so that other fields stay.
+fn bounds_msg(old: MsgBuf, b: &Bounds) -> MsgBuf {
+    let mut m = old;
+    for (f, v) in [(1, b.top), (2, b.left), (3, b.bottom), (4, b.right)] {
+        m.set(f, Field::F64(v));
+    }
+    m
+}
+
+/// Button message field 3 (the step): `{1 id, 2 arg, 3 options, 4 the
+/// 14-byte inline block}`, see [`crate::scripts::button_action`].
+fn step_msg(old: MsgBuf, s: &crate::scripts::Step) -> MsgBuf {
+    let mut m = old;
+    let mut block = s.raw.get(6..20).unwrap_or_default().to_vec();
+    block.resize(14, 0);
+    m.set(1, Field::Varint(s.id as u64));
+    m.set(2, Field::Varint(s.arg as u64));
+    m.set(3, Field::Varint(s.options as u64));
+    m.set(4, Field::Bytes(block));
+    m
+}
+
+/// Field-object message (object field 8): `{2 {1 TO, 2 field, 3 repetition},
+/// 5 display, 6 value list}`.
+fn field_msg(old: MsgBuf, o: &LayoutObject) -> MsgBuf {
+    let mut m = old;
+    if let Some((to, field, rep)) = o.field {
+        let mut r = m.msg(2);
+        r.set(1, Field::Varint(to));
+        r.set(2, Field::Varint(field));
+        r.set(3, Field::Varint(rep));
+        m.set_msg(2, &r);
+    }
+    m.set(5, Field::Varint(o.display));
+    match o.value_list {
+        Some(v) => m.set(6, Field::Varint(v as u64)),
+        None => m.remove(6),
+    }
+    m
+}
+
+/// Re-encodes one object message, patching only what differs between
+/// `old` and `new`; an unchanged object keeps its exact bytes.
+pub fn patch_object(raw: &[u8], old: &LayoutObject, new: &LayoutObject) -> Vec<u8> {
+    let Some(mut m) = MsgBuf::parse(raw) else {
+        return raw.to_vec();
+    };
+    let mut changed = false;
+    if new.kind != old.kind {
+        m.set(1, Field::Varint(new.kind));
+        changed = true;
+    }
+    if new.bounds != old.bounds {
+        let b = bounds_msg(m.msg(4), &new.bounds);
+        m.set_msg(4, &b);
+        changed = true;
+    }
+    if new.style_raw != old.style_raw {
+        m.set(5, Field::Bytes(new.style_raw.clone()));
+        changed = true;
+    }
+    if (new.field, new.display, new.value_list) != (old.field, old.display, old.value_list) {
+        let f = field_msg(m.msg(8), new);
+        m.set_msg(8, &f);
+        changed = true;
+    }
+    if new.button != old.button {
+        match &new.button {
+            Some(s) => {
+                let mut b = m.msg(16);
+                let st = step_msg(b.msg(3), s);
+                b.set_msg(3, &st);
+                m.set_msg(16, &b);
+            }
+            None => m.remove(16),
+        }
+        changed = true;
+    }
+    if changed { m.encode() } else { raw.to_vec() }
+}
+
+/// Message of a new object, built on `proto` (an existing object of the
+/// same kind and style type, whose unknown fields FileMaker expects) or
+/// from scratch.
+pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject) -> Vec<u8> {
+    let mut m = proto.and_then(MsgBuf::parse).unwrap_or_default();
+    // Container links, portal setup and actions belong to the prototype.
+    m.remove(6);
+    m.remove(15);
+    m.set(1, Field::Varint(o.kind));
+    m.set(2, Field::Varint(o.id));
+    let b = bounds_msg(m.msg(4), &o.bounds);
+    m.set_msg(4, &b);
+    m.set(5, Field::Bytes(o.style_raw.clone()));
+    if o.field.is_some() {
+        let f = field_msg(m.msg(8), o);
+        m.set_msg(8, &f);
+    } else {
+        m.remove(8);
+    }
+    match &o.button {
+        Some(s) => {
+            let mut b = m.msg(16);
+            if b.0.is_empty() {
+                // Seen on buttons: {1: 0, 2: 0, 3: step, 5: 16, 6: 0}.
+                b.set(1, Field::Varint(0));
+                b.set(2, Field::Varint(0));
+            }
+            let st = step_msg(b.msg(3), s);
+            b.set_msg(3, &st);
+            if b.get(5).is_none() {
+                b.set(5, Field::Varint(16));
+                b.set(6, Field::Varint(0));
+            }
+            m.set_msg(16, &b);
+        }
+        None => m.remove(16),
+    }
+    m.encode()
+}
+
+/// The object list message of `new`, re-encoded from the original list
+/// `blob` of `old`: field 1 = ids of the top-level objects, field 2 = the
+/// objects, front to back. Unchanged objects keep their bytes, so
+/// `encode_objects(b, l, l, …) == b`. `proto` gives a prototype message for
+/// a new object.
+pub fn encode_objects(
+    blob: &[u8],
+    old: &Layout,
+    new: &Layout,
+    proto: &dyn Fn(&LayoutObject) -> Option<Vec<u8>>,
+) -> Vec<u8> {
+    let top = MsgBuf::parse(blob).unwrap_or_default();
+    let raws: BTreeMap<u64, &[u8]> = top
+        .0
+        .iter()
+        .filter_map(|(f, v)| match (f, v) {
+            (2, Field::Bytes(b)) => Some((Msg::parse(b)?.uint(2).unwrap_or(0), b.as_slice())),
+            _ => None,
+        })
+        .collect();
+    let olds: BTreeMap<u64, &LayoutObject> = old.objects.iter().map(|o| (o.id, o)).collect();
+    let alive: std::collections::BTreeSet<u64> = new.objects.iter().map(|o| o.id).collect();
+    let mut ids: Vec<u64> = top
+        .0
+        .iter()
+        .filter_map(|(f, v)| match (f, v) {
+            (1, Field::Varint(id)) if alive.contains(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    for o in &new.objects {
+        if o.parent.is_none() && !olds.contains_key(&o.id) && !ids.contains(&o.id) {
+            ids.push(o.id);
+        }
+    }
+    let ids: Vec<(u32, Field)> = ids.into_iter().map(|i| (1, Field::Varint(i))).collect();
+    let objects: Vec<(u32, Field)> = new
+        .objects
+        .iter()
+        .map(|o| {
+            let b = match (raws.get(&o.id), olds.get(&o.id)) {
+                (Some(raw), Some(old)) => patch_object(raw, old, o),
+                _ => new_object(proto(o).as_deref(), o),
+            };
+            (2, Field::Bytes(b))
+        })
+        .collect();
+    // Same field order as the original: ids where the first id was, objects
+    // where the first object was, other fields in place.
+    let mut out = MsgBuf::default();
+    let (mut ids_done, mut objs_done) = (false, false);
+    for (f, v) in &top.0 {
+        match f {
+            1 | 2 => {
+                if !ids_done {
+                    out.0.extend(ids.iter().cloned());
+                    ids_done = true;
+                }
+                if *f == 2 && !objs_done {
+                    out.0.extend(objects.iter().cloned());
+                    objs_done = true;
+                }
+            }
+            _ => out.0.push((*f, v.clone())),
+        }
+    }
+    if !ids_done {
+        out.0.extend(ids);
+    }
+    if !objs_done {
+        out.0.extend(objects);
+    }
+    out.encode()
+}
+
+/// Part message (`[4].[5].[L].[3].[P]` key 2) with `new`'s top, height and
+/// style; an unchanged part keeps its exact bytes.
+pub fn patch_part(raw: &[u8], old: &Part, new: &Part) -> Vec<u8> {
+    let Some(mut m) = MsgBuf::parse(raw) else {
+        return raw.to_vec();
+    };
+    if old == new {
+        return raw.to_vec();
+    }
+    if old.top != new.top {
+        m.set(4, Field::F64(new.top));
+    }
+    if old.height != new.height {
+        m.set(5, Field::F64(new.height));
+    }
+    if old.style_raw != new.style_raw {
+        m.set(10, Field::Bytes(new.style_raw.clone()));
+    }
+    m.encode()
 }

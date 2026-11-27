@@ -71,6 +71,10 @@ type Incoming = Rc<RefCell<Option<(String, Vec<u8>)>>>;
 
 #[derive(Default)]
 struct App {
+    /// Tools › Data Viewer: open flag, watched expressions, new expression.
+    data_viewer: bool,
+    watches: Vec<String>,
+    watch_input: String,
     incoming: Incoming,
     view: View,
     doc: Option<Doc>,
@@ -372,6 +376,7 @@ impl App {
             Mode::Browse | Mode::Layout => script::Mode::Browse,
             Mode::Preview => script::Mode::Preview,
         };
+        let before = data_fingerprint(&d.db);
         let mut host = AppHost {
             db: &mut d.db,
             window,
@@ -401,7 +406,14 @@ impl App {
             self.current.insert(t2, window.current);
             self.sorted.insert(t2, window.sorted);
         }
-        self.dirty = true;
+        // Only data changes need saving; a sort or a find does not.
+        if self
+            .doc
+            .as_ref()
+            .is_some_and(|d| data_fingerprint(&d.db) != before)
+        {
+            self.dirty = true;
+        }
         if self.layout != old_layout && !self.from_trigger {
             self.fire(event::LAYOUT_ENTER);
             self.fire(event::RECORD_LOAD);
@@ -572,6 +584,69 @@ impl App {
         if let Some(a) = answer {
             self.answer(a, now);
         }
+    }
+
+    /// Tools › Data Viewer: watch expressions evaluated on the current record.
+    fn data_viewer_window(&mut self, ctx: &egui::Context) {
+        if !self.data_viewer {
+            return;
+        }
+        let table = self.table();
+        let record = self.current_record();
+        let layout_to = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.layouts.get(self.layout))
+            .map_or(0, |l| (l.table_occurrence & 0xFFF) as u32);
+        let mut open = true;
+        let mut remove = None;
+        egui::Window::new(tr("Data Viewer"))
+            .open(&mut open)
+            .default_width(520.0)
+            .show(ctx, |ui| {
+                egui::Grid::new("watches")
+                    .striped(true)
+                    .num_columns(3)
+                    .show(ui, |ui| {
+                        ui.strong(tr("Expression"));
+                        ui.strong(tr("Value"));
+                        ui.label("");
+                        ui.end_row();
+                        for (i, w) in self.watches.iter().enumerate() {
+                            let value = match (self.doc.as_ref(), table) {
+                                (Some(d), Some(t)) => {
+                                    d.db.eval_source(w, t, layout_to, record).to_text()
+                                }
+                                _ => String::new(),
+                            };
+                            ui.monospace(w);
+                            // FileMaker shows paragraph returns as the pilcrow.
+                            ui.label(value.replace('\r', "\u{b6}"));
+                            if ui.small_button("✕").clicked() {
+                                remove = Some(i);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.watch_input)
+                            .hint_text(tr("Calculation, e.g. Get ( FoundCount )"))
+                            .desired_width(380.0),
+                    );
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.button(tr("Add")).clicked() || enter)
+                        && !self.watch_input.trim().is_empty()
+                    {
+                        self.watches.push(std::mem::take(&mut self.watch_input));
+                    }
+                });
+            });
+        if let Some(i) = remove {
+            self.watches.remove(i);
+        }
+        self.data_viewer = open;
     }
 
     /// Base table id of the current layout.
@@ -962,7 +1037,13 @@ impl App {
                     }
                 }
             });
-            for m in ["Tools", "Window", "Help"] {
+            ui.menu_button(tr("Tools"), |ui| {
+                if ui.button(tr("Data Viewer")).clicked() {
+                    self.data_viewer = true;
+                    ui.close();
+                }
+            });
+            for m in ["Window", "Help"] {
                 ui.menu_button(tr(m), |ui| {
                     ui.label(tr("Not implemented yet"));
                 });
@@ -1631,6 +1712,23 @@ fn owner_of(
     Some((ft, first))
 }
 
+/// Hash of every record value, to tell whether a script changed data.
+fn data_fingerprint(db: &Database) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for t in &db.tables {
+        t.id.hash(&mut h);
+        for r in &t.records {
+            r.id.hash(&mut h);
+            for (k, v) in &r.values {
+                k.hash(&mut h);
+                v.hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
 /// The app as a script host. Dialogs and pauses suspend the run (see
 /// `App::start_run`), so `Host::dialog` is not used.
 struct AppHost<'a> {
@@ -1924,6 +2022,7 @@ impl eframe::App for App {
                 });
             });
         }
+        self.data_viewer_window(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         if self.doc.is_some() {
             egui::Panel::top("status").show(ui, |ui| {

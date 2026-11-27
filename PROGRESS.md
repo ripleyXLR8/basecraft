@@ -257,3 +257,13 @@ Layout writing check (2026-11-27): a file whose "Contact List" layout BaseCraft
 edited (object moved, text changed, object deleted, body taller, new text,
 rectangle and button) opens in FileMaker Pro 26 without a warning. FileMaker's
 Layout mode shows every edit.
+
+## Distribution
+
+| Feature | State |
+|---------|-------|
+| Release workflow (tag `vX.Y.Z`): Windows x64/ARM64 `.msi` + portable `.zip`, Linux x86_64/aarch64 `.AppImage` + `.deb` + `.tar.gz`, macOS universal `.dmg` (unsigned), `SHA256SUMS.txt` | ✅ dry run green on all 5 targets |
+| Original app icon, window and web favicon | ✅ |
+| Workspace lints (no `unsafe`, no `unwrap`/`expect`/`panic` outside tests), `cargo deny` in CI | ✅ |
+| First public release | ⏳ waiting for the owner's go |
+| ArtCraft launcher community listing | ⏳ draft request to be reviewed by the owner |

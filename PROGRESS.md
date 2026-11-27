@@ -134,7 +134,7 @@ ApplicationArchitecture.
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |
 | Layout drawn at stored coordinates: parts, fields, text, buttons | ✅ |
 | Browse mode: navigate, edit fields, new/delete record, show all | ✅ |
-| Find mode (one request), sort by one field ascending/descending | ✅ |
+| Find mode with multiple requests and omit requests; Omit Record, Show Omitted Only; sort by one field | ✅ |
 | Calculated fields displayed live | ✅ |
 | Theme styles decoded (`fmp12::theme`: colours, borders, fonts, padding, alignment) | ✅ |
 | Theme styles applied when drawing layouts: backgrounds, borders, radius, text colour, size, alignment, padding | ✅ |

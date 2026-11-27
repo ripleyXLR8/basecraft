@@ -61,6 +61,12 @@ struct App {
     mode: Option<Mode>,
     /// Find request being edited: field id → criterion.
     request: BTreeMap<u32, String>,
+    /// Whether the request being edited omits records.
+    omit: bool,
+    /// All find requests (the one being edited is copied in on change).
+    requests: Vec<(BTreeMap<u32, String>, bool)>,
+    /// Index of the request being edited.
+    req: usize,
     sort_field: Option<u32>,
     dirty: bool,
     /// Record modified since its last commit (table, record index).
@@ -315,26 +321,89 @@ impl App {
         }
     }
 
+    fn enter_find(&mut self) {
+        if !self.commit() {
+            return;
+        }
+        self.mode = Some(Mode::Find);
+        self.request.clear();
+        self.omit = false;
+        self.requests = vec![(BTreeMap::new(), false)];
+        self.req = 0;
+    }
+
+    /// Stores the edited request and switches to request `i` (a new one past the end).
+    fn switch_request(&mut self, i: usize) {
+        let cur = (std::mem::take(&mut self.request), self.omit);
+        if self.req < self.requests.len() {
+            self.requests[self.req] = cur;
+        } else {
+            self.requests.push(cur);
+        }
+        if i >= self.requests.len() {
+            self.requests.push((BTreeMap::new(), false));
+        }
+        self.req = i.min(self.requests.len() - 1);
+        (self.request, self.omit) = self.requests[self.req].clone();
+    }
+
     fn perform_find(&mut self) {
         if !self.commit() {
             return;
         }
+        self.switch_request(self.req);
         let (Some(t), Some(d)) = (self.table(), self.doc.as_ref()) else {
             return;
         };
-        let req = Request {
-            criteria: self
-                .request
-                .iter()
-                .filter(|(_, v)| !v.trim().is_empty())
-                .map(|(k, v)| (*k, v.clone()))
-                .collect(),
-            omit: false,
-        };
-        let found = engine::find(&d.db, t, &[req]);
+        let reqs: Vec<Request> = self
+            .requests
+            .iter()
+            .map(|(c, omit)| Request {
+                criteria: c
+                    .iter()
+                    .filter(|(_, v)| !v.trim().is_empty())
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect(),
+                omit: *omit,
+            })
+            .collect();
+        let found = engine::find(&d.db, t, &reqs);
         self.found.insert(t, found);
         self.current.insert(t, 0);
         self.mode = Some(Mode::Browse);
+    }
+
+    /// Records › Omit Record: removes the current record from the found set.
+    fn omit_record(&mut self) {
+        let Some(t) = self.table() else { return };
+        if !self.commit() {
+            return;
+        }
+        let pos = *self.current.get(&t).unwrap_or(&0);
+        let f = self.found(t);
+        if pos < f.len() {
+            f.remove(pos);
+        }
+        let n = f.len();
+        self.current.insert(t, pos.min(n.saturating_sub(1)));
+    }
+
+    /// Records › Show Omitted Only: swaps the found set with its complement.
+    fn show_omitted(&mut self) {
+        let Some(t) = self.table() else { return };
+        if !self.commit() {
+            return;
+        }
+        let n = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.db.table(t))
+            .map_or(0, |x| x.records.len());
+        let f = self.found(t).clone();
+        let omitted: Vec<usize> = (0..n).filter(|r| !f.contains(r)).collect();
+        self.found.insert(t, omitted);
+        self.sorted.remove(&t);
+        self.current.insert(t, 0);
     }
 
     fn sort(&mut self, order: Order) {
@@ -395,8 +464,7 @@ impl App {
                     ui.close();
                 }
                 if ui.button(tr("Find Mode")).clicked() {
-                    self.mode = Some(Mode::Find);
-                    self.request.clear();
+                    self.enter_find();
                     ui.close();
                 }
             });
@@ -418,6 +486,14 @@ impl App {
                 ui.separator();
                 if ui.button(tr("Show All Records")).clicked() {
                     self.show_all();
+                    ui.close();
+                }
+                if ui.button(tr("Show Omitted Only")).clicked() {
+                    self.show_omitted();
+                    ui.close();
+                }
+                if ui.button(tr("Omit Record")).clicked() {
+                    self.omit_record();
                     ui.close();
                 }
             });
@@ -477,8 +553,7 @@ impl App {
                         self.delete_record();
                     }
                     if ui.button(tr("Find")).clicked() {
-                        self.mode = Some(Mode::Find);
-                        self.request.clear();
+                        self.enter_find();
                     }
                     let fields: Vec<(u32, String)> = self
                         .doc
@@ -508,6 +583,18 @@ impl App {
                     if ui.button(tr("Perform Find")).clicked() {
                         self.perform_find();
                     }
+                    let n = self.requests.len().max(self.req + 1);
+                    if ui.button("◀").clicked() && self.req > 0 {
+                        self.switch_request(self.req - 1);
+                    }
+                    ui.label(format!("{} {}/{n}", tr("Request"), self.req + 1));
+                    if ui.button("▶").clicked() && self.req + 1 < n {
+                        self.switch_request(self.req + 1);
+                    }
+                    if ui.button(tr("New Request")).clicked() {
+                        self.switch_request(n);
+                    }
+                    ui.checkbox(&mut self.omit, tr("Omit"));
                     if ui.button(tr("Cancel")).clicked() {
                         self.mode = Some(Mode::Browse);
                     }

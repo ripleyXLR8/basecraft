@@ -695,6 +695,12 @@ impl App {
                             lk.paint_text(&painter, r, &text);
                             continue;
                         }
+                        if let Some(txt) = o.text.as_ref().filter(|x| x.contains("<<")) {
+                            let merged = merge_fields(doc, txt, t, layout_to, rec);
+                            lk.paint_box(&painter, r);
+                            lk.paint_text(&painter, r, &merged);
+                            continue;
+                        }
                         let owner = owner_of(doc, o, t, layout_to, rec);
                         draw_object(
                             ui,
@@ -716,6 +722,41 @@ impl App {
             self.tabs.insert(tc, p);
         }
     }
+}
+
+/// Replaces `<<Field>>` and `<<TO::Field>>` merge fields in layout text.
+fn merge_fields(doc: &Doc, text: &str, t: u32, layout_to: u32, rec: Option<usize>) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(a) = rest.find("<<") {
+        out.push_str(&rest[..a]);
+        let Some(b) = rest[a..].find(">>") else {
+            out.push_str(&rest[a..]);
+            return out;
+        };
+        let name = &rest[a + 2..a + b];
+        let (to_name, field) = name.split_once("::").unwrap_or(("", name));
+        let to = doc
+            .db
+            .occurrences
+            .iter()
+            .find(|o| o.name.eq_ignore_ascii_case(to_name))
+            .map_or(layout_to, |o| o.id);
+        let value = doc.db.table_of(to).and_then(|tbl| {
+            let f = tbl.field_by_name(field)?;
+            let r = if to == layout_to {
+                rec?
+            } else {
+                *doc.db.related(layout_to, rec?, to).first()?
+            };
+            let _ = t;
+            Some(doc.db.value(tbl.id, r, f.id).to_text())
+        });
+        out.push_str(&value.unwrap_or_default());
+        rest = &rest[a + b + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Table and record whose value a field object shows: the layout's own

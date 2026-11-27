@@ -119,7 +119,7 @@ ApplicationArchitecture.
 | Calculated fields displayed live | ✅ |
 | Theme styles decoded (`fmp12::theme`: colours, borders, fonts, padding, alignment) | ✅ |
 | Theme styles applied when drawing layouts: backgrounds, borders, radius, text colour, size, alignment, padding | ✅ |
-| Button labels (calculations evaluated live) | ✅ |
+| Button labels (calculations evaluated live), merge fields `<<Field>>` in text | ✅ |
 | Fonts (family, weight), icons, states (hover, focus, pressed) | ⏳ |
 | Form, List (body repeated per record) and Table views | ✅ |
 | Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |

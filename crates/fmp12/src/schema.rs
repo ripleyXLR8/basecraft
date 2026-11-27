@@ -423,14 +423,14 @@ pub fn split_rep_key(key: u32) -> (u32, u32) {
 }
 
 /// Key bytes of a value in a record node (FORMAT.md §13): the field id
-/// (one byte below 128, else a 2-byte path integer); for repetition n ≥ 2,
-/// that spelling with its top bit set, then n (`87 02` = field 7,
-/// repetition 2; `80 03 03` = field 131, repetition 3).
+/// (one byte below 128, else a 2-byte path integer with its top bit set),
+/// then for repetition n ≥ 2 a byte n (`07 02` = field 7, repetition 2;
+/// `80 03 03` = field 131, repetition 3). The same bytes name the sub-path
+/// of a long value.
 // ponytail: repetitions above 255 not observed; their spelling is a guess.
 pub fn value_key_bytes(field: u32, rep: u32) -> Vec<u8> {
     let mut k = crate::save::path_elem(field);
     if rep > 1 {
-        k[0] |= 0x80;
         k.push(rep as u8);
     }
     k
@@ -440,29 +440,37 @@ pub fn value_key_bytes(field: u32, rep: u32) -> Vec<u8> {
 /// one of the table's fields (not a record key such as 252).
 pub fn value_key(raw: &[u8], table: &Table) -> Option<u32> {
     let has = |f: u32| table.fields.contains_key(&f);
-    match *raw {
-        [f] if f < 0x80 && has(f as u32) => Some(f as u32),
-        [hi, rep] if hi & 0x80 != 0 => {
-            let (small, big) = ((hi & 0x7F) as u32, crate::path_int(raw)?);
-            let repeats = table
+    let repeats = |f: u32, r: u8| {
+        r >= 2
+            && table
                 .fields
-                .get(&small)
-                .is_some_and(|d| d.max_repetitions() as u32 >= rep as u32);
-            // `81 02` is field 386 or repetition 2 of field 1.
-            if rep >= 2 && repeats || !has(big) && rep >= 2 && has(small) {
-                Some(rep_key(small, rep as u32))
-            } else {
-                has(big).then_some(big)
-            }
-        }
-        [_, _, rep] => {
+                .get(&f)
+                .is_some_and(|d| d.max_repetitions() >= r as u16)
+    };
+    match *raw {
+        [f] => has(f as u32).then_some(f as u32),
+        // A field below 128 and a repetition (top bit clear).
+        [f, r] if f < 0x80 => repeats(f as u32, r).then(|| rep_key(f as u32, r as u32)),
+        [_, _] => crate::path_int(raw).filter(|f| has(*f)),
+        [_, _, r] => {
             let f = crate::path_int(&raw[..2])?;
-            has(f).then(|| rep_key(f, rep as u32))
+            repeats(f, r).then(|| rep_key(f, r as u32))
         }
         _ => None,
     }
 }
 
+/// [`value_key`] of a record item whose 2-byte key the reader gave as the
+/// integer `key`: the top bit telling a field ≥ 128 (`81 02`) from a
+/// repetition (`01 02`) is lost, so a repetition of a repeating field wins.
+fn int_value_key(key: u32, table: &Table) -> Option<u32> {
+    if key < 0x80 {
+        return value_key(&[key as u8], table);
+    }
+    let v = key - 0x80;
+    let (hi, lo) = ((v >> 8) as u8 & 0x7F, v as u8);
+    value_key(&[hi, lo], table).or_else(|| value_key(&[hi | 0x80, lo], table))
+}
 /// Accumulates a value stored either inline (key 16 of `node`) or as a long
 /// value in sub-path `[node..., 16]` split over keys/segments 1, 2, ….
 fn name_part(rel: &[u32], c: &Chunk) -> Option<(bool, String)> {
@@ -538,7 +546,6 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
 pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
     let t = table.id;
     let mut raw: BTreeMap<u32, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
-    let key1 = |k: u32| if k < 0x80 { vec![k as u8] } else { crate::save::path_elem(k) };
     file.walk(|path, c| {
         let [tp, five, rec, rest @ ..] = path else {
             return;
@@ -552,7 +559,7 @@ pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
         };
         match (rest, c) {
             ([], Chunk::Kv { key, data }) => {
-                if let Some(k) = value_key(&key1(*key), table) {
+                if let Some(k) = int_value_key(*key, table) {
                     raw.entry(r).or_default().insert(k, data.to_vec());
                 }
             }

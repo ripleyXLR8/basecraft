@@ -116,7 +116,10 @@ impl Stored {
 
 /// `FNAM`: u32 1, kind (length byte + XOR-ed text), u16 length + XOR-ed name.
 fn fnam(kind: &str, name: &str) -> Vec<u8> {
-    let (k, n) = (crate::save::encode_text(kind), crate::save::encode_text(name));
+    let (k, n) = (
+        crate::save::encode_text(kind),
+        crate::save::encode_text(name),
+    );
     let mut out = 1u32.to_be_bytes().to_vec();
     out.push(k.len() as u8);
     out.extend(k);
@@ -283,7 +286,9 @@ pub fn save_containers(
             .filter_map(|id| Some((*id, old.get(id).or_else(|| given.get(id))?)))
             .collect();
         let same = live.len() == old.len()
-            && live.iter().all(|(id, _)| old.get(id).is_some_and(|o| o.uses == uses[id]));
+            && live
+                .iter()
+                .all(|(id, _)| old.get(id).is_some_and(|o| o.uses == uses[id]));
         if same {
             continue;
         }
@@ -339,7 +344,12 @@ pub fn save_containers(
             }
         }
         let mut add = |path: Vec<Vec<u8>>, item: Vec<u8>| entries.push(Entry { path, item });
-        let last = live.keys().copied().chain(old.keys().copied()).max().unwrap_or(0);
+        let last = live
+            .keys()
+            .copied()
+            .chain(old.keys().copied())
+            .max()
+            .unwrap_or(0);
         add(at(&[1]), kv_raw(&[0], &len_int(last as u64)));
         add(at(&[1]), kv_raw(&[4], &(live.len() as u32).to_be_bytes()));
         let uuid = header_uuid.unwrap_or_else(|| crate::save::fresh_uuid(t as u64));
@@ -359,7 +369,10 @@ pub fn save_containers(
             add(node.clone(), vec![0x80]);
             add(node.clone(), kv_raw(&[2], &s.directory()));
             add(node.clone(), kv_raw(&[4], &s.hash()));
-            add(node.clone(), kv_raw(&[216], &crate::save::fresh_uuid(*id as u64)));
+            add(
+                node.clone(),
+                kv_raw(&[216], &crate::save::fresh_uuid(*id as u64)),
+            );
             for (tag, d) in &s.streams {
                 if d.len() <= INLINE_MAX {
                     add(
@@ -415,7 +428,10 @@ mod tests {
         assert_eq!(s.kind, "file");
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
         assert_eq!(hex(&s.directory()), "000246494c450000000f464e414d00000014");
-        assert_eq!(hex(&s.streams[b"FNAM"]), "00000001043c33363f0009323f363635742e222e");
+        assert_eq!(
+            hex(&s.streams[b"FNAM"]),
+            "00000001043c33363f0009323f363635742e222e"
+        );
         assert_eq!(hex(&s.hash()), "99ff941bb8e4d3f0952310dd9a33f3b5");
         assert_eq!(s.internal_size(), 51);
     }

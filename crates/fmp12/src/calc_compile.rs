@@ -176,7 +176,10 @@ fn scan(b: &[u8]) -> Res<Vec<Tok>> {
                 ((Kind::Var, String::new()), 2 + n)
             }
             0x10 => {
-                let n = b.get(i..).and_then(crate::calc::number_len).ok_or_else(|| bad(i))?;
+                let n = b
+                    .get(i..)
+                    .and_then(crate::calc::number_len)
+                    .ok_or_else(|| bad(i))?;
                 let c = b.get(i..i + n).ok_or_else(|| bad(i))?;
                 ((Kind::Num(c.to_vec()), String::new()), n + 2)
             }

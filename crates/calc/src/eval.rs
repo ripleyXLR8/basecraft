@@ -36,6 +36,13 @@ pub trait Context {
         Ok(vec![self.field(table, name, 1)?])
     }
 
+    /// Extend ( field ): in repetition n of a repeating calculation, the
+    /// value of a non-repeating field (which a plain reference only sees in
+    /// repetition 1). Defaults to the plain reference.
+    fn extended(&mut self, table: Option<&str>, name: &str) -> R {
+        self.field(table, name, 1)
+    }
+
     /// `Get(flag)`; `None` falls back to the engine's built-in flags.
     fn get(&mut self, flag: &str) -> Option<Value> {
         let _ = flag;

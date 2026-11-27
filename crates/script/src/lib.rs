@@ -877,8 +877,11 @@ impl Engine {
                 let v = self
                     .eval_opt(host, frame, value)?
                     .unwrap_or_else(Value::empty);
-                let _ = self.repetition(host, frame, repetition)?;
-                let f = field.ok_or(error::FIELD_MISSING)?;
+                let rep = self.repetition(host, frame, repetition)?;
+                let mut f = field.ok_or(error::FIELD_MISSING)?;
+                if repetition.is_some() {
+                    f.repetition = rep as u16;
+                }
                 self.set_field(host, f, v)?;
             }
             (
@@ -1628,7 +1631,9 @@ impl Engine {
                 .first()
                 .ok_or(error::RECORD_MISSING)?
         };
-        let text = engine::stored_text(&v, &db.locale);
+        // Containers join the table's store (Base64Decode, Insert File…).
+        let text = db.store_value(tid, f.field, &v);
+        let key = engine::rep_key(f.field, f.repetition.max(1) as u32);
         let ti = db
             .tables
             .iter()
@@ -1638,7 +1643,7 @@ impl Engine {
             self.open = Some((tid, r, Some(db.tables[ti].records[r].clone())));
         }
         // Lookups matching on the field copy again, stamps update.
-        db.set_values(tid, r, &[(f.field, text)]);
+        db.set_values(tid, r, &[(key, text)]);
         Ok(())
     }
 }

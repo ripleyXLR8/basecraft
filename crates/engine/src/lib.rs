@@ -17,6 +17,8 @@ use fmp12::schema::{DataType, FieldKind};
 use fmp12::schema_edit::{EditError, Editor, FieldSpec, RelationshipSpec};
 
 pub use find::{Request, find};
+pub use fmp12::containers::Stored;
+pub use fmp12::schema::{rep_key, split_rep_key};
 pub use summary::{groups, summarize, summarize_sorted, summary_at};
 
 #[derive(Debug, Clone)]
@@ -38,7 +40,9 @@ pub struct Field {
 #[derive(Debug, Clone, Default)]
 pub struct Record {
     pub id: u32,
-    /// Stored values as text, by field id.
+    /// Stored values as text, by field id ([`rep_key`] for repetitions
+    /// after the first). A container value is a store id
+    /// ([`fmp12::containers::ref_text`]) or a reference path.
     pub values: BTreeMap<u32, String>,
 }
 
@@ -48,6 +52,8 @@ pub struct Table {
     pub name: String,
     pub fields: Vec<Field>,
     pub records: Vec<Record>,
+    /// Container data by store id (FORMAT.md §13, "Containers").
+    pub containers: BTreeMap<u32, Stored>,
     next_record_id: u32,
 }
 
@@ -59,6 +65,7 @@ impl Table {
             name: name.to_string(),
             fields,
             records: Vec::new(),
+            containers: BTreeMap::new(),
             next_record_id: 0,
         }
     }
@@ -187,6 +194,7 @@ impl Database {
                 next_record_id: records.iter().map(|r| r.id).fold(last, u32::max),
                 fields,
                 records,
+                containers: fmp12::containers::read(file, t.id)?,
             });
         }
         Ok(Database {
@@ -226,8 +234,9 @@ impl Database {
             let ids: std::collections::BTreeSet<u32> = t.fields.iter().map(|f| f.id).collect();
             t.records = std::mem::take(&mut old.records);
             for r in t.records.iter_mut() {
-                r.values.retain(|f, _| ids.contains(f));
+                r.values.retain(|f, _| ids.contains(&split_rep_key(*f).0));
             }
+            t.containers = std::mem::take(&mut old.containers);
             t.next_record_id = t.next_record_id.max(old.next_record_id);
         }
         *self = fresh;
@@ -388,7 +397,9 @@ impl Database {
                 .collect();
             let input = |v: &BTreeMap<u32, String>| -> BTreeMap<u32, String> {
                 v.iter()
-                    .filter(|(f, s)| !s.is_empty() && !calcs.iter().any(|c| c.id == **f))
+                    .filter(|(f, s)| {
+                        !s.is_empty() && !calcs.iter().any(|c| c.id == split_rep_key(**f).0)
+                    })
                     .map(|(f, s)| (*f, s.clone()))
                     .collect()
             };
@@ -397,7 +408,10 @@ impl Database {
                 let mut values = r.values.clone();
                 if old.get(&r.id).is_none_or(|o| input(o) != input(&values)) {
                     for c in &calcs {
-                        values.insert(c.id, stored_text(&self.value(t.id, i, c.id), &self.locale));
+                        for n in 1..=repetitions(c) {
+                            let v = stored_text(&self.value_rep(t.id, i, c.id, n), &self.locale);
+                            values.insert(rep_key(c.id, n), v);
+                        }
                     }
                 }
                 recs.insert(r.id, values);
@@ -405,6 +419,13 @@ impl Database {
             data.insert(t.id, recs);
         }
         let bytes = fmp12::save::save_records(original, &data)?;
+        // Container data: files inserted since, use counts, unused files.
+        let stores = self
+            .tables
+            .iter()
+            .map(|t| (t.id, t.containers.clone()))
+            .collect();
+        let bytes = fmp12::containers::save_containers(&fmp12::File::from_bytes(bytes)?, &stores)?;
         // Serial numbers: the file's next value moves past the numbers
         // given here, so that FileMaker does not hand them out again.
         let saved = fmp12::File::from_bytes(bytes)?;
@@ -443,12 +464,21 @@ impl Database {
 
     /// Typed value of a field in a record (calculated fields are evaluated).
     pub fn value(&self, table: u32, record: usize, field: u32) -> Value {
+        self.value_rep(table, record, field, 1)
+    }
+
+    /// Typed value of repetition `rep` (1-based) of a field; empty beyond
+    /// the field's repetitions.
+    pub fn value_rep(&self, table: u32, record: usize, field: u32, rep: u32) -> Value {
         let Some(t) = self.table(table) else {
             return Value::empty();
         };
         let Some(f) = t.field(field) else {
             return Value::empty();
         };
+        if rep == 0 || rep > repetitions(f) {
+            return Value::empty();
+        }
         if f.kind == FieldKind::Summary {
             // ponytail: the engine has no found set, so a summary field
             // summarizes the whole table (Show All Records, unsorted);
@@ -462,6 +492,7 @@ impl Database {
                 table,
                 to: f.context,
                 record,
+                rep,
                 vars: BTreeMap::new(),
                 env: None,
             };
@@ -470,9 +501,65 @@ impl Database {
         let raw = t
             .records
             .get(record)
-            .and_then(|r| r.values.get(&field))
+            .and_then(|r| r.values.get(&rep_key(field, rep)))
             .map_or("", |s| s.as_str());
+        if f.data_type == DataType::Container {
+            return container_value(t, raw);
+        }
         typed_in(raw, f.data_type, &self.locale)
+    }
+
+    /// The text to store for `v` in repetition `rep` of a field: for a
+    /// container field given a file, the file joins the table's container
+    /// store (once per distinct content, as FileMaker keeps it) and the
+    /// text refers to it; anything else as [`stored_text`].
+    pub fn store_value(&mut self, table: u32, field: u32, v: &Value) -> String {
+        let loc = self.locale.clone();
+        let Some(t) = self.tables.iter_mut().find(|t| t.id == table) else {
+            return stored_text(v, &loc);
+        };
+        let container = t
+            .field(field)
+            .is_some_and(|f| f.data_type == DataType::Container);
+        match v {
+            Value::Container(c) if container && c.path.is_empty() && !c.data.is_empty() => {
+                let s = Stored::new(&c.name, c.data.clone());
+                let hash = s.hash();
+                let id = match t.containers.iter().find(|(_, o)| o.hash() == hash) {
+                    Some((id, _)) => *id,
+                    None => {
+                        // ponytail: a store id freed by FileMaker above the
+                        // highest one kept may be handed out again.
+                        let id = t.containers.keys().max().map_or(1, |m| m + 1);
+                        t.containers.insert(id, s);
+                        id
+                    }
+                };
+                fmp12::containers::ref_text(id)
+            }
+            Value::Container(c) if container => c.path.clone(),
+            _ => stored_text(v, &loc),
+        }
+    }
+
+    /// Insert Picture / Insert File: stores `data` named `name` in a
+    /// container field's repetition.
+    pub fn insert_file(
+        &mut self,
+        table: u32,
+        record: usize,
+        field: u32,
+        rep: u32,
+        name: &str,
+        data: Vec<u8>,
+    ) {
+        let v = Value::Container(calc::value::Container {
+            name: name.to_string(),
+            data,
+            ..Default::default()
+        });
+        let text = self.store_value(table, field, &v);
+        self.set_values(table, record, &[(rep_key(field, rep), text)]);
     }
 }
 
@@ -548,6 +635,7 @@ impl Database {
             table,
             to,
             record: record.unwrap_or(usize::MAX),
+            rep: 1,
             vars: BTreeMap::new(),
             env: None,
         };
@@ -591,6 +679,7 @@ impl Database {
             table,
             to,
             record: record.unwrap_or(usize::MAX),
+            rep: 1,
             vars: BTreeMap::new(),
             env,
         };
@@ -1183,6 +1272,32 @@ pub fn stored_text(v: &Value, loc: &fmp12::schema::Locale) -> String {
     }
 }
 
+/// Number of repetitions of a field (1 for a non-repeating one).
+pub fn repetitions(f: &Field) -> u32 {
+    (f.def.max_repetitions() as u32).max(1)
+}
+
+/// A container field's stored text as a value: the file it refers to in
+/// the table's store, or the path of a file stored by reference.
+// ponytail: referenced files are not read (no bytes, picture or MD5).
+fn container_value(t: &Table, raw: &str) -> Value {
+    if raw.is_empty() {
+        return Value::empty();
+    }
+    let c = match fmp12::containers::ref_id(raw).and_then(|id| t.containers.get(&id)) {
+        Some(s) => calc::value::Container {
+            name: s.name.clone(),
+            data: s.data().to_vec(),
+            path: String::new(),
+        },
+        None => calc::value::Container {
+            path: raw.to_string(),
+            ..Default::default()
+        },
+    };
+    Value::Container(c)
+}
+
 pub fn typed_in(raw: &str, dt: DataType, loc: &fmp12::schema::Locale) -> Value {
     typed(&to_us(raw, dt, loc), dt)
 }
@@ -1266,8 +1381,60 @@ struct RecordContext<'a, 'e> {
     /// Context table occurrence of the calculation.
     to: u32,
     record: usize,
+    /// Repetition of a repeating calculation being evaluated (1 otherwise).
+    rep: u32,
     vars: BTreeMap<(String, usize), Value>,
     env: Option<&'e mut dyn Env>,
+}
+
+impl RecordContext<'_, '_> {
+    /// (table, records, field, own record) a field reference stands for:
+    /// this record, or the related records.
+    fn resolve(
+        &self,
+        table: Option<&str>,
+        name: &str,
+    ) -> Result<(u32, Vec<usize>, &Field, bool), calc::EvalError> {
+        let missing = |what: &str| calc::EvalError::new(102, format!("{what} missing"));
+        let (t, records, own) = match table {
+            Some(to_name) => {
+                let to = self.db.to_named(to_name).ok_or_else(|| missing(to_name))?;
+                if to.id == self.to || (self.to == 0 && to.base_table == self.table) {
+                    (to.base_table, vec![self.record], true)
+                } else {
+                    let rel = self.db.related(self.to, self.record, to.id);
+                    (to.base_table, rel, false)
+                }
+            }
+            None => (self.table, vec![self.record], true),
+        };
+        let tbl = self.db.table(t).ok_or_else(|| missing("table"))?;
+        let f = tbl.field_by_name(name).ok_or_else(|| missing(name))?;
+        Ok((t, records, f, own))
+    }
+
+    /// Repetition `repetition` of a field; in repetition n of a repeating
+    /// calculation, a plain reference (`repetition` 1) means repetition n
+    /// of a repeating field, and nothing for a non-repeating one unless
+    /// `extended`.
+    // ponytail: an explicit `Field[1]` inside repetition n reads as plain.
+    fn rep_value(
+        &self,
+        table: Option<&str>,
+        name: &str,
+        repetition: usize,
+        extended: bool,
+    ) -> Result<Value, calc::EvalError> {
+        let (t, records, f, _) = self.resolve(table, name)?;
+        let rep = match (repetition, self.rep) {
+            (1, n) if n > 1 && repetitions(f) > 1 => n,
+            (1, n) if n > 1 && !extended => return Ok(Value::empty()),
+            (r, _) => r as u32,
+        };
+        Ok(records
+            .first()
+            .map_or_else(Value::empty, |r| self.db.value_rep(t, *r, f.id, rep)))
+    }
 }
 
 impl calc::Context for RecordContext<'_, '_> {
@@ -1275,34 +1442,27 @@ impl calc::Context for RecordContext<'_, '_> {
         &mut self,
         table: Option<&str>,
         name: &str,
-        _repetition: usize,
+        repetition: usize,
     ) -> Result<Value, calc::EvalError> {
-        Ok(self
-            .field_values(table, name)?
-            .into_iter()
-            .next()
-            .unwrap_or_else(Value::empty))
+        self.rep_value(table, name, repetition, false)
     }
 
+    fn extended(&mut self, table: Option<&str>, name: &str) -> Result<Value, calc::EvalError> {
+        self.rep_value(table, name, 1, true)
+    }
+
+    /// The related records' values, or a repeating field's repetitions.
     fn field_values(
         &mut self,
         table: Option<&str>,
         name: &str,
     ) -> Result<Vec<Value>, calc::EvalError> {
-        let missing = |what: &str| calc::EvalError::new(102, format!("{what} missing"));
-        let (t, records) = match table {
-            Some(to_name) => {
-                let to = self.db.to_named(to_name).ok_or_else(|| missing(to_name))?;
-                if to.id == self.to || (self.to == 0 && to.base_table == self.table) {
-                    (to.base_table, vec![self.record])
-                } else {
-                    (to.base_table, self.db.related(self.to, self.record, to.id))
-                }
-            }
-            None => (self.table, vec![self.record]),
-        };
-        let tbl = self.db.table(t).ok_or_else(|| missing("table"))?;
-        let f = tbl.field_by_name(name).ok_or_else(|| missing(name))?;
+        let (t, records, f, own) = self.resolve(table, name)?;
+        if own && repetitions(f) > 1 {
+            return Ok((1..=repetitions(f))
+                .map(|n| self.db.value_rep(t, self.record, f.id, n))
+                .collect());
+        }
         Ok(records
             .into_iter()
             .map(|r| self.db.value(t, r, f.id))
@@ -1399,6 +1559,9 @@ impl calc::Context for RecordContext<'_, '_> {
     }
 
     fn get(&mut self, flag: &str) -> Option<Value> {
+        if flag.eq_ignore_ascii_case("CalculationRepetitionNumber") {
+            return Some(Value::int(self.rep as i64));
+        }
         self.env.as_mut()?.get(flag)
     }
 

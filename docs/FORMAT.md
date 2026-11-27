@@ -92,22 +92,35 @@ paragraph separator (¶) and is kept as is.
 
 ## 4. Path map
 
-`T` is a table id (≥ 128).
+Verified by matching the object UUIDs of a *Save a Copy as XML* export with
+the binary (`tools/oracle/uuidmap.py`). `T` is a base-table id (≥ 128).
 
-| Path | Content | Status |
-|------|---------|--------|
+Every catalog follows the same pattern:
+
+* `[cat].[1]`: catalog header (key 216 = catalog UUID);
+* `[cat].[5].[id]`: one object per id. Common keys: **16** name,
+  **216** UUID, **217** source UUID, **31873** user name,
+  **31874** account name, **31875** timestamp (modification metadata);
+* `[cat].[5].[id].[5].[n]`: child objects (script steps, layout objects).
+
+| Path | XML catalog | Status |
+|------|-------------|--------|
 | `[2]` | file-level settings | 🔍 |
-| `[3].[16].[5].[T]` | table definition: key 16 = name, 216/217 = UUIDs, 31873/31874 = created/modified by account, 31875 = timestamp | ✅ name |
-| `[3].[17]` | table occurrences / relationship graph | 🔍 |
-| `[4]` | layouts | 🔍 |
-| `[6]` | ❓ | 🔍 |
-| `[17]` | scripts | 🔍 |
-| `[23]` | accounts / privileges | 🔍 |
-| `[T].[3].[5].[F]` | field definition: key 16 = name | ✅ name |
+| `[3].[16]` | BaseTableCatalog | ✅ names |
+| `[3].[17]` | TableOccurrenceCatalog | 🔍 |
+| `[3].[251]` | RelationshipCatalog | 🔍 |
+| `[4]` | LayoutCatalog; `[4].[5].[L].[5].[n]` = LayoutObject | 🔍 |
+| `[6]` | ThemeCatalog | 🔍 |
+| `[17]` | ScriptCatalog; `[17].[5].[S].[5].[n]` = Step | 🔍 |
+| `[23].[1]` | AccountsCatalog | 🔍 |
+| `[23].[2]` | PrivilegeSetsCatalog | 🔍 |
+| `[23].[3]` | ExtendedPrivilegesCatalog | 🔍 |
+| `[23].[4]` | FileAccessCatalog | 🔍 |
+| `[33]` | ValueListCatalog | 🔍 |
+| `[38]` | BaseDirectoryCatalog | 🔍 |
+| `[65]` | CustomMenuCatalog | 🔍 |
+| `[T].[3].[5].[F]` | FieldCatalog of table T | ✅ names |
 | `[T].[3].[1]` | field index (collation keys) | 🔍 |
 | `[T].[5].[R]` | record R: key F = value of field F | ✅ |
 | `[T].[5].[R].[F]` | long value of field F, keys/segments 1…n (key 0 = style runs) | ✅ |
-| Long names | `[node].[16]` with keys 1…n when the name does not fit inline | ✅ |
-
-Rows marked 🔍 are hypotheses to confirm with differential files (see
-`PROGRESS.md`, milestone M1).
+| `[node].[16]` | long name split over keys 1…n when it does not fit inline | ✅ |

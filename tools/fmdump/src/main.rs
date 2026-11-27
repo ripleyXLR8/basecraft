@@ -2,6 +2,7 @@
 //!
 //! fmdump <file> sectors        sector table
 //! fmdump <file> chunks         every chunk with its path (text-decoded)
+//! fmdump <file> raw            tab-separated path, kind, key, hex value
 //! fmdump <file> tables         tables and fields
 //! fmdump <file> records <tbl>  records of a table (by name)
 
@@ -57,6 +58,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Chunk::Segment { index, data } => println!("[{p}] seg#{index} {}", show(data)),
                 Chunk::Kv { key, data } => println!("[{p}] {key} = {}", show(data)),
                 Chunk::KvLong { key, data } => println!("[{p}] <{}> = {}", show(key), show(data)),
+                Chunk::Push(_) | Chunk::Pop => {}
+            }
+        })?,
+        "raw" => f.walk(|p, c| {
+            let p = path(p);
+            let h = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+            match c {
+                Chunk::Data(d) => println!("{p}	data		{}", h(d)),
+                Chunk::Segment { index, data } => println!("{p}	seg	{index}	{}", h(data)),
+                Chunk::Kv { key, data } => println!("{p}	kv	{key}	{}", h(data)),
+                Chunk::KvLong { key, data } => println!("{p}	kvl	{}	{}", h(key), h(data)),
                 Chunk::Push(_) | Chunk::Pop => {}
             }
         })?,

@@ -22,7 +22,10 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
         (
             "open_file",
             "Open a FileMaker .fmp12 file. Other tools act on the open file. A protected file (one that does not log in by itself) needs `account` and `password`; privileges of that account then apply.",
-            s(json!({ "path": { "type": "string" }, "account": { "type": "string" }, "password": { "type": "string" } }), &["path"]),
+            s(
+                json!({ "path": { "type": "string" }, "account": { "type": "string" }, "password": { "type": "string" } }),
+                &["path"],
+            ),
         ),
         (
             "describe_database",
@@ -655,7 +658,11 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
                     args.extend([opt.into(), p]);
                 }
             }
-            for (k, opt) in [("limits", "--limit"), ("allow", "--allow"), ("deny", "--deny")] {
+            for (k, opt) in [
+                ("limits", "--limit"),
+                ("allow", "--allow"),
+                ("deny", "--deny"),
+            ] {
                 for v in list(k) {
                     args.extend([opt.into(), v]);
                 }
@@ -663,7 +670,10 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
             if a.get("extended").is_some() {
                 args.extend(["--extended".into(), list("extended").join(",")]);
             }
-            for (k, opt) in [("min_password", "--min-password"), ("expire_days", "--expire-days")] {
+            for (k, opt) in [
+                ("min_password", "--min-password"),
+                ("expire_days", "--expire-days"),
+            ] {
                 if let Some(n) = a.get(k).and_then(Json::as_u64) {
                     args.extend([opt.into(), n.to_string()]);
                 }

@@ -5,8 +5,14 @@ use fmp12::security::{self, Level, PrivilegeSet, Security, Session};
 
 use crate::{Database, Value};
 
+/// FileMaker's "insufficient privileges".
+pub const PRIVILEGES: u32 = 9;
 /// FileMaker's "record access is denied".
 pub const RECORD_DENIED: u32 = 200;
+/// "User account and/or password does not exist".
+pub const NO_ACCOUNT: u32 = 213;
+/// "User does not have sufficient privileges to modify administrator account".
+pub const ADMIN_ACCOUNT: u32 = 217;
 /// "Field access is denied".
 pub const FIELD_DENIED: u32 = 201;
 /// FileMaker's alert when a privilege does not allow an action.
@@ -39,29 +45,162 @@ impl Database {
         self.access.session.as_ref()
     }
 
-    /// Re-Login: a new account for the open file.
-    pub fn relogin(
-        &mut self,
-        file: &fmp12::File,
-        account: &str,
-        password: &str,
-    ) -> Result<(), security::LoginError> {
-        let sec = Security::load(file).map_err(|_| security::LoginError::Invalid)?;
-        self.access.session = Some(sec.login(account, password)?);
-        Ok(())
-    }
-
     /// Reloads accounts and privilege sets after File › Manage › Security
     /// changed `file`; the logged-in account keeps its session with its
     /// privileges as they are now.
     pub fn refresh_security(&mut self, file: &fmp12::File) -> Result<(), fmp12::Error> {
         let sec = Security::load(file)?;
+        self.set_security(sec);
+        self.access.changed = false;
+        Ok(())
+    }
+
+    fn set_security(&mut self, sec: Security) {
         if let Some(s) = self.access.session.as_ref().and_then(|s| sec.resume(s)) {
             self.access.session = Some(s);
         }
-        self.accounts = sec.accounts;
-        self.privilege_sets = sec.sets;
+        self.accounts = sec.accounts.clone();
+        self.privilege_sets = sec.sets.clone();
+        self.access.security = Some(sec);
+    }
+
+    /// The file's accounts and privileges, with the changes not saved yet.
+    pub fn security(&self) -> Option<&Security> {
+        self.access.security.as_ref()
+    }
+
+    /// Re-Login: another account of the file. On failure the account
+    /// logged in stays (FileMaker's 212, 210 or 211).
+    pub fn relogin(&mut self, account: &str, password: &str) -> Result<(), u32> {
+        let sec = self.access.security.as_ref().ok_or(PRIVILEGES)?;
+        let s = sec.login(account, password).map_err(|e| e.code())?;
+        self.access.session = Some(s);
         Ok(())
+    }
+
+    /// Change Password of the logged-in account (206, 208, 209, 212).
+    pub fn change_password(&mut self, old: &str, new: &str) -> Result<(), u32> {
+        let name = self.session().ok_or(PRIVILEGES)?.account_name().to_string();
+        let mut sec = self.access.security.clone().ok_or(PRIVILEGES)?;
+        let s = sec.change_password(&name, old, new).map_err(|e| e.code())?;
+        self.set_security(sec);
+        self.access.session = Some(s);
+        self.access.changed = true;
+        Ok(())
+    }
+
+    /// Whether the account may add, delete, reset or enable accounts of
+    /// privilege set `set`: full access, or "manage accounts" for sets
+    /// other than [Full Access] (FileMaker's 9 and 217).
+    fn may_manage(&self, set: u32) -> Result<(), u32> {
+        if self.full_access() {
+            return Ok(());
+        }
+        if !self.allows(security::flag::MANAGE_ACCOUNTS) {
+            return Err(PRIVILEGES);
+        }
+        if set == 1 {
+            return Err(ADMIN_ACCOUNT);
+        }
+        Ok(())
+    }
+
+    /// Changes the account named `name` with `f`, after the privilege check.
+    fn edit_account(
+        &mut self,
+        name: &str,
+        f: impl FnOnce(&mut security::Account),
+    ) -> Result<(), u32> {
+        let mut sec = self.access.security.clone().ok_or(PRIVILEGES)?;
+        let a = sec.account_named(name).ok_or(NO_ACCOUNT)?;
+        self.may_manage(a.privilege_set)?;
+        let id = a.id;
+        if let Some(a) = sec.accounts.iter_mut().find(|a| a.id == id) {
+            f(a);
+        }
+        self.store(sec)
+    }
+
+    /// Keeps `sec` if FileMaker's rules allow it (one active full access
+    /// account stays…); written by [`Database::save`].
+    fn store(&mut self, sec: Security) -> Result<(), u32> {
+        let ok = sec.accounts.iter().any(|a| {
+            a.privilege_set == 1
+                && a.active
+                && !a.is_guest()
+                && a.auth_type() == security::AuthType::FileMaker
+        });
+        if !ok {
+            return Err(ADMIN_ACCOUNT);
+        }
+        self.set_security(sec);
+        self.access.changed = true;
+        Ok(())
+    }
+
+    /// Add Account: a FileMaker account with privilege set `set` (by name).
+    pub fn add_account(
+        &mut self,
+        name: &str,
+        password: &str,
+        set: &str,
+        must_change: bool,
+    ) -> Result<(), u32> {
+        let mut sec = self.access.security.clone().ok_or(PRIVILEGES)?;
+        let set = sec.set_named(set).ok_or(PRIVILEGES)?.id;
+        self.may_manage(set)?;
+        if name.trim().is_empty() || sec.account_named(name).is_some() {
+            return Err(PRIVILEGES);
+        }
+        let mut a = security::Account::new(name, password, set);
+        a.must_change = must_change;
+        sec.add_account(a);
+        self.store(sec)
+    }
+
+    /// Delete Account (not the account logged in).
+    pub fn delete_account(&mut self, name: &str) -> Result<(), u32> {
+        let mut sec = self.access.security.clone().ok_or(PRIVILEGES)?;
+        let a = sec.account_named(name).ok_or(NO_ACCOUNT)?;
+        self.may_manage(a.privilege_set)?;
+        let id = a.id;
+        if self.session().is_some_and(|s| s.account_id() == id) {
+            return Err(PRIVILEGES);
+        }
+        sec.accounts.retain(|a| a.id != id);
+        self.store(sec)
+    }
+
+    /// Reset Account Password.
+    pub fn reset_account_password(
+        &mut self,
+        name: &str,
+        password: &str,
+        must_change: bool,
+    ) -> Result<(), u32> {
+        self.edit_account(name, |a| {
+            a.set_password(password);
+            a.must_change = must_change;
+        })
+    }
+
+    /// Enable Account: activate or deactivate.
+    pub fn enable_account(&mut self, name: &str, active: bool) -> Result<(), u32> {
+        self.edit_account(name, |a| a.active = active)
+    }
+
+    /// Writes the accounts changed by script steps into `bytes` (the rest
+    /// of [`Database::save`]), as the logged-in account.
+    pub(crate) fn save_security(&self, bytes: Vec<u8>) -> Result<Vec<u8>, fmp12::Error> {
+        let (true, Some(sec), Some(s)) = (
+            self.access.changed,
+            self.access.security.as_ref(),
+            self.access.session.as_ref(),
+        ) else {
+            return Ok(bytes);
+        };
+        let file = fmp12::File::from_bytes(bytes)?;
+        security::save(&file, s, sec).map_err(|e| fmp12::Error::Security(e.to_string()))
     }
 
     fn set(&self) -> Option<&PrivilegeSet> {
@@ -111,7 +250,8 @@ impl Database {
     /// Field access: [`security::MODIFIABLE`], [`security::VIEW_ONLY`] or
     /// [`security::NO_ACCESS`].
     pub fn field_access(&self, table: u32, field: u32) -> u8 {
-        self.set().map_or(security::MODIFIABLE, |s| s.field(table, field))
+        self.set()
+            .map_or(security::MODIFIABLE, |s| s.field(table, field))
     }
 
     /// Whether the account may type into `field` of `record`.
@@ -129,7 +269,8 @@ impl Database {
 
     /// Layout access: a layout with no access is not listed.
     pub fn layout_access(&self, layout: u32) -> u8 {
-        self.set().map_or(security::MODIFIABLE, |s| s.layout(layout))
+        self.set()
+            .map_or(security::MODIFIABLE, |s| s.layout(layout))
     }
 
     /// Records through a layout (view only: no editing on it).
@@ -140,7 +281,8 @@ impl Database {
 
     /// Script access: a script with no access is not listed or run.
     pub fn script_access(&self, script: u32) -> u8 {
-        self.set().map_or(security::MODIFIABLE, |s| s.script(script))
+        self.set()
+            .map_or(security::MODIFIABLE, |s| s.script(script))
     }
 
     /// The error of the last action the privileges refused (and forgets it).
@@ -149,7 +291,12 @@ impl Database {
     }
 
     /// Why setting `values` on `record` is refused, if it is.
-    pub(crate) fn edit_denied(&self, table: u32, record: usize, values: &[(u32, String)]) -> Option<u32> {
+    pub(crate) fn edit_denied(
+        &self,
+        table: u32,
+        record: usize,
+        values: &[(u32, String)],
+    ) -> Option<u32> {
         if values
             .iter()
             .any(|(f, _)| self.field_access(table, *f) != security::MODIFIABLE)
@@ -247,8 +394,13 @@ mod tests {
         assert_eq!(db.last_denied(), Some(RECORD_DENIED));
         assert!(!db.can_edit_field(t, r, 1) && db.can_edit_field(t, r, 2));
         assert_eq!(
-            db.eval_source("Get ( AccountName ) & \"|\" & Get ( AccountPrivilegeSetName )", t, 0, Some(r))
-                .to_text(),
+            db.eval_source(
+                "Get ( AccountName ) & \"|\" & Get ( AccountPrivilegeSetName )",
+                t,
+                0,
+                Some(r)
+            )
+            .to_text(),
             "clerk|Clerks"
         );
 
@@ -256,7 +408,8 @@ mod tests {
         assert!(ro.new_record(t).is_none());
         assert_eq!(ro.last_denied(), Some(RECORD_DENIED));
         assert_eq!(
-            ro.eval_source("Get ( AccountPrivilegeSetName )", t, 0, None).to_text(),
+            ro.eval_source("Get ( AccountPrivilegeSetName )", t, 0, None)
+                .to_text(),
             "[Accès en lecture seule]"
         );
     }

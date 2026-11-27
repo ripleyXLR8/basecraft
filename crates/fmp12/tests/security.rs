@@ -43,7 +43,11 @@ fn blank_decodes() {
     let sets: Vec<_> = s.sets.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         sets,
-        ["[Accès intégral]", "[Saisie de données uniquement]", "[Accès en lecture seule]"]
+        [
+            "[Accès intégral]",
+            "[Saisie de données uniquement]",
+            "[Accès en lecture seule]"
+        ]
     );
     let de = &s.sets[1];
     assert!(de.allows(security::flag::PRINT) && de.allows(security::flag::EXPORT));
@@ -55,7 +59,10 @@ fn blank_decodes() {
     assert_eq!(ro.table(130).edit, security::Level::No);
     assert_eq!(ro.table(130).view, security::Level::Yes);
     let kw: Vec<_> = s.extended.iter().map(|e| e.keyword.as_str()).collect();
-    assert!(kw.contains(&"fmapp") && kw.contains(&"fmwebdirect"), "{kw:?}");
+    assert!(
+        kw.contains(&"fmapp") && kw.contains(&"fmwebdirect"),
+        "{kw:?}"
+    );
     assert_eq!(s.auto_login, Some(("Admin".into(), String::new())));
     assert!(!s.needs_login());
     assert!(Security::check(&blank()).unwrap().is_empty());
@@ -124,7 +131,10 @@ fn accounts_round_trip() {
     assert!(!v.allows(security::flag::EXPORT));
     assert!(s2.extended.iter().any(|e| e.sets.contains(&vid)));
     // Untouched content keeps its bytes.
-    assert_eq!(fmp12::schema::tables(&f2).unwrap(), fmp12::schema::tables(&file).unwrap());
+    assert_eq!(
+        fmp12::schema::tables(&f2).unwrap(),
+        fmp12::schema::tables(&file).unwrap()
+    );
 
     // Delete again, as the new admin.
     let admin2 = s2.login("Admin", "adm1n").unwrap();

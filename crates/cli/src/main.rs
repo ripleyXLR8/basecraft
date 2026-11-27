@@ -63,9 +63,9 @@ impl Doc {
             None => Database::load(&file),
         }
         .map_err(|e| match e {
-            fmp12::Error::LoginRequired => format!(
-                "{path}: this file is protected: open it with --account NAME --password PW"
-            ),
+            fmp12::Error::LoginRequired => {
+                format!("{path}: this file is protected: open it with --account NAME --password PW")
+            }
             e => format!("{path}: {e}"),
         })?;
         Ok(Doc {

@@ -76,7 +76,11 @@ pub fn run(
         .map(|s| s.id);
     if target.is_some_and(|id| d.db.script_access(id) == fmp12::security::NO_ACCESS) {
         d.engine = Some(engine);
-        return Err(format!("{} (error {})", engine::DENIED_MESSAGE, engine::RECORD_DENIED));
+        return Err(format!(
+            "{} (error {})",
+            engine::DENIED_MESSAGE,
+            engine::RECORD_DENIED
+        ));
     }
     let window = Window::new(&d.db, layout_id);
     let mut host = Headless {

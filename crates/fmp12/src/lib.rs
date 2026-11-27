@@ -40,13 +40,21 @@ pub enum Error {
     Encrypted,
     BadSize,
     Truncated(usize),
-    UnknownOpcode { op: u8, at: usize },
-    Sector { id: u32, source: Box<Error> },
+    UnknownOpcode {
+        op: u8,
+        at: usize,
+    },
+    Sector {
+        id: u32,
+        source: Box<Error>,
+    },
     /// The file has accounts and does not log in by itself: open it with
     /// an account name and password.
     LoginRequired,
     /// The account name and password were refused.
     Login(security::LoginError),
+    /// Accounts or privileges could not be written.
+    Security(String),
 }
 
 impl std::fmt::Display for Error {
@@ -65,6 +73,7 @@ impl std::fmt::Display for Error {
                 f.write_str("this file is protected: open it with an account name and password")
             }
             Error::Login(e) => e.fmt(f),
+            Error::Security(e) => f.write_str(e),
         }
     }
 }

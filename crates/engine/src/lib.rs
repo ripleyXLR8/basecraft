@@ -109,6 +109,11 @@ pub use access::{Action, DENIED_MESSAGE, FIELD_DENIED, RECORD_DENIED};
 pub struct Access {
     pub session: Option<fmp12::security::Session>,
     pub denied: Option<u32>,
+    /// The file's accounts and privileges, with the changes script steps
+    /// made (Add Account, Change Password…); [`Database::save`] writes
+    /// them when `changed`.
+    pub security: Option<fmp12::security::Security>,
+    pub changed: bool,
 }
 
 /// Names for decompiling calculations into `calc`-parsable source.
@@ -230,6 +235,8 @@ impl Database {
             access: Access {
                 session,
                 denied: None,
+                security: Some(fmp12::security::Security::load(file)?),
+                changed: false,
             },
         })
     }
@@ -461,11 +468,12 @@ impl Database {
                 }
             }
         }
-        Ok(if moved {
+        let out = if moved {
             ed.finish()
         } else {
             saved.bytes().to_vec()
-        })
+        };
+        self.save_security(out)
     }
 
     /// Base table of a table occurrence.
@@ -917,10 +925,11 @@ impl Database {
                 CreationDate | ModificationDate => now("CurrentDate"),
                 CreationTime | ModificationTime => now("CurrentTime"),
                 CreationTimestamp | ModificationTimestamp => now("CurrentTimestamp"),
-                CreationName | ModificationName | CreationAccountName | ModificationAccountName => self
-                    .session()
-                    .map_or("Admin", |s| s.account_name())
-                    .to_string(),
+                CreationName | ModificationName | CreationAccountName | ModificationAccountName => {
+                    self.session()
+                        .map_or("Admin", |s| s.account_name())
+                        .to_string()
+                }
             });
         }
         if !creating {

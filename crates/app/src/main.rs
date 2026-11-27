@@ -22,6 +22,7 @@ mod i18n;
 mod look;
 mod preview;
 mod records;
+mod security_ui;
 #[cfg(test)]
 mod ui_tests;
 mod workspace;
@@ -134,6 +135,8 @@ struct App {
     designer: Option<design::Designer>,
     /// Records menu, Find/Replace, import and export dialogs (`records.rs`).
     m8: records::Dialogs,
+    /// Login dialog and File › Manage › Security (`security_ui.rs`).
+    security: security_ui::State,
 }
 
 impl App {
@@ -181,6 +184,9 @@ impl App {
                 if let Some(d) = self.doc.as_mut() {
                     d.path = Some(p.to_path_buf());
                 }
+                if let Some(l) = self.security.login.as_mut() {
+                    l.path = Some(p.to_path_buf());
+                }
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -188,13 +194,33 @@ impl App {
 
     fn open(&mut self, name: String, bytes: Vec<u8>) {
         let name = name.trim_end_matches(".fmp12").to_string();
-        let loaded = fmp12::File::from_bytes(bytes).and_then(|f| Ok((Database::load(&f)?, f)));
-        match loaded {
-            Ok((db, file)) => {
+        let file = match fmp12::File::from_bytes(bytes) {
+            Ok(f) => f,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                return;
+            }
+        };
+        match Database::load(&file) {
+            Ok(db) => self.opened(name, db, file),
+            // A protected file: the login dialog opens it (`security_ui.rs`).
+            Err(fmp12::Error::LoginRequired) => self.ask_login(name, file),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Shows a file once it is loaded (and its account logged in).
+    fn opened(&mut self, name: String, db: Database, file: fmp12::File) {
+        {
+            {
+                // Layouts the account has no access to are not listed.
                 let layouts = db
                     .layouts
                     .iter()
-                    .filter(|l| l.table_occurrence != 0)
+                    .filter(|l| {
+                        l.table_occurrence != 0
+                            && db.layout_access(l.id) != fmp12::security::NO_ACCESS
+                    })
                     .cloned()
                     .collect();
                 let engine = script::Engine::load(&file).ok();
@@ -226,7 +252,6 @@ impl App {
                     self.trigger_queue.push_back((t.script, t.parameter));
                 }
             }
-            Err(e) => self.error = Some(e.to_string()),
         }
     }
 
@@ -917,6 +942,16 @@ impl App {
                 }
                 ui.separator();
                 self.file_menu_items(ui);
+                ui.menu_button(security_ui::t("Manage"), |ui| {
+                    let on = self.doc.as_ref().is_some_and(|d| d.db.full_access());
+                    if ui
+                        .add_enabled(on, egui::Button::new(security_ui::t("Security…")))
+                        .clicked()
+                    {
+                        ui.close();
+                        self.open_security();
+                    }
+                });
                 ui.separator();
                 if ui.button(tr("Close")).clicked() {
                     ui.close();
@@ -1053,6 +1088,11 @@ impl App {
                         e.scripts
                             .iter()
                             .filter(|s| !s.is_folder() && !s.steps.is_empty())
+                            .filter(|s| {
+                                self.doc.as_ref().is_none_or(|d| {
+                                    d.db.script_access(s.id) != fmp12::security::NO_ACCESS
+                                })
+                            })
                             .map(|s| (s.id, s.name.clone()))
                             .collect()
                     })
@@ -1836,7 +1876,12 @@ fn draw_object(
             ui.put(inner, lk.edit(s));
         }
         (Mode::Find | Mode::Layout | Mode::Preview, _) | (Mode::Browse, None) => {}
-        (Mode::Browse, Some(rec)) if is_calc => {
+        // FileMaker draws <No Access> for a field the account cannot see.
+        (Mode::Browse, Some(rec)) if !doc.db.can_see(t, rec, field) => {
+            lk.paint_text(painter, r, "<No Access>");
+        }
+        // Calculations, and fields the privileges make read-only.
+        (Mode::Browse, Some(rec)) if is_calc || !doc.db.can_edit_field(t, rec, field) => {
             let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
             lk.paint_text(painter, r, &v);
         }
@@ -2045,6 +2090,7 @@ impl eframe::App for App {
         }
         self.layout_dialogs(&ctx);
         self.records_dialogs(&ctx);
+        self.security_dialogs(&ctx);
         for (o, ev) in std::mem::take(&mut self.obj_events) {
             if ev == event::OBJECT_ENTER {
                 self.m8.focus = Some(o);

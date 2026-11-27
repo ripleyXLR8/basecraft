@@ -30,7 +30,11 @@ fn format_of(explicit: Option<&str>, path: Option<&str>) -> Res<Format> {
 
 pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
     if !d.db.can_export() {
-        return Err(format!("{} (error {})", engine::DENIED_MESSAGE, engine::RECORD_DENIED));
+        return Err(format!(
+            "{} (error {})",
+            engine::DENIED_MESSAGE,
+            engine::RECORD_DENIED
+        ));
     }
     let t = d.table(table)?;
     let to = occurrence(d, table, t.id)?;
@@ -113,7 +117,11 @@ pub fn import_file(d: &mut Doc, table: &str, source: &str, o: &Opts) -> Res<Json
 
 pub fn print_pdf(d: &Doc, layout: &str, o: &Opts) -> Res<Json> {
     if !d.db.can_print() {
-        return Err(format!("{} (error {})", engine::DENIED_MESSAGE, engine::RECORD_DENIED));
+        return Err(format!(
+            "{} (error {})",
+            engine::DENIED_MESSAGE,
+            engine::RECORD_DENIED
+        ));
     }
     let l =
         d.db.layouts

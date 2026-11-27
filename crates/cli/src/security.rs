@@ -57,7 +57,11 @@ fn level(s: &str) -> Res<u8> {
         "modifiable" | "all" => security::MODIFIABLE,
         "view" | "view-only" | "executable" => security::VIEW_ONLY,
         "none" | "no" => security::NO_ACCESS,
-        _ => return Err(format!("unknown access {s:?} (modifiable, view, executable, none)")),
+        _ => {
+            return Err(format!(
+                "unknown access {s:?} (modifiable, view, executable, none)"
+            ));
+        }
     })
 }
 
@@ -189,7 +193,11 @@ pub fn set_json(d: &Doc, sec: &Security, s: &PrivilegeSet) -> Json {
     let item_name = |cat: u8, k: &[u8]| -> String {
         let id = fmp12::path_int(&k[1..]).unwrap_or(0);
         let n = match cat {
-            security::LAYOUTS => db.layouts.iter().find(|l| l.id == id).map(|l| l.name.clone()),
+            security::LAYOUTS => db
+                .layouts
+                .iter()
+                .find(|l| l.id == id)
+                .map(|l| l.name.clone()),
             _ => None,
         };
         n.unwrap_or_else(|| id.to_string())
@@ -201,7 +209,11 @@ pub fn set_json(d: &Doc, sec: &Security, s: &PrivilegeSet) -> Json {
             .map(|(k, v)| json!({ "item": item_name(cat, k), "access": level_name(v & 3, cat == security::SCRIPTS) }))
             .collect()
     };
-    let default = |cat: u8| s.items.get(&vec![cat]).map(|v| level_name(v & 3, cat == security::SCRIPTS));
+    let default = |cat: u8| {
+        s.items
+            .get(&vec![cat])
+            .map(|v| level_name(v & 3, cat == security::SCRIPTS))
+    };
     json!({
         "name": s.name,
         "description": s.description,
@@ -231,12 +243,13 @@ pub fn account_json(sec: &Security, a: &Account) -> Json {
 }
 
 fn session(d: &Doc) -> Res<security::Session> {
-    let s = d
-        .db
-        .session()
-        .ok_or("this file is not open with an account")?;
+    let s =
+        d.db.session()
+            .ok_or("this file is not open with an account")?;
     if !s.full_access() {
-        return Err("Manage Security needs an account with full access (--account/--password)".into());
+        return Err(
+            "Manage Security needs an account with full access (--account/--password)".into(),
+        );
     }
     Ok(s.clone())
 }
@@ -260,7 +273,9 @@ pub fn accounts(d: &mut Doc, rest: &[String]) -> Res<Json> {
     let sub = rest.first().map(String::as_str);
     if sub.is_none() || sub == Some("list") {
         session(d)?;
-        return Ok(json!({ "accounts": sec.accounts.iter().map(|a| account_json(&sec, a)).collect::<Vec<_>>() }));
+        return Ok(
+            json!({ "accounts": sec.accounts.iter().map(|a| account_json(&sec, a)).collect::<Vec<_>>() }),
+        );
     }
     let name = rest.get(1).ok_or("missing account name")?;
     let a = Args(&rest[2..]);
@@ -272,8 +287,11 @@ pub fn accounts(d: &mut Doc, rest: &[String]) -> Res<Json> {
     };
     match sub {
         Some("add") => {
-            let pw = a.value("--new-password").ok_or("--new-password is required")?;
-            let set = set_id(a.value("--set").unwrap_or("[Data Entry Only]")).or_else(|_| set_id_of(&sec, 2))?;
+            let pw = a
+                .value("--new-password")
+                .ok_or("--new-password is required")?;
+            let set = set_id(a.value("--set").unwrap_or("[Data Entry Only]"))
+                .or_else(|_| set_id_of(&sec, 2))?;
             let mut acc = Account::new(name, pw, set);
             acc.active = !a.has("--inactive");
             acc.must_change = a.has("--must-change");
@@ -322,16 +340,24 @@ pub fn accounts(d: &mut Doc, rest: &[String]) -> Res<Json> {
                 .id;
             new.accounts.retain(|x| x.id != id);
         }
-        Some(o) => return Err(format!("accounts: unknown sub-command {o:?} (add, set, delete)")),
+        Some(o) => {
+            return Err(format!(
+                "accounts: unknown sub-command {o:?} (add, set, delete)"
+            ));
+        }
         None => {}
     }
     apply(d, &new)?;
     let sec = load(d)?;
-    Ok(json!({ "accounts": sec.accounts.iter().map(|a| account_json(&sec, a)).collect::<Vec<_>>() }))
+    Ok(
+        json!({ "accounts": sec.accounts.iter().map(|a| account_json(&sec, a)).collect::<Vec<_>>() }),
+    )
 }
 
 fn set_id_of(sec: &Security, id: u32) -> Res<u32> {
-    sec.set(id).map(|s| s.id).ok_or_else(|| "no privilege set".into())
+    sec.set(id)
+        .map(|s| s.id)
+        .ok_or_else(|| "no privilege set".into())
 }
 
 pub fn privileges(d: &mut Doc, rest: &[String]) -> Res<Json> {
@@ -339,7 +365,9 @@ pub fn privileges(d: &mut Doc, rest: &[String]) -> Res<Json> {
     let sub = rest.first().map(String::as_str);
     if sub.is_none() || sub == Some("list") {
         session(d)?;
-        return Ok(json!({ "privilege_sets": sec.sets.iter().map(|s| set_json(d, &sec, s)).collect::<Vec<_>>() }));
+        return Ok(
+            json!({ "privilege_sets": sec.sets.iter().map(|s| set_json(d, &sec, s)).collect::<Vec<_>>() }),
+        );
     }
     let name = rest.get(1).ok_or("missing privilege set name")?;
     let a = Args(&rest[2..]);
@@ -358,7 +386,12 @@ pub fn privileges(d: &mut Doc, rest: &[String]) -> Res<Json> {
                         records: Some(RecordAccess::NONE),
                         ..Default::default()
                     };
-                    s.set_item(security::LAYOUTS, None, security::NO_ACCESS, security::NO_ACCESS);
+                    s.set_item(
+                        security::LAYOUTS,
+                        None,
+                        security::NO_ACCESS,
+                        security::NO_ACCESS,
+                    );
                     s.set_item(security::SCRIPTS, None, security::NO_ACCESS, 0);
                     s.set_item(security::VALUE_LISTS, None, security::NO_ACCESS, 0);
                     s.set_menus(Menus::Minimum);
@@ -380,11 +413,16 @@ pub fn privileges(d: &mut Doc, rest: &[String]) -> Res<Json> {
             }
             id
         }
-        Some("set") | Some("delete") => sec
-            .set_named(name)
-            .ok_or_else(|| format!("no privilege set named {name:?}"))?
-            .id,
-        Some(o) => return Err(format!("privileges: unknown sub-command {o:?} (add, set, delete)")),
+        Some("set") | Some("delete") => {
+            sec.set_named(name)
+                .ok_or_else(|| format!("no privilege set named {name:?}"))?
+                .id
+        }
+        Some(o) => {
+            return Err(format!(
+                "privileges: unknown sub-command {o:?} (add, set, delete)"
+            ));
+        }
         None => 0,
     };
     if sub == Some("delete") {
@@ -452,8 +490,12 @@ fn edit_set(d: &Doc, new: &mut Security, id: u32, a: &Args) -> Res<()> {
         };
     }
     for v in a.values("--limit") {
-        let (t, rest) = v.split_once(':').ok_or("--limit \"Table:action=calculation\"")?;
-        let (act, calc) = rest.split_once('=').ok_or("--limit \"Table:action=calculation\"")?;
+        let (t, rest) = v
+            .split_once(':')
+            .ok_or("--limit \"Table:action=calculation\"")?;
+        let (act, calc) = rest
+            .split_once('=')
+            .ok_or("--limit \"Table:action=calculation\"")?;
         let i = ["create", "view", "edit", "delete"]
             .iter()
             .position(|x| *x == act.trim())
@@ -479,8 +521,12 @@ fn edit_set(d: &Doc, new: &mut Security, id: u32, a: &Args) -> Res<()> {
         ta.limits[i] = Some(l);
     }
     for v in a.values("--field-access") {
-        let (tf, acc) = v.split_once('=').ok_or("--field-access Table::Field=access")?;
-        let (t, f) = tf.split_once("::").ok_or("--field-access Table::Field=access")?;
+        let (tf, acc) = v
+            .split_once('=')
+            .ok_or("--field-access Table::Field=access")?;
+        let (t, f) = tf
+            .split_once("::")
+            .ok_or("--field-access Table::Field=access")?;
         let tid = table(t)?;
         let fid = db
             .table(tid)
@@ -503,7 +549,11 @@ fn edit_set(d: &Doc, new: &mut Security, id: u32, a: &Args) -> Res<()> {
         ("--value-lists", security::VALUE_LISTS),
     ] {
         if let Some(v) = a.value(opt) {
-            let second = if cat == security::LAYOUTS { security::MODIFIABLE } else { 0 };
+            let second = if cat == security::LAYOUTS {
+                security::MODIFIABLE
+            } else {
+                0
+            };
             s.set_item(cat, None, level(v)?, second);
         }
     }
@@ -515,7 +565,12 @@ fn edit_set(d: &Doc, new: &mut Security, id: u32, a: &Args) -> Res<()> {
             .find(|x| x.name.eq_ignore_ascii_case(l))
             .map(|x| x.id)
             .ok_or_else(|| format!("no layout named {l:?}"))?;
-        s.set_item(security::LAYOUTS, Some(lid), level(acc)?, security::MODIFIABLE);
+        s.set_item(
+            security::LAYOUTS,
+            Some(lid),
+            level(acc)?,
+            security::MODIFIABLE,
+        );
     }
     let scripts = fmp12::scripts::scripts(&d.file).map_err(|e| e.to_string())?;
     for v in a.values("--script-access") {
@@ -556,7 +611,11 @@ fn edit_set(d: &Doc, new: &mut Security, id: u32, a: &Args) -> Res<()> {
             }
         }
         for k in &kws {
-            if !new.extended.iter().any(|e| e.keyword.eq_ignore_ascii_case(k)) {
+            if !new
+                .extended
+                .iter()
+                .any(|e| e.keyword.eq_ignore_ascii_case(k))
+            {
                 return Err(format!("no extended privilege {k:?}"));
             }
         }

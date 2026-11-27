@@ -11,8 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::save::{
-    fresh_uuid, ipath, kv_entry, len_int, marker, path_elem, read_len_int, spelled,
-    value_entries,
+    fresh_uuid, ipath, kv_entry, len_int, marker, path_elem, read_len_int, spelled, value_entries,
 };
 use crate::write::{self, Entry, Item};
 use crate::{Chunk, Error, File};
@@ -96,7 +95,10 @@ impl RecordAccess {
     };
 
     fn decode(b: &[u8]) -> RecordAccess {
-        let (a, f) = (b.first().copied().unwrap_or(0), b.get(1).copied().unwrap_or(1));
+        let (a, f) = (
+            b.first().copied().unwrap_or(0),
+            b.get(1).copied().unwrap_or(1),
+        );
         RecordAccess {
             create: Level::from_bits(a >> 6),
             view: Level::from_bits(a >> 4),
@@ -244,6 +246,19 @@ impl PrivilegeSet {
             .unwrap_or(0xD5)
     }
 
+    /// The access of item `id` of catalog `cat` as stored (`None`: the
+    /// catalog's default), whatever the set.
+    pub fn item_access(&self, cat: u8, id: Option<u32>) -> u8 {
+        self.quad(cat, id) & 3
+    }
+
+    /// Sets the access of an item (or the catalog's default), keeping its
+    /// other fields.
+    pub fn set_item_access(&mut self, cat: u8, id: Option<u32>, v: u8) {
+        let q = self.quad(cat, id);
+        self.set_item(cat, id, v, (q >> 2) & 3);
+    }
+
     /// Layout `id` itself: [`NO_ACCESS`], [`VIEW_ONLY`] or [`MODIFIABLE`].
     pub fn layout(&self, id: u32) -> u8 {
         if self.full_access() {
@@ -282,8 +297,7 @@ impl PrivilegeSet {
             k.extend(path_elem(id));
         }
         // Third and fourth fields: 1 and 3 in every entry FileMaker writes.
-        self.items
-            .insert(k, 0xD0 | (second & 3) << 2 | (first & 3));
+        self.items.insert(k, 0xD0 | (second & 3) << 2 | (first & 3));
     }
 
     /// Record access of table `t`.
@@ -552,7 +566,8 @@ pub struct Security {
 // ---------------------------------------------------------------- passwords
 
 /// FileMaker's fixed 30-byte pepper.
-const PEPPER: &[u8; 30] = b"FileMaker, Inc.\0\xca\x3c\x23\x90\xa5\x5b\x71\x74\xb6\x1d\xf5\xb2\x6d\x00";
+const PEPPER: &[u8; 30] =
+    b"FileMaker, Inc.\0\xca\x3c\x23\x90\xa5\x5b\x71\x74\xb6\x1d\xf5\xb2\x6d\x00";
 
 /// Precomposed Latin letters (U+00C0–U+017F) and their decomposition: a
 /// password's text is decomposed before it is hashed.
@@ -698,6 +713,17 @@ pub enum LoginError {
 }
 
 impl LoginError {
+    /// FileMaker Pro's alert (English).
+    pub fn message(self) -> &'static str {
+        match self {
+            LoginError::Invalid => {
+                "The account name and password you entered do not match. Please try again."
+            }
+            LoginError::Inactive => "The account is inactive.",
+            LoginError::MustChange => "The password for this account must be changed.",
+        }
+    }
+
     pub fn code(self) -> u32 {
         match self {
             LoginError::Invalid => 212,
@@ -709,14 +735,7 @@ impl LoginError {
 
 impl std::fmt::Display for LoginError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            // FileMaker Pro's alert for a wrong account name or password.
-            LoginError::Invalid => {
-                "The account name and password you entered do not match. Please try again."
-            }
-            LoginError::Inactive => "The account is inactive.",
-            LoginError::MustChange => "The password for this account must be changed.",
-        })
+        f.write_str(self.message())
     }
 }
 
@@ -791,12 +810,17 @@ impl Security {
         old: &str,
         new: &str,
     ) -> Result<Session, ChangeError> {
-        let id = self.account_named(name).ok_or(ChangeError::Login(LoginError::Invalid))?.id;
+        let id = self
+            .account_named(name)
+            .ok_or(ChangeError::Login(LoginError::Invalid))?
+            .id;
         match self.login(name, old) {
             Ok(_) | Err(LoginError::MustChange) => {}
             Err(e) => return Err(ChangeError::Login(e)),
         }
-        let a = self.account(id).ok_or(ChangeError::Login(LoginError::Invalid))?;
+        let a = self
+            .account(id)
+            .ok_or(ChangeError::Login(LoginError::Invalid))?;
         let set = self.set(a.privilege_set).cloned().unwrap_or_default();
         if !set.allows(flag::CHANGE_PASSWORD) && !(a.must_change || self.expired(a)) {
             return Err(ChangeError::NotAllowed);
@@ -906,9 +930,15 @@ impl std::fmt::Display for ChangeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ChangeError::Login(e) => e.fmt(f),
-            ChangeError::NotAllowed => f.write_str("Your privileges do not allow changing the password."),
-            ChangeError::TooShort(n) => write!(f, "The password must be at least {n} characters long."),
-            ChangeError::Same => f.write_str("The new password must be different from the old one."),
+            ChangeError::NotAllowed => {
+                f.write_str("Your privileges do not allow changing the password.")
+            }
+            ChangeError::TooShort(n) => {
+                write!(f, "The password must be at least {n} characters long.")
+            }
+            ChangeError::Same => {
+                f.write_str("The new password must be different from the old one.")
+            }
         }
     }
 }
@@ -1017,7 +1047,8 @@ fn parse(entries: &[Entry]) -> Security {
     let mut sec = Security::default();
     let file2 = header(entries, &[2]);
     if let Some(v) = get(&file2, &[], 254) {
-        sec.internal_creation.copy_from_slice(&[v.as_slice(), &[0; 4]].concat()[..4]);
+        sec.internal_creation
+            .copy_from_slice(&[v.as_slice(), &[0; 4]].concat()[..4]);
     }
     let version = get(&file2, &[], 5).map_or(0, |v| v.iter().fold(0u32, |a, b| a << 8 | *b as u32));
     if version > 10 {
@@ -1032,7 +1063,9 @@ fn parse(entries: &[Entry]) -> Security {
     }
     for (id, m) in members(entries, &[23, 1, 5]) {
         let raw_name = text_at(&m, &[], 16);
-        let stamp = get(&m, &[], 0x0A).and_then(|v| Stamp::decode(v)).unwrap_or_default();
+        let stamp = get(&m, &[], 0x0A)
+            .and_then(|v| Stamp::decode(v))
+            .unwrap_or_default();
         sec.accounts.push(Account {
             id,
             name: localize(&raw_name),
@@ -1040,7 +1073,9 @@ fn parse(entries: &[Entry]) -> Security {
             privilege_set: get(&m, &[], 0x0B)
                 .and_then(|v| read_len_int(v))
                 .unwrap_or(0) as u32,
-            kind: get(&m, &[], 2).and_then(|v| v.first().copied()).unwrap_or(0),
+            kind: get(&m, &[], 2)
+                .and_then(|v| v.first().copied())
+                .unwrap_or(0),
             description: text_at(&m, &[], 3),
             active: stamp.micros & INACTIVE == 0,
             must_change: stamp.micros & MUST_CHANGE != 0,
@@ -1108,7 +1143,8 @@ fn parse(entries: &[Entry]) -> Security {
     }
     // Extended privileges in the order of their name index (keywords'
     // collation keys), as Get ( AccountExtendedPrivileges ) lists them.
-    sec.extended.sort_by_key(|e| crate::collate::name_key(&e.keyword).unwrap_or_default());
+    sec.extended
+        .sort_by_key(|e| crate::collate::name_key(&e.keyword).unwrap_or_default());
     sec
 }
 
@@ -1166,7 +1202,11 @@ impl Security {
         b.extend(a.password.iter().take(31));
         b.extend(utf16be(&a.description));
         b.extend(path_key(&a.status().encode()).get(1..).unwrap_or(&[]));
-        b.extend(path_key(&len_int(a.privilege_set as u64)).get(1..).unwrap_or(&[]));
+        b.extend(
+            path_key(&len_int(a.privilege_set as u64))
+                .get(1..)
+                .unwrap_or(&[]),
+        );
         md5(&[&b])
     }
 
@@ -1179,7 +1219,8 @@ impl Security {
             };
             let mut lv = a.levels();
             for (i, l) in lv.iter_mut().enumerate() {
-                if *l == Level::Limited && limits[i].as_ref().is_none_or(|x| x.compiled.is_empty()) {
+                if *l == Level::Limited && limits[i].as_ref().is_none_or(|x| x.compiled.is_empty())
+                {
                     *l = Level::No;
                 }
             }
@@ -1300,13 +1341,63 @@ impl From<Error> for SaveError {
     }
 }
 
+/// Who may write `new` over `old`: a full access account anything; an
+/// account whose set may manage accounts (script steps Add Account, Delete
+/// Account, Reset Account Password, Enable Account) only accounts outside
+/// [Full Access]; any account its own password (Change Password, checked
+/// by [`Security::change_password`]). Privilege sets and extended
+/// privileges need full access. The session must be one of `old`'s
+/// accounts, with the privilege set it logged in with.
+fn authorize(old: &Security, new: &Security, session: &Session) -> Result<(), SaveError> {
+    let me = old
+        .account(session.account)
+        .filter(|a| a.privilege_set == session.set.id)
+        .ok_or(SaveError::NotFullAccess)?;
+    if me.privilege_set == 1 && session.full_access() {
+        return Ok(());
+    }
+    if old.sets != new.sets || old.extended != new.extended || old.auto_login != new.auto_login {
+        return Err(SaveError::NotFullAccess);
+    }
+    let manage = session.set.allows(flag::MANAGE_ACCOUNTS);
+    let ids: BTreeSet<u32> = old
+        .accounts
+        .iter()
+        .chain(&new.accounts)
+        .map(|a| a.id)
+        .collect();
+    for id in ids {
+        let (o, n) = (old.account(id), new.account(id));
+        if o == n {
+            continue;
+        }
+        let own_password = id == session.account
+            && matches!((o, n), (Some(o), Some(n)) if Account {
+                password: o.password.clone(),
+                stamp: o.stamp,
+                must_change: o.must_change,
+                ..n.clone()
+            } == *o);
+        if own_password {
+            continue;
+        }
+        let full = |a: Option<&Account>| a.is_some_and(|a| a.privilege_set == 1);
+        if !manage || full(o) || full(n) {
+            return Err(SaveError::NotFullAccess);
+        }
+    }
+    Ok(())
+}
+
 /// FileMaker's rules for a valid security setup (Manage Security refuses
 /// the rest).
 fn validate(new: &Security, session: &Session) -> Result<(), SaveError> {
     let rule = |m: &str| Err(SaveError::Rule(m.to_string()));
-    if !new.accounts.iter().any(|a| {
-        a.privilege_set == 1 && a.active && a.kind == 0 && !a.is_guest()
-    }) {
+    if !new
+        .accounts
+        .iter()
+        .any(|a| a.privilege_set == 1 && a.active && a.kind == 0 && !a.is_guest())
+    {
         return rule("At least one active account must have the [Full Access] privilege set.");
     }
     let mut names = BTreeSet::new();
@@ -1327,7 +1418,10 @@ fn validate(new: &Security, session: &Session) -> Result<(), SaveError> {
     let mut names = BTreeSet::new();
     for s in &new.sets {
         if s.name.trim().is_empty() || !names.insert(s.name.to_lowercase()) {
-            return rule(&format!("Privilege set name \"{}\" is empty or taken.", s.name));
+            return rule(&format!(
+                "Privilege set name \"{}\" is empty or taken.",
+                s.name
+            ));
         }
     }
     for id in 1..=3 {
@@ -1345,15 +1439,9 @@ fn validate(new: &Security, session: &Session) -> Result<(), SaveError> {
 /// their bytes. Password data comes from [`Account::new`] and
 /// [`Account::set_password`] only.
 pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, SaveError> {
-    if !session.full_access() {
-        return Err(SaveError::NotFullAccess);
-    }
     let mut entries = write::entries(file)?;
     let old = parse(&entries);
-    // The session must be one of this file's accounts, still with full access.
-    if old.account(session.account).map(|a| a.privilege_set) != Some(1) {
-        return Err(SaveError::NotFullAccess);
-    }
+    authorize(&old, new, session)?;
     validate(new, session)?;
     let mut add: Vec<Entry> = Vec::new();
 
@@ -1407,7 +1495,13 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
         probe.file_access_uuid = old.file_access_uuid.clone();
         add.push(kv_entry(&base, 4, probe.account_digest(&a).to_vec()));
     }
-    reindex(&mut entries, &mut add, 1, &ids, &old.accounts.iter().map(|a| a.id).collect::<Vec<_>>());
+    reindex(
+        &mut entries,
+        &mut add,
+        1,
+        &ids,
+        &old.accounts.iter().map(|a| a.id).collect::<Vec<_>>(),
+    );
 
     // Privilege sets.
     let olds: BTreeMap<u32, &PrivilegeSet> = old.sets.iter().map(|s| (s.id, s)).collect();
@@ -1431,8 +1525,9 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
                         return false;
                     }
                     !(p == base
-                        && raw_kv(&e.item)
-                            .is_some_and(|(k, _)| matches!(k.as_slice(), [2 | 3 | 4 | 0x0A | 0x0C | 0x0D])))
+                        && raw_kv(&e.item).is_some_and(|(k, _)| {
+                            matches!(k.as_slice(), [2 | 3 | 4 | 0x0A | 0x0C | 0x0D])
+                        }))
                 });
                 if o.name != s.name {
                     drop_name(&mut entries, &base);
@@ -1451,10 +1546,23 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
         add.extend(set_entries(s, &base));
         add.push(kv_entry(&base, 4, digests.set_digest(s).to_vec()));
     }
-    reindex(&mut entries, &mut add, 2, &sids, &old.sets.iter().map(|s| s.id).collect::<Vec<_>>());
+    reindex(
+        &mut entries,
+        &mut add,
+        2,
+        &sids,
+        &old.sets.iter().map(|s| s.id).collect::<Vec<_>>(),
+    );
     // The set digest index `[23].[2].[1].[8].[digest]`: one empty key per set.
     entries.retain(|e| {
-        !(e.path.len() >= 4 && ipath(&Entry { path: e.path[..4].to_vec(), item: vec![] }).as_deref() == Some(&[23, 2, 1, 8]) && e.path.len() > 4)
+        !(e.path.len() >= 4
+            && ipath(&Entry {
+                path: e.path[..4].to_vec(),
+                item: vec![],
+            })
+            .as_deref()
+                == Some(&[23, 2, 1, 8])
+            && e.path.len() > 4)
     });
     for s in &new.sets {
         let d = match olds.get(&s.id) {
@@ -1494,7 +1602,11 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
             }
         }
         let sharing = ext.get(&e.id).map_or(2, sharing_byte);
-        add.push(kv_entry(&base, 4, Security::extended_digest(&e, sharing).to_vec()));
+        add.push(kv_entry(
+            &base,
+            4,
+            Security::extended_digest(&e, sharing).to_vec(),
+        ));
     }
 
     // "Log in using" naming an account whose password changed or that is
@@ -1509,7 +1621,11 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
         });
         if still.is_none() {
             drop_keys(&mut entries, &[23, 1, 1], &[6, 16]);
-            entries.retain(|e| ipath(e).is_none_or(|p| !(p.len() == 4 && p[..3] == [23, 1, 1] && matches!(p[3], 6 | 16))));
+            entries.retain(|e| {
+                ipath(e).is_none_or(|p| {
+                    !(p.len() == 4 && p[..3] == [23, 1, 1] && matches!(p[3], 6 | 16))
+                })
+            });
             add.push(kv_entry(&[23, 1, 1], 6, Vec::new()));
         }
     }
@@ -1529,7 +1645,11 @@ fn set_entries(s: &PrivilegeSet, base: &[u32]) -> Vec<Entry> {
     if !s.description.is_empty() {
         out.extend(value_entries(&spelled(base), 3, &s.description));
     }
-    out.push(kv_entry(base, 0x0A, (s.flags ^ 0x6000).to_be_bytes().to_vec()));
+    out.push(kv_entry(
+        base,
+        0x0A,
+        (s.flags ^ 0x6000).to_be_bytes().to_vec(),
+    ));
     if s.expire_days != 0 {
         out.push(kv_entry(base, 0x0C, s.expire_days.to_be_bytes().to_vec()));
     }
@@ -1662,10 +1782,7 @@ fn rename_index(entries: &mut Vec<Entry>, add: &mut Vec<Entry>, cat: u32, id: u3
     if let Some(k) = crate::collate::name_key(name) {
         add.push(Entry {
             path: spelled(&[23, cat, 1, 1]),
-            item: write::encode(&Item::KvLong {
-                key: k,
-                data: idv,
-            }),
+            item: write::encode(&Item::KvLong { key: k, data: idv }),
         });
     }
 }
@@ -1707,7 +1824,11 @@ fn reindex(entries: &mut Vec<Entry>, add: &mut Vec<Entry>, cat: u32, ids: &[u32]
     }
     let max = ids.iter().copied().max().unwrap_or(0).max(last);
     add.push(kv_entry(&[23, cat, 1], 0, len_int(max as u64)));
-    add.push(kv_entry(&[23, cat, 1], 4, (ids.len() as u32).to_be_bytes().to_vec()));
+    add.push(kv_entry(
+        &[23, cat, 1],
+        4,
+        (ids.len() as u32).to_be_bytes().to_vec(),
+    ));
 }
 
 /// Calculation of a limited record action, compiled for table occurrence
@@ -1748,7 +1869,10 @@ mod tests {
             assert_eq!(s.encode(), b, "{hex} {s:?}");
         }
         let s = Stamp::decode(&[8, 0x90, 0, 0x41, 0x80, 0, 0x63, 0x53, 0x99]).unwrap();
-        assert_eq!((s.year, s.month, s.day, s.seconds, s.micros), (1024, 1, 1, 0, 524_288));
+        assert_eq!(
+            (s.year, s.month, s.day, s.seconds, s.micros),
+            (1024, 1, 1, 0, 524_288)
+        );
     }
 
     #[test]

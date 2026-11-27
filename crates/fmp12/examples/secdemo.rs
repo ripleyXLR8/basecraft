@@ -21,7 +21,9 @@ fn main() {
     let file = fmp12::File::open(&args[1]).unwrap();
     let admin_pw = args.get(3).map_or("test123", |s| s.as_str());
     let s = Security::load(&file).unwrap();
-    let session = s.login("Admin", "").expect("template Admin with no password");
+    let session = s
+        .login("Admin", "")
+        .expect("template Admin with no password");
     let mut new = s.clone();
 
     let tables = fmp12::schema::tables(&file).unwrap();
@@ -61,9 +63,19 @@ fn main() {
     ta.fields.insert(fid("Description"), security::VIEW_ONLY);
     ta.fields.insert(fid("Priority"), security::NO_ACCESS);
     clerks.tables.insert(tasks.id, ta);
-    clerks.set_item(security::LAYOUTS, None, security::VIEW_ONLY, security::MODIFIABLE);
+    clerks.set_item(
+        security::LAYOUTS,
+        None,
+        security::VIEW_ONLY,
+        security::MODIFIABLE,
+    );
     if let Some(d) = details {
-        clerks.set_item(security::LAYOUTS, Some(d), security::NO_ACCESS, security::MODIFIABLE);
+        clerks.set_item(
+            security::LAYOUTS,
+            Some(d),
+            security::NO_ACCESS,
+            security::MODIFIABLE,
+        );
     }
     clerks.set_item(security::SCRIPTS, None, security::EXECUTABLE, 0);
     if let Some(first) = scripts.iter().find(|s| s.options == 8) {

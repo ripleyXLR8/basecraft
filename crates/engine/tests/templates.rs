@@ -104,3 +104,34 @@ fn custom_value_lists() {
         ["Home", "Mobile", "Work", "Fax"]
     );
 }
+
+#[test]
+fn design_functions_and_sql() {
+    let Some(d) = dir() else { return };
+    let mut db = Database::open(d.join("Contacts").join("en.fmp12")).unwrap();
+    let c = db.tables.iter().position(|t| t.name == "Contacts").unwrap();
+    let (tid, first) = (
+        db.tables[c].id,
+        db.tables[c].field_by_name("First Name").unwrap().id,
+    );
+    for n in ["Ada", "Grace"] {
+        let r = db.tables[c].new_record();
+        db.tables[c].records[r].values.insert(first, n.into());
+    }
+    let to = db
+        .occurrences
+        .iter()
+        .find(|o| o.name == "Contacts")
+        .unwrap()
+        .id;
+    let ev = |s: &str| db.eval_source(s, tid, to, Some(0)).to_text();
+    assert!(ev("TableNames ( \"\" )").contains("Addresses"));
+    assert!(ev("ValueListItems ( \"\" ; \"Phone Type\" )").starts_with("Home\rMobile"));
+    assert_eq!(
+        ev(
+            "ExecuteSQL ( \"SELECT \\\"First Name\\\" FROM Contacts ORDER BY \\\"First Name\\\" DESC\" ; \"\" ; \"\" )"
+        ),
+        "Grace\rAda"
+    );
+    assert_eq!(ev("GetNthRecord ( ${First Name} ; 2 )"), "Grace");
+}

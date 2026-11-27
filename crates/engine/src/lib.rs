@@ -3,6 +3,7 @@
 //! semantics.
 
 mod find;
+mod host;
 
 use std::collections::BTreeMap;
 
@@ -233,6 +234,19 @@ impl Database {
         }
     }
 
+    /// Evaluates calculation source text for `record` of `table`, from
+    /// occurrence `to` (Data Viewer style).
+    pub fn eval_source(&self, src: &str, table: u32, to: u32, record: Option<usize>) -> Value {
+        let mut ctx = RecordContext {
+            db: self,
+            table,
+            to,
+            record: record.unwrap_or(usize::MAX),
+            vars: BTreeMap::new(),
+        };
+        calc::evaluate(src, &mut ctx).unwrap_or_else(|_| Value::text("?"))
+    }
+
     /// Evaluates a calculation stored as a token stream (layout labels,
     /// script parameters…) for `record` of `table`, from occurrence `to`.
     pub fn eval_tokens(&self, tokens: &[u8], table: u32, to: u32, record: Option<usize>) -> Value {
@@ -415,6 +429,54 @@ impl calc::Context for RecordContext<'_> {
             .into_iter()
             .map(|r| self.db.value(t, r, f.id))
             .collect())
+    }
+
+    fn schema(&mut self, file: &str) -> Option<std::sync::Arc<calc::schema::Schema>> {
+        // ponytail: only the current file is known; rebuilt on each call.
+        (file.is_empty()).then(|| std::sync::Arc::new(self.db.calc_schema("")))
+    }
+
+    fn current_occurrence(&mut self) -> Option<String> {
+        self.db
+            .occurrences
+            .iter()
+            .find(|o| o.id == self.to)
+            .map(|o| o.name.clone())
+    }
+
+    fn nth_record(
+        &mut self,
+        table: Option<&str>,
+        name: &str,
+        _repetition: usize,
+        n: usize,
+    ) -> Result<Value, calc::EvalError> {
+        // ponytail: n-th record of the whole table (no found sets in the engine yet).
+        Ok(self
+            .field_values(table, name)
+            .ok()
+            .filter(|_| table.is_some())
+            .and_then(|v| v.into_iter().nth(n.saturating_sub(1)))
+            .or_else(|| {
+                let t = self.db.table(self.table)?;
+                let f = t.field_by_name(name)?;
+                (n >= 1 && n <= t.records.len()).then(|| self.db.value(t.id, n - 1, f.id))
+            })
+            .unwrap_or_else(Value::empty))
+    }
+
+    fn record_ids(&mut self, _table: Option<&str>) -> Result<Vec<u64>, calc::EvalError> {
+        Ok(self
+            .db
+            .table(self.table)
+            .map(|t| t.records.iter().map(|r| r.id as u64).collect())
+            .unwrap_or_default())
+    }
+
+    fn rows(&mut self, table: &str) -> Result<calc::schema::Rows, calc::EvalError> {
+        self.db
+            .calc_rows(table)
+            .ok_or_else(|| calc::EvalError::new(106, format!("table {table} missing")))
     }
 
     fn variable(&mut self, name: &str, repetition: usize) -> Value {

@@ -117,6 +117,7 @@ ApplicationArchitecture.
 | Sort ascending/descending by several fields | ✅ |
 | Related records through the relationship graph (multi-hop, `=` joins); related fields and aggregates in calculations | ✅ |
 | Portals in the GUI, sorted relationships, other join operators | ⏳ |
+| Design functions (TableNames, ValueListItems…), ExecuteSQL, GetNthRecord answered from the database | ✅ |
 | Summary fields, auto-enter, validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records (no sample data yet) | ⏳ |
 ## M4 — GUI (`crates/app`)

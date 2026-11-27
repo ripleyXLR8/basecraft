@@ -403,6 +403,60 @@ impl Database {
         Some(v)
     }
 
+    /// Checks a record against its fields' validation options, as FileMaker
+    /// does when the record is committed. Returns the failing fields.
+    pub fn validate(&self, table: u32, record: usize) -> Vec<Invalid> {
+        let Some(t) = self.table(table) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for f in &t.fields {
+            if f.kind != FieldKind::Normal {
+                continue;
+            }
+            let v = f.def.validation();
+            let raw = t.records.get(record).and_then(|r| r.values.get(&f.id));
+            let text = raw.map_or("", |s| s.as_str());
+            if v.not_empty && text.trim().is_empty() {
+                out.push(Invalid {
+                    field: f.id,
+                    rule: Rule::NotEmpty,
+                    can_override: v.allow_override,
+                });
+                continue;
+            }
+            if text.is_empty() {
+                continue;
+            }
+            let same = |o: &Record| {
+                o.values
+                    .get(&f.id)
+                    .is_some_and(|x| x.eq_ignore_ascii_case(text))
+            };
+            let others = t.records.iter().enumerate().filter(|(i, _)| *i != record);
+            if v.unique && others.clone().any(|(_, o)| same(o)) {
+                out.push(Invalid {
+                    field: f.id,
+                    rule: Rule::Unique,
+                    can_override: v.allow_override,
+                });
+            } else if v.existing && !others.clone().any(|(_, o)| same(o)) {
+                out.push(Invalid {
+                    field: f.id,
+                    rule: Rule::Existing,
+                    can_override: v.allow_override,
+                });
+            } else if v.strict_numeric && calc::value::text_to_num(text).is_none() {
+                out.push(Invalid {
+                    field: f.id,
+                    rule: Rule::Numeric,
+                    can_override: v.allow_override,
+                });
+            }
+        }
+        out
+    }
+
     fn to_named(&self, name: &str) -> Option<&fmp12::graph::TableOccurrence> {
         self.occurrences
             .iter()
@@ -717,6 +771,23 @@ impl calc::Context for RecordContext<'_> {
     fn set_variable(&mut self, name: &str, repetition: usize, value: Value) {
         self.vars.insert((name.to_string(), repetition), value);
     }
+}
+
+/// A failed validation rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    NotEmpty,
+    Unique,
+    Existing,
+    Numeric,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Invalid {
+    pub field: u32,
+    pub rule: Rule,
+    /// The user may accept the value anyway ("Allow user to override").
+    pub can_override: bool,
 }
 
 /// FileMaker's sort order for one field: ascending or descending.

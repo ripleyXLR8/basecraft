@@ -155,3 +155,31 @@ fn new_record_applies_auto_enter() {
     assert!(!get("CreationTimestamp").is_empty());
     assert!(!get("ModificationTimestamp").is_empty());
 }
+
+#[test]
+fn validation_on_commit() {
+    let Some(d) = dir() else { return };
+    let mut db = Database::open(d.join("Contacts").join("en.fmp12")).unwrap();
+    let tid = db.tables.iter().find(|t| t.name == "Contacts").unwrap().id;
+    let a = db.new_record(tid).unwrap();
+    assert!(
+        db.validate(tid, a).is_empty(),
+        "auto-entered values satisfy validation"
+    );
+    let pk = db
+        .table(tid)
+        .unwrap()
+        .field_by_name("PrimaryKey")
+        .unwrap()
+        .id;
+    let b = db.new_record(tid).unwrap();
+    let ti = db.tables.iter().position(|t| t.id == tid).unwrap();
+    let key = db.tables[ti].records[a].values[&pk].clone();
+    db.tables[ti].records[b].values.insert(pk, key);
+    let errs = db.validate(tid, b);
+    assert_eq!(errs.len(), 1);
+    assert_eq!(errs[0].rule, engine::Rule::Unique);
+    assert!(!errs[0].can_override);
+    db.tables[ti].records[b].values.insert(pk, String::new());
+    assert_eq!(db.validate(tid, b)[0].rule, engine::Rule::NotEmpty);
+}

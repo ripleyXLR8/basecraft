@@ -63,6 +63,10 @@ struct App {
     request: BTreeMap<u32, String>,
     sort_field: Option<u32>,
     dirty: bool,
+    /// Record modified since its last commit (table, record index).
+    editing: Option<(u32, usize)>,
+    /// Validation failure waiting for the user: message and whether it may be overridden.
+    alert: Option<(String, bool)>,
     /// Front panel chosen by the user, per tab control id.
     tabs: BTreeMap<u64, u64>,
 }
@@ -146,6 +150,9 @@ impl App {
 
     /// Saves the records into a new `.fmp12` image. `as_copy` asks where.
     fn save(&mut self, ctx: &egui::Context, as_copy: bool) {
+        if !self.commit() {
+            return;
+        }
         let Some(d) = self.doc.as_mut() else { return };
         let bytes = match d.db.save(&d.file) {
             Ok(b) => b,
@@ -199,6 +206,46 @@ impl App {
         self.error = None;
     }
 
+    /// Commits the record being edited: runs field validation like
+    /// FileMaker. Returns false (and shows a message) when it fails.
+    fn commit(&mut self) -> bool {
+        let Some((t, r)) = self.editing else {
+            return true;
+        };
+        let Some(d) = self.doc.as_ref() else {
+            return true;
+        };
+        let errs = d.db.validate(t, r);
+        if errs.is_empty() {
+            self.editing = None;
+            return true;
+        }
+        let tbl = d.db.table(t);
+        let msg: Vec<String> = errs
+            .iter()
+            .map(|e| {
+                let name = tbl
+                    .and_then(|x| x.field(e.field))
+                    .map_or(String::new(), |f| f.name.clone());
+                let rule = match e.rule {
+                    engine::Rule::NotEmpty => tr("must not be empty."),
+                    engine::Rule::Unique => tr("must contain a unique value."),
+                    engine::Rule::Existing => tr("must contain an existing value."),
+                    engine::Rule::Numeric => tr("must contain a number."),
+                };
+                format!("« {name} » {rule}")
+            })
+            .collect();
+        self.alert = Some((
+            msg.join(
+                "
+",
+            ),
+            errs.iter().all(|e| e.can_override),
+        ));
+        false
+    }
+
     /// Base table id of the current layout.
     fn table(&self) -> Option<u32> {
         let d = self.doc.as_ref()?;
@@ -222,6 +269,9 @@ impl App {
     }
 
     fn new_record(&mut self) {
+        if !self.commit() {
+            return;
+        }
         let Some(t) = self.table() else { return };
         let Some(d) = self.doc.as_mut() else { return };
         let Some(r) = d.db.new_record(t) else {
@@ -261,6 +311,9 @@ impl App {
     }
 
     fn show_all(&mut self) {
+        if !self.commit() {
+            return;
+        }
         if let Some(t) = self.table() {
             self.found.remove(&t);
             self.sorted.remove(&t);
@@ -269,6 +322,9 @@ impl App {
     }
 
     fn perform_find(&mut self) {
+        if !self.commit() {
+            return;
+        }
         let (Some(t), Some(d)) = (self.table(), self.doc.as_ref()) else {
             return;
         };
@@ -288,6 +344,9 @@ impl App {
     }
 
     fn sort(&mut self, order: Order) {
+        if !self.commit() {
+            return;
+        }
         let (Some(t), Some(f)) = (self.table(), self.sort_field) else {
             return;
         };
@@ -387,10 +446,10 @@ impl App {
         let found = self.found(t).len();
         let pos = *self.current.get(&t).unwrap_or(&0);
         ui.horizontal(|ui| {
-            if ui.button("◀").clicked() && pos > 0 {
+            if ui.button("◀").clicked() && pos > 0 && self.commit() {
                 self.current.insert(t, pos - 1);
             }
-            if ui.button("▶").clicked() && pos + 1 < found {
+            if ui.button("▶").clicked() && pos + 1 < found && self.commit() {
                 self.current.insert(t, pos + 1);
             }
             ui.label(if found == 0 {
@@ -506,7 +565,7 @@ impl App {
                 ui.add_enabled(false, egui::Button::new(tr("Edit Layout")));
             });
         });
-        if let Some(i) = chosen {
+        if let Some(i) = chosen.filter(|_| self.commit()) {
             self.layout = i;
         }
     }
@@ -1057,6 +1116,21 @@ impl eframe::App for App {
         {
             self.save(&ctx, false);
         }
+        if let Some((msg, can_override)) = self.alert.clone() {
+            egui::Modal::new(egui::Id::NULL.with("validation")).show(&ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(msg);
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        self.alert = None;
+                    }
+                    if can_override && ui.button(tr("Accept anyway")).clicked() {
+                        self.alert = None;
+                        self.editing = None;
+                    }
+                });
+            });
+        }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         if self.doc.is_some() {
             egui::Panel::top("status").show(ui, |ui| {
@@ -1079,7 +1153,16 @@ impl eframe::App for App {
                 });
                 return;
             }
+            let was_dirty = self.dirty;
+            self.dirty = false;
             egui::ScrollArea::both().show(ui, |ui| self.content(ui));
+            if self.dirty
+                && self.mode() == Mode::Browse
+                && let (Some(t), Some(r)) = (self.table(), self.current_record())
+            {
+                self.editing = Some((t, r));
+            }
+            self.dirty |= was_dirty;
         });
         let title = self
             .doc

@@ -47,6 +47,60 @@ pub struct LayoutObject {
     /// (table occurrence id as in XML, field id, repetition)
     pub field: Option<(u64, u64, u64)>,
     pub text: Option<String>,
+    /// Containing object (tab panel, portal, button bar…), if any.
+    pub parent: Option<u64>,
+    /// Field 6 of containers: one of their children (the front tab panel of a
+    /// tab control; for other containers its meaning is not settled).
+    pub active_child: Option<u64>,
+    /// Portal: (table occurrence as in XML, rows shown, first row).
+    pub portal: Option<(u64, u32, u32)>,
+}
+
+impl Bounds {
+    fn contains(&self, o: &Bounds) -> bool {
+        o.top >= self.top - 0.5
+            && o.left >= self.left - 0.5
+            && o.bottom <= self.bottom + 0.5
+            && o.right <= self.right + 0.5
+    }
+}
+
+/// Sets `parent` on every object. Children's bounds are relative to their
+/// container: use [`Layout::absolute`] for page coordinates. Ids are in pre-order and containers carry
+/// their first child; a container's subtree is the run of following ids
+/// that lie inside its bounds.
+fn link_parents(objects: &mut [LayoutObject]) {
+    let mut order: Vec<usize> = (0..objects.len()).collect();
+    order.sort_by_key(|&i| objects[i].id);
+    let mut stack: Vec<usize> = Vec::new();
+    for i in order {
+        while let Some(&top) = stack.last() {
+            let t = &objects[top];
+            let started = objects[i].id > t.id;
+            // Children's bounds are relative to their container.
+            let relative = Bounds {
+                top: 0.0,
+                left: 0.0,
+                bottom: t.bounds.bottom - t.bounds.top,
+                right: t.bounds.right - t.bounds.left,
+            };
+            let b = &objects[i].bounds;
+            // FileMaker's rules: a panel belongs to a tab control; no portal in a portal.
+            let allowed = match objects[i].kind {
+                12 => t.kind == 11,
+                9 => t.kind != 9,
+                _ => true,
+            };
+            if started && allowed && relative.contains(b) {
+                break;
+            }
+            stack.pop();
+        }
+        objects[i].parent = stack.last().map(|&p| objects[p].id);
+        if matches!(objects[i].kind, 9 | 11 | 12 | 18) {
+            stack.push(i);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -64,6 +118,25 @@ pub struct Layout {
     pub css_raw: Vec<u8>,
     pub parts: Vec<Part>,
     pub objects: Vec<LayoutObject>,
+}
+
+impl Layout {
+    /// Bounds of an object in layout coordinates (adds its ancestors' origins).
+    pub fn absolute(&self, o: &LayoutObject) -> Bounds {
+        let mut b = o.bounds.clone();
+        let mut p = o.parent;
+        while let Some(pid) = p {
+            let Some(parent) = self.objects.iter().find(|x| x.id == pid) else {
+                break;
+            };
+            b.top += parent.bounds.top;
+            b.bottom += parent.bounds.top;
+            b.left += parent.bounds.left;
+            b.right += parent.bounds.left;
+            p = parent.parent;
+        }
+        b
+    }
 }
 
 #[derive(Default)]
@@ -103,6 +176,15 @@ fn object(m: &Msg, texts: &BTreeMap<u32, String>) -> LayoutObject {
             )
         }),
         text: u32::try_from(id).ok().and_then(|i| texts.get(&i).cloned()),
+        parent: None,
+        active_child: m.uint(6),
+        portal: m.msg(15).map(|p| {
+            (
+                p.uint(2).unwrap_or(0),
+                p.f64(6).unwrap_or(1.0) as u32,
+                p.uint(5).unwrap_or(1) as u32,
+            )
+        }),
     }
 }
 
@@ -161,9 +243,10 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 })
                 .collect();
             let blob: Vec<u8> = r.objects.into_values().flatten().collect();
-            let objects = Msg::parse(&blob)
+            let mut objects: Vec<LayoutObject> = Msg::parse(&blob)
                 .map(|m| m.msgs(2).map(|o| object(&o, &r.texts)).collect())
                 .unwrap_or_default();
+            link_parents(&mut objects);
             Layout {
                 id,
                 name: r.name,

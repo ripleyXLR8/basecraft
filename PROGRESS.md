@@ -38,7 +38,9 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
 | Layouts: name, table occurrence, width, parts (kind, position, height, style) | ✅ |
 | Layout objects: kind, id, bounds, style name, field reference, static text | ✅ |
-| Layout objects: nesting (tabs, portals, button bars), local CSS, formatting, actions | 🚧 |
+| Layout object nesting (tab controls, panels, portals, button bars): 501/504 match XML | ✅ |
+| Portal definition (table occurrence, rows) | ✅ |
+| Layout objects: formatting, button actions, object option bits | 🚧 |
 | Scripts: catalog, folders, step list (type, enabled, options) | ✅ |
 | Script step parameters | 🚧 |
 | Value lists (custom values, from field) | ✅ |

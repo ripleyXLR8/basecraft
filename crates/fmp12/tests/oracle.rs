@@ -347,7 +347,7 @@ fn value_lists_match_xml() {
 
 #[test]
 fn layouts_match_xml() {
-    let (mut layouts_checked, mut objects_checked) = (0, 0);
+    let (mut layouts_checked, mut objects_checked, mut parents_ok) = (0, 0, 0);
     for (fmp, xml) in pairs() {
         let file = fmp12::File::open(&fmp).unwrap();
         let layouts = fmp12::layouts::layouts(&file).unwrap();
@@ -426,13 +426,33 @@ fn layouts_match_xml() {
                     "{} object {oid}",
                     l.name
                 );
+                let xparent = xo
+                    .ancestors()
+                    .skip(1)
+                    .find(|n| n.has_tag_name("LayoutObject"))
+                    .map(|n| n.attribute("id").unwrap().parse::<u64>().unwrap());
+                if o.parent == xparent {
+                    parents_ok += 1;
+                } else {
+                    eprintln!(
+                        "parent mismatch: {} object {oid}: {:?} vs {xparent:?}",
+                        l.name, o.parent
+                    );
+                }
                 // ponytail: XML <Options> remaps some bits of `o.options`; mapping not decoded yet.
                 objects_checked += 1;
             }
             layouts_checked += 1;
         }
     }
-    eprintln!("{layouts_checked} layouts, {objects_checked} layout objects checked against XML");
+    eprintln!(
+        "{layouts_checked} layouts, {objects_checked} layout objects checked against XML; parents {parents_ok}/{objects_checked}"
+    );
+    // ponytail: nesting is inferred from geometry; a few ambiguous objects remain.
+    assert!(
+        parents_ok * 100 >= objects_checked * 97,
+        "nesting accuracy below 97%"
+    );
 }
 
 struct FileNames {

@@ -45,12 +45,65 @@ pub fn encode_text(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// Entries storing `value` in field `field` of the record at path `rec`.
-/// A value is inline (key = field id) when its SCSU form has one byte per
-/// UTF-16 unit and at most 1000 bytes. Otherwise it moves to the sub-path
-/// `[rec].[field]`: key 0 = byte count, UTF-16 count (u32 BE each, plus a
-/// u32 4 for values over 1000 bytes), keys 1… = 1000-byte chunks.
-pub fn value_entries(rec: &[Vec<u8>], field: u32, value: &str) -> Vec<Entry> {
+/// A Kv item whose key is spelled `key` (1, 2 or 3 bytes: ops 01–07,
+/// 09–0F, 10–17).
+pub fn kv_raw(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let n = data.len();
+    let (fixed, short, long) = match key.len() {
+        1 => (0x01, 0x06, 0x07),
+        2 => (0x09, 0x0E, 0x0F),
+        _ => (0x11, 0x16, 0x17),
+    };
+    let three = key.len() == 3;
+    let op = match n {
+        0 if three => Some(0x10),
+        1 => Some(fixed),
+        2 | 4 | 6 | 8 => Some(fixed + (n / 2) as u8),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(n + 6);
+    match op {
+        Some(op) => {
+            out.push(op);
+            out.extend_from_slice(key);
+        }
+        // `0E FF` reads as a 6-byte data chunk: such keys take the long form.
+        None if n <= 255 && key.first() != Some(&0xFF) => {
+            out.push(short);
+            out.extend_from_slice(key);
+            out.push(n as u8);
+        }
+        None => {
+            out.push(long);
+            out.extend_from_slice(key);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(data);
+    out
+}
+
+/// Key bytes of an item read from a file, if it is a Kv with an integer
+/// key (`00 k` included).
+pub(crate) fn item_raw_key(item: &[u8]) -> Option<&[u8]> {
+    match item.first()? {
+        0x0E if item.get(1) == Some(&0xFF) => None,
+        0x00..=0x07 => item.get(1..2),
+        0x09..=0x0F => item.get(1..3),
+        0x10..=0x17 => item.get(1..4),
+        _ => None,
+    }
+}
+
+/// Entries storing `value` at value key `key` ([`schema::rep_key`]: a field
+/// id, or one of its repetitions) of the record at path `rec`.
+/// A value is inline when its SCSU form has one byte per UTF-16 unit and
+/// at most 1000 bytes. Otherwise it moves to the sub-path `[rec].[key]`:
+/// key 0 = byte count, UTF-16 count (u32 BE each, plus a u32 4 for values
+/// over 1000 bytes), keys 1… = 1000-byte chunks.
+pub fn value_entries(rec: &[Vec<u8>], key: u32, value: &str) -> Vec<Entry> {
+    let (field, rep) = schema::split_rep_key(key);
+    let kb = schema::value_key_bytes(field, rep);
     let b = encode_text(value);
     let units = value.encode_utf16().count();
     let entry = |path: Vec<Vec<u8>>, key, data: &[u8]| Entry {
@@ -61,10 +114,13 @@ pub fn value_entries(rec: &[Vec<u8>], field: u32, value: &str) -> Vec<Entry> {
         }),
     };
     if b.len() == units && b.len() <= INLINE_MAX {
-        return vec![entry(rec.to_vec(), field, &b)];
+        return vec![Entry {
+            path: rec.to_vec(),
+            item: kv_raw(&kb, &b),
+        }];
     }
     let mut path = rec.to_vec();
-    path.push(path_elem(field));
+    path.push(kb);
     let mut head = (b.len() as u32).to_be_bytes().to_vec();
     head.extend_from_slice(&(units as u32).to_be_bytes());
     if b.len() > INLINE_MAX {
@@ -199,7 +255,7 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                     let (o, n) = (old.get(r), new.get(r));
                     let keys = o.into_iter().chain(n).flat_map(|v| v.keys());
                     keys.filter(move |f| o.and_then(|v| v.get(f)) != n.and_then(|v| v.get(f)))
-                        .copied()
+                        .map(|k| schema::split_rep_key(*k).0)
                         .collect::<Vec<_>>()
                 })
                 .collect()
@@ -218,6 +274,7 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
             // Compare spelled elements: a TO reference `D0 00 02` also reads as 130.
             let int = |i: usize| e.path.get(i).and_then(|x| crate::path_int(x));
             let key = item_int_key(&e.item);
+            let value_key = item_raw_key(&e.item).and_then(|k| schema::value_key(k, table));
             if e.path.first() == Some(&tp) {
                 return match (e.path.len(), int(1)) {
                     // [T] key 0: last record id.
@@ -226,8 +283,7 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                     (2.., Some(1)) => !int(2).is_some_and(|f| fields.contains(&f)),
                     // [T].[5].[R]…: a changed record.
                     (3.., Some(5)) if let Some(r) = int(2).filter(|r| changed.contains(r)) => {
-                        let meta = e.path.len() == 3
-                            && key.is_some_and(|k| !table.fields.contains_key(&k));
+                        let meta = e.path.len() == 3 && key.is_some() && value_key.is_none();
                         if meta && new.contains_key(&r) {
                             kept_meta.entry(r).or_default().push(e.clone());
                         }

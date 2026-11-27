@@ -133,7 +133,11 @@ pub fn base64_encode_rfc(_: &mut Evaluator, a: &[Value]) -> R {
 /// A container when a file name is given, else UTF-8 text.
 fn decoded(data: Vec<u8>, name: Option<String>) -> Value {
     match name.filter(|n| !n.is_empty()) {
-        Some(name) => Value::Container(Container { name, data }),
+        Some(name) => Value::Container(Container {
+            name,
+            data,
+            ..Default::default()
+        }),
         None => Value::Text(String::from_utf8_lossy(&data).into_owned()),
     }
 }
@@ -232,6 +236,7 @@ fn bin(data: Vec<u8>) -> R {
     Ok(Value::Container(Container {
         name: "digest.data".into(),
         data,
+        ..Default::default()
     }))
 }
 
@@ -328,6 +333,7 @@ pub fn text_encode(_: &mut Evaluator, a: &[Value]) -> R {
     Ok(Value::Container(Container {
         name: format!("{enc}.txt"),
         data,
+        ..Default::default()
     }))
 }
 

@@ -61,19 +61,35 @@ fn lookup<T: Copy + PartialEq>(table: &[(T, &'static str)], k: T) -> Option<&'st
     table.iter().find(|(t, _)| *t == k).map(|(_, n)| *n)
 }
 
-/// Formats the 16-byte fixed-point value of a number literal:
-/// u32 integer part, then two u32 groups of nine decimals.
-fn number(v: &[u8]) -> String {
-    let u = |i: usize| u32::from_be_bytes([v[i], v[i + 1], v[i + 2], v[i + 3]]) as u64;
-    let int = u(0);
-    let frac = format!("{:09}{:09}", u(4), u(8));
+/// Length of a number literal token at the start of `b`, in its compiled
+/// form (key 5 adds two flag bytes): `10 02`, u16 n, u16 l, n u32 groups of
+/// nine integer digits, then ⌈(l+2)/9⌉ u32 groups of nine decimals (l ≥ 16
+/// decimals, plus two guard digits).
+pub(crate) fn number_len(b: &[u8]) -> Option<usize> {
+    let u = |i: usize| Some(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]) as usize);
+    let (n, l) = (u(2)?, u(4)?);
+    Some(6 + 4 * n + 4 * (l + 2).div_ceil(9))
+}
+
+/// Value of the number literal token at the start of `b`, as plain decimal text.
+fn number(b: &[u8]) -> Option<String> {
+    let len = number_len(b)?;
+    let v = b.get(..len)?;
+    let n = u16::from_be_bytes([v[2], v[3]]) as usize;
+    let groups: Vec<String> = v[6..]
+        .chunks(4)
+        .map(|w| format!("{:09}", u32::from_be_bytes([w[0], w[1], w[2], w[3]])))
+        .collect();
+    let int = groups[..n].concat();
+    let int = int.trim_start_matches('0');
+    let frac = groups[n..].concat();
     let frac = frac.trim_end_matches('0');
-    // ponytail: bytes 12–15 (flags, sign?) not decoded; only 0x0020 observed.
-    if frac.is_empty() {
+    let int = if int.is_empty() { "0" } else { int };
+    Some(if frac.is_empty() {
         int.to_string()
     } else {
         format!("{int}.{frac}")
-    }
+    })
 }
 
 /// `1000` → `1E3`, `0.01` → `1E-2`, `150` → `1.5E2`.
@@ -177,19 +193,17 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
                 out.push_str(&s);
                 i += 2 + n;
             }
-            // Number literal: 10 + 5 header bytes + 14-byte value block.
+            // Number literal: 10 02 n l, groups of nine digits, two flag bytes.
             0x10 => {
-                let v = b.get(i + 6..i + 20).ok_or_else(|| err(i))?;
-                let mut full = v.to_vec();
-                full.resize(16, 0);
-                let n = number(&full);
+                let len = number_len(&b[i..]).ok_or_else(|| err(i))?;
+                let n = number(&b[i..]).ok_or_else(|| err(i))?;
                 // Flags 0x40: the literal was written with an exponent.
-                out.push_str(&if v.get(13) == Some(&0x40) {
+                out.push_str(&if b.get(i + len + 1) == Some(&0x40) {
                     scientific(&n)
                 } else {
                     n
                 });
-                i += 20;
+                i += len + 2;
             }
             // Field reference: 16 flags | 04 TOref | len (01 field) | u16 repetition
             0x16 => {
@@ -340,5 +354,18 @@ mod tests {
         let mut frac = one.clone();
         frac[10] = 0x05; // 0x05000000 / 1e9
         assert_eq!(decompile(&frac, 130, &N).unwrap(), "1.08388608");
+        // Pasted into FileMaker 26: integers of 1e9 and more, 25 decimals.
+        let big = hex("1002000400100000007b1b3a0c14149aa4350dfb38d200000000000000000020");
+        assert_eq!(
+            decompile(&big, 130, &N).unwrap(),
+            "123456789012345678901234567890"
+        );
+        let fine = hex("10020001001900000000075bcd1500bc614e35b7bf440020");
+        assert_eq!(
+            decompile(&fine, 130, &N).unwrap(),
+            "0.1234567890123456789012345"
+        );
+        let exp = hex("100200040010000003e800000000000000000000000000000000000000000040");
+        assert_eq!(decompile(&exp, 130, &N).unwrap(), "1E30");
     }
 }

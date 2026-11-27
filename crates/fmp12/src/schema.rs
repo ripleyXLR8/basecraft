@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::path_int;
 use crate::{Chunk, Error, File, int_path, text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,8 +407,61 @@ impl Field {
     }
 }
 
-/// Record id → (field id → value).
+/// Record id → (field id → value). Repetition n ≥ 2 of field f is at key
+/// [`rep_key`]`(f, n)`.
 pub type Records = BTreeMap<u32, BTreeMap<u32, String>>;
+
+/// Key of repetition `rep` of field `field` in a record's value map:
+/// the field id for repetition 1, `field | rep << 16` beyond.
+pub fn rep_key(field: u32, rep: u32) -> u32 {
+    if rep <= 1 { field } else { field | rep << 16 }
+}
+
+/// Inverse of [`rep_key`]: (field, repetition).
+pub fn split_rep_key(key: u32) -> (u32, u32) {
+    (key & 0xFFFF, (key >> 16).max(1))
+}
+
+/// Key bytes of a value in a record node (FORMAT.md §13): the field id
+/// (one byte below 128, else a 2-byte path integer); for repetition n ≥ 2,
+/// that spelling with its top bit set, then n (`87 02` = field 7,
+/// repetition 2; `80 03 03` = field 131, repetition 3).
+// ponytail: repetitions above 255 not observed; their spelling is a guess.
+pub fn value_key_bytes(field: u32, rep: u32) -> Vec<u8> {
+    let mut k = crate::save::path_elem(field);
+    if rep > 1 {
+        k[0] |= 0x80;
+        k.push(rep as u8);
+    }
+    k
+}
+
+/// The [`rep_key`] a record key spelled `raw` stores, if it is a value of
+/// one of the table's fields (not a record key such as 252).
+pub fn value_key(raw: &[u8], table: &Table) -> Option<u32> {
+    let has = |f: u32| table.fields.contains_key(&f);
+    match *raw {
+        [f] if f < 0x80 && has(f as u32) => Some(f as u32),
+        [hi, rep] if hi & 0x80 != 0 => {
+            let (small, big) = ((hi & 0x7F) as u32, crate::path_int(raw)?);
+            let repeats = table
+                .fields
+                .get(&small)
+                .is_some_and(|d| d.max_repetitions() as u32 >= rep as u32);
+            // `81 02` is field 386 or repetition 2 of field 1.
+            if rep >= 2 && repeats || !has(big) && rep >= 2 && has(small) {
+                Some(rep_key(small, rep as u32))
+            } else {
+                has(big).then_some(big)
+            }
+        }
+        [_, _, rep] => {
+            let f = crate::path_int(&raw[..2])?;
+            has(f).then(|| rep_key(f, rep as u32))
+        }
+        _ => None,
+    }
+}
 
 /// Accumulates a value stored either inline (key 16 of `node`) or as a long
 /// value in sub-path `[node..., 16]` split over keys/segments 1, 2, ….
@@ -484,37 +538,55 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
 pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
     let t = table.id;
     let mut raw: BTreeMap<u32, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
-    // ponytail: repeating-field repetitions (2-byte keys) not split yet.
+    let key1 = |k: u32| if k < 0x80 { vec![k as u8] } else { crate::save::path_elem(k) };
     file.walk(|path, c| {
-        let Some(p) = int_path(path) else { return };
-        match (p.as_slice(), c) {
-            ([pt, 5, r], Chunk::Kv { key, data }) if *pt == t => {
-                raw.entry(*r).or_default().insert(*key, data.to_vec());
+        let [tp, five, rec, rest @ ..] = path else {
+            return;
+        };
+        // (A table occurrence element `D0 hi lo` is 3 bytes long.)
+        if tp.len() > 2 || path_int(tp) != Some(t) || path_int(five) != Some(5) {
+            return;
+        }
+        let Some(r) = path_int(rec) else {
+            return;
+        };
+        match (rest, c) {
+            ([], Chunk::Kv { key, data }) => {
+                if let Some(k) = value_key(&key1(*key), table) {
+                    raw.entry(r).or_default().insert(k, data.to_vec());
+                }
             }
-            ([pt, 5, r], Chunk::Marker) if *pt == t => {
-                raw.entry(*r).or_default();
+            // Repetitions of fields ≥ 128: 3-byte keys (ops 10–17).
+            ([], Chunk::Data(d)) if d.len() >= 3 => {
+                if let Some(k) = value_key(&d[..3], table) {
+                    raw.entry(r).or_default().insert(k, d[3..].to_vec());
+                }
+            }
+            ([], Chunk::KvLong { key, data }) if key.len() == 3 => {
+                if let Some(k) = value_key(key, table) {
+                    raw.entry(r).or_default().insert(k, data.to_vec());
+                }
+            }
+            ([], Chunk::Marker) => {
+                raw.entry(r).or_default();
             }
             // Long value: chunks 1…n, concatenated before decoding (a
             // chunk may end inside an SCSU sequence).
-            ([pt, 5, r, f], Chunk::Kv { key, data }) if *pt == t && *key >= 1 => {
-                let e = raw.entry(*r).or_default().entry(*f).or_default();
-                if *key == 1 {
-                    e.clear();
+            ([f], Chunk::Kv { key, data }) if *key >= 1 => {
+                if let Some(k) = value_key(f, table) {
+                    let e = raw.entry(r).or_default().entry(k).or_default();
+                    if *key == 1 {
+                        e.clear();
+                    }
+                    e.extend_from_slice(data);
                 }
-                e.extend_from_slice(data);
             }
             _ => {}
         }
     })?;
     Ok(raw
         .into_iter()
-        .map(|(r, vals)| {
-            let vals = vals
-                .into_iter()
-                .filter(|(f, _)| table.fields.contains_key(f))
-                .map(|(f, b)| (f, text(&b)));
-            (r, vals.collect())
-        })
+        .map(|(r, vals)| (r, vals.into_iter().map(|(f, b)| (f, text(&b))).collect()))
         .collect())
 }
 

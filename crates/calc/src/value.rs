@@ -25,11 +25,14 @@ pub enum Value {
     },
 }
 
-/// Minimal container: a file name and its bytes.
+/// A container value: a file name and its bytes, or a file stored by
+/// reference (`path`, e.g. `imagewin:/C:/photo.jpg`, with no bytes).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Container {
     pub name: String,
     pub data: Vec<u8>,
+    /// Path of a file stored by reference; empty for embedded data.
+    pub path: String,
 }
 
 pub const MIN_YEAR: i64 = 1;
@@ -59,7 +62,7 @@ impl Value {
     pub fn is_empty(&self) -> bool {
         match self {
             Value::Text(s) | Value::Json { text: s, .. } => s.is_empty(),
-            Value::Container(c) => c.data.is_empty() && c.name.is_empty(),
+            Value::Container(c) => c.data.is_empty() && c.name.is_empty() && c.path.is_empty(),
             _ => false,
         }
     }
@@ -72,6 +75,8 @@ impl Value {
             Value::Date(d) => format_date(*d),
             Value::Time(t) => format_time(t),
             Value::Timestamp(t) => format_timestamp(t),
+            // GetAsText: the path of a reference, else the file name.
+            Value::Container(c) if !c.path.is_empty() => c.path.clone(),
             Value::Container(c) => c.name.clone(),
         }
     }
@@ -95,7 +100,7 @@ impl Value {
 
     pub fn truth(&self) -> bool {
         match self {
-            Value::Container(c) => !c.data.is_empty() || !c.name.is_empty(),
+            Value::Container(c) => !c.data.is_empty() || !c.name.is_empty() || !c.path.is_empty(),
             _ => self.to_num().is_some_and(|n| !n.is_zero()),
         }
     }

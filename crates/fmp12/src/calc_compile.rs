@@ -176,8 +176,9 @@ fn scan(b: &[u8]) -> Res<Vec<Tok>> {
                 ((Kind::Var, String::new()), 2 + n)
             }
             0x10 => {
-                let c = b.get(i..i + 18).ok_or_else(|| bad(i))?;
-                ((Kind::Num(c.to_vec()), String::new()), 20)
+                let n = b.get(i..).and_then(crate::calc::number_len).ok_or_else(|| bad(i))?;
+                let c = b.get(i..i + n).ok_or_else(|| bad(i))?;
+                ((Kind::Num(c.to_vec()), String::new()), n + 2)
             }
             0x16 => {
                 let to = b
@@ -314,8 +315,10 @@ fn field_ref(op: u8, to: u32, field: u32, qualified: bool) -> Vec<u8> {
     out
 }
 
-/// Number literal: `10 02 00 01 00 10`, u32 integer part, two u32 groups of
-/// nine decimals. Key 5 adds `00 20` (`00 40` when written with an exponent).
+/// Number literal: `10 02`, u16 number of integer groups, u16 number of
+/// decimals (16, or more when the literal has more), then the integer and
+/// the decimals in u32 groups of nine digits. Key 5 adds `00 20` (`00 40`
+/// when written with an exponent). FORMAT.md §11.
 fn number(lit: &str, at: usize) -> Res<(Vec<u8>, Vec<u8>)> {
     let lower = lit.to_ascii_lowercase();
     let (mant, exp) = match lower.split_once('e') {
@@ -336,21 +339,30 @@ fn number(lit: &str, at: usize) -> Res<(Vec<u8>, Vec<u8>)> {
         digits.resize(point, 0);
     }
     let (int, frac) = digits.split_at(point);
-    let int: u64 = int.iter().fold(0, |a, d| a.saturating_mul(10) + *d as u64);
-    // ponytail: literals of 1e9 and above use another layout that FileMaker
-    // would not paste; decode it if users need such literals.
-    if int >= 1_000_000_000 || frac.iter().skip(18).any(|d| *d != 0) {
+    let int = &int[int.iter().take_while(|d| **d == 0).count()..];
+    let frac = &frac[..frac.len() - frac.iter().rev().take_while(|d| **d == 0).count()];
+    // Both parts are padded to whole groups of nine digits.
+    let groups_of = |d: &[u8]| -> Vec<u8> {
+        d.chunks(9)
+            .flat_map(|g| g.iter().fold(0u32, |a, x| a * 10 + *x as u32).to_be_bytes())
+            .collect()
+    };
+    // Integer groups are right-aligned: pad on the left to a multiple of 9.
+    let n = int.len().div_ceil(9).max(1);
+    let mut padded = vec![0; n * 9 - int.len()];
+    padded.extend_from_slice(int);
+    let l = frac.len().max(16);
+    let mut decimals = frac.to_vec();
+    // Room for two guard digits: 16 decimals take two groups, 17 take three.
+    decimals.resize((l + 2).div_ceil(9) * 9, 0);
+    if n > u16::MAX as usize || l > u16::MAX as usize {
         return err(at, format!("number literal {lit} is out of range"));
     }
-    let group = |r: std::ops::Range<usize>| {
-        r.fold(0u32, |a, i| {
-            a * 10 + frac.get(i).copied().unwrap_or(0) as u32
-        })
-    };
-    let mut c = vec![0x10, 2, 0, 1, 0, 0x10];
-    c.extend((int as u32).to_be_bytes());
-    c.extend(group(0..9).to_be_bytes());
-    c.extend(group(9..18).to_be_bytes());
+    let mut c = vec![0x10, 2];
+    c.extend((n as u16).to_be_bytes());
+    c.extend((l as u16).to_be_bytes());
+    c.extend(groups_of(&padded));
+    c.extend(groups_of(&decimals));
     let mut k5 = c.clone();
     k5.extend([0, if exp.is_some() { 0x40 } else { 0x20 }]);
     Ok((c, k5))

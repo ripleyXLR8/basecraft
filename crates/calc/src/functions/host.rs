@@ -108,6 +108,7 @@ fn as_file(v: &[f64], name: &str) -> Value {
     Value::Container(Container {
         name: name.into(),
         data: v.iter().flat_map(|x| (*x as f32).to_le_bytes()).collect(),
+        ..Default::default()
     })
 }
 

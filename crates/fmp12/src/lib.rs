@@ -10,6 +10,7 @@ mod calc_tables;
 pub mod charts;
 pub mod chunk;
 pub mod collate;
+pub mod containers;
 pub mod graph;
 pub mod layouts;
 pub mod pb;

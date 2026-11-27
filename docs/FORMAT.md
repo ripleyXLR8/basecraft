@@ -31,7 +31,8 @@ Body sector layout:
 | 4 | 4 | previous sector id (BE) |
 | 8 | 4 | next sector id (BE) |
 | 12 | 2 | B-tree level (0 = leaf) |
-| 14 | 6 | ❓ |
+| 14 | 2 | free bytes in the payload (4076 − used) |
+| 16 | 4 | write sequence number (FileMaker's consistency check resets the maximum) |
 | 20 | 4076 | payload (byte code, §2) |
 
 Sector *k* starts at offset `k × 4096`. For sector 1 (the B-tree root), the
@@ -41,7 +42,17 @@ Sector *k* starts at offset `k × 4096`. For sector 1 (the B-tree root), the
 The sectors form a B-tree. All data lives in the leaves (level 0), which are
 chained through prev/next. The chain starts at the leaf whose prev is 0.
 Index sectors (level ≥ 1) map paths to child sectors. Readers can ignore
-them, but a writer must keep them consistent.
+them, but a writer must keep them consistent. Each index entry rebuilds the
+path of the first chunk of a child sector (pushes, with pop-after codes), then a Kv
+chunk whose key is that chunk's key and whose 4-byte value is the child
+sector id (e.g. `… 03 03 00 00 00 4E` means key 3 → sector 78).
+
+Every leaf payload starts from an empty path and pushes the full path of its
+first chunk. A chunk never spans two sectors.
+
+**In-place edits work.** Copies of real files with single bytes changed
+(same length) open in FileMaker without complaint: there is no checksum.
+We use this to reverse-engineer field semantics (`tools/oracle`).
 
 ## 2. Payload byte code ✅
 

@@ -21,6 +21,7 @@ env:
 jobs:
   linux:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
@@ -33,7 +34,8 @@ jobs:
         with:
           ref: ${{ env.REF }}
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libfuse2
+      # A third-party apt source may be down; the Ubuntu archives are enough.
+      - run: (sudo apt-get update || true) && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libfuse2
       - run: cargo build --release --locked -p basecraft -p basecraft-cli
       - name: Package tar.gz, .deb and AppImage
         run: |
@@ -64,6 +66,7 @@ jobs:
 
   windows:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-pc-windows-msvc

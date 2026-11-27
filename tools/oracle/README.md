@@ -15,3 +15,7 @@ from files we authored ourselves.
 * `uuidmap.py <name>`: matches object UUIDs in `<name>.xml` (a Save-as-XML
   export) with 16-byte values in `<name>.raw` (`fmdump <file> raw`), which
   maps each XML catalog to its binary path.
+* `Test-FmOpen <file>` (in `fmui.ps1`): opens a file and reports `OPEN` or the text of the blocking dialog.
+* `mutate.py`, `xmldiff.py`, `attrib_fields.py`: reverse oracle. Flip bits in copies, export XML, attribute the differences.
+* `token_sweep_analyze.py`: reads the XML of files whose calculation token bytes were overwritten (one way calc_tables.rs was built).
+* `idxdec.py`: decodes a root index sector next to the first chunks of its children.

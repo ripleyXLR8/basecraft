@@ -128,3 +128,20 @@ function Export-FmXml([string]$out) {
   for ($i = 0; $i -lt 60 -and -not (Test-Path $out); $i++) { Start-Sleep -Milliseconds 500 }
   Start-Sleep 2
 }
+
+# Opens a file and reports "OPEN" or the text of the blocking dialog.
+function Test-FmOpen([string]$file) {
+  Stop-Fm
+  Start-Process "C:\Program Files\FileMaker\FileMaker Pro\FileMaker Pro.exe" -ArgumentList "`"$file`""
+  for ($i = 0; $i -lt 60; $i++) {
+    Start-Sleep -Milliseconds 500
+    $ws = @(Get-FmWindows)
+    if ($ws | ? { $_.Current.Name -like 'Licence*' }) { Start-Sleep 1; Invoke-Fm "Continuer"; continue }
+    if ($ws | ? { $_.Current.ClassName -like 'FMPRO*' -and $_.Current.Name }) { $r = "OPEN"; break }
+    $d = $ws | ? { $_.Current.Name -eq 'FileMaker Pro' -and $_.Current.ClassName -eq 'Window' }
+    if ($d) { Start-Sleep 1; $t = ($d.FindAll($TS::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ? { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Text' -and $_.Current.Name.Length -gt 10 } | Select -First 1).Current.Name; $r = "DIALOG: $t"; break }
+  }
+  if (-not $r) { $r = "TIMEOUT" }
+  Stop-Fm
+  $r
+}

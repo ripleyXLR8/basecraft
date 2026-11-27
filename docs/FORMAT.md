@@ -507,45 +507,43 @@ and evaluate (the dialog shows `21|two|yes|two|x¶y`).
   id and key 4 = count; `[17].[5].[S]` keys 16, 19 (`00000000`), 216,
   252 (`01 01`) and 31873–31875 (account and timestamp, copied from
   `[17].[1]`); `[17].[1]` key 252 (change counter) is bumped.
-* **`[17].[1]` key 8** (16 bytes) is **not an undecoded hash of the script
-  names — it is part of FileMaker's access-privileges protection, and
-  BaseCraft deliberately does not forge it** (see the box below). When it
-  does not match, FileMaker refuses the file with "the file's access
-  privileges have been damaged or altered". It depends on the script
-  names (renaming one breaks it), not on script ids (one script "Nouveau
-  script" gives `786c087f…62da` with id 1 or id 10), UUIDs, steps or the
-  file (the same in a blank file and in an emptied Tasks). A catalog with
-  no scripts has no key 8 and opens.
+* **`[17].[1]` key 8** (16 bytes) is an **integrity digest of the script
+  catalog**, checked when the file opens: when it does not match,
+  FileMaker refuses the file with "the file's access privileges have been
+  damaged or altered". It is **plain, unkeyed MD5**: for each member
+  `[17].[1].[7].[S]` in id order (key order, not the display order of
+  `[17].[1].[3]`; folders, their `--` closers and separators count like
+  scripts), feed 8 bytes of "private flags" (big-endian, zero; no member
+  in any file we have carries a key for them), then the name (key 16, or
+  the chunks of `[S].[16]` for names that are not one byte per UTF-16
+  unit) in UTF-16BE. No count, separator or terminator. A catalog with no
+  scripts has no key 8. `fmp12::scripts_save::catalog_digest` computes it;
+  `save_scripts` rewrites it whenever scripts are added, deleted or
+  renamed. It depends on names and ids only, not on steps, UUIDs or the
+  file: one script "Nouveau script" gives `786c087f…62da` in a blank file
+  and in an emptied Tasks.
 
-  > **What key 8 is (reverse-engineered with Ghidra, Nov 2026).** The
-  > scripts catalog is `Draco::DBLibrary`, which carries the
-  > `M_DBCrcIndex` mix-in — the same secure-CRC tamper machinery as the
-  > privileges and accounts catalogs (`DBPrivilegesCatalog`,
-  > `DBUserAccountCatalog`, `DBAuthFileCatalog`, all of which also have a
-  > `HasBeenTampered()` and store a `KSummary` CRC under key 8). Key 8 is
-  > that `KSummary`: an MD5 (`Support.dll` `Draco::unistringMD5` and
-  > `CRCContext` both hash the UTF-16 **big-endian** code units, standard
-  > MD5 init/finalize) over the script members, **seeded by
-  > `DBFileUser::InitSecureCRC`**. `InitSecureCRC` folds in the file's
-  > *privilege-set identity* (the default `[Full Access]` set's UUID and a
-  > file security word), and the sibling `DBAccess::UpdateCRC` /
-  > `DBUserAccount::ComputeCRC` fold in the access-control levels and, for
-  > protected files, account **password hashes**. In other words key 8
-  > cryptographically binds the script list to the access-privilege set:
-  > its purpose is exactly to stop a tool from adding, deleting or
-  > renaming scripts (which may run with Full Access) outside FileMaker's
-  > security system. For the default no-password `[Full Access]` file the
-  > seed is a constant (hence blank == emptied Tasks), so the value is in
-  > principle reproducible; for files with custom accounts/passwords or
-  > encryption the seed is keyed by account secrets we cannot and must not
-  > reproduce. Writing a correct key 8 is therefore a forgery of a
-  > FileMaker security check, so BaseCraft does not do it: it edits the
-  > steps of existing scripts (key 8 unchanged) and leaves adding,
-  > deleting and renaming scripts to FileMaker, warning on save when the
-  > script list changed. The `unistringMD5`-over-the-plain-names guesses
-  > (any encoding, separator, order, case folding, collation keys,
-  > length/count prefixes) all miss because the hashed stream is the
-  > privilege-seeded member stream, not the bare names.
+  *How it was confirmed (Nov 2026).* A public description of the format
+  gave this algorithm; we tested it on our own files only. It reproduces
+  key 8 of all 66 installed starter templates (every language, including
+  ja/ko/zh and de names stored in the long form) and of all 395 files in
+  our oracle and sample sets that have a key 8 (75 distinct values); six
+  of them list scripts in a display order that differs from id order, and
+  only id order matches. The only misses were 13 files BaseCraft itself
+  had written with a stale or experimental key 8. FileMaker 26 then opened, with
+  no warning, a copy of Tasks with two scripts added, one renamed and one
+  deleted (the new BC Calc ran from Task List's OnLayoutEnter, through
+  "Sort by Status"), a copy of Tasks with Latin, CJK, German and Cyrillic
+  names, and a `basecraft-cli new-file` file with scripts added, renamed
+  and deleted (the new script ran from the Scripts menu); the XML exports
+  and the Script Workspace list the new names (`tools/oracle/script_check.ps1`).
+
+  An earlier reading of the binary took the `DBLibrary` CRC machinery for
+  a digest seeded by the privilege set, and BaseCraft left the script list
+  alone. That was wrong: for the scripts catalog there is no seed and no
+  secret, and the same unkeyed MD5 reproduces every file we have. The
+  accounts and privilege catalogs (`[23]`) carry their own digests; they
+  are not written by BaseCraft.
 * Collation keys of the name index: 2-byte primary weights, case folded,
   then `00 00 00`; accented letters add secondary weights after `00 00`.
   Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`

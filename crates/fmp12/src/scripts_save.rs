@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::calc::compiled;
 use crate::save::{
     encode_text, entry_kv, fresh_uuid, ipath, kv_entry, len_int, marker, path_elem, read_len_int,
-    spelled,
+    spelled, value_entries,
 };
 use crate::scripts::{
     Calc, FieldRef, LayoutDest, RawParams, RecordDest, STEP_LEN, Script, SortOrder, Step,
@@ -739,18 +739,15 @@ fn entry_kvl(e: &Entry) -> Option<(Vec<u8>, Vec<u8>)> {
 /// `[17].[1].[3]`, a name index entry `[17].[1].[1]` (when the name's
 /// collation key is known) and a script node `[17].[5].[S]` modelled on
 /// what FileMaker writes for a new script; scripts missing from the list
-/// are deleted.
-///
-/// ponytail: FileMaker refuses a file whose script names changed (new,
-/// deleted or renamed scripts) unless `[17].[1]` key 8, a digest of the
-/// names, matches; the digest is not decoded (FORMAT.md §8), so only step
-/// edits of existing scripts give a file FileMaker opens.
+/// are deleted. When scripts are added, deleted or renamed, `[17].[1]`
+/// key 8 is recomputed ([`catalog_digest`]).
 pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
     let old = crate::scripts::scripts(file)?;
     let mut entries = write::entries(file)?;
     let olds: BTreeMap<u32, &Script> = old.iter().map(|s| (s.id, s)).collect();
     let news: BTreeSet<u32> = scripts.iter().map(|s| s.id).collect();
     let mut add: Vec<Entry> = Vec::new();
+    let mut renamed = false;
     let in_script =
         |e: &Entry, s: u32| ipath(e).is_some_and(|p| p.len() >= 3 && p[..3] == [17, 5, s]);
     // Catalog keys copied onto new scripts: user, account, timestamp.
@@ -782,7 +779,8 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
             Some(o) if *o == s => {}
             Some(o) => {
                 if o.name != s.name {
-                    rename(&mut entries, s);
+                    renamed = true;
+                    rename(&mut entries, &mut add, s);
                 }
                 if o.steps != s.steps {
                     entries.retain(|e| {
@@ -798,7 +796,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
             None => {
                 let sp = [17, 5, s.id];
                 add.push(marker(&sp));
-                add.push(kv_entry(&sp, 16, encode_text(&s.name)));
+                add.extend(value_entries(&spelled(&sp), 16, &s.name));
                 add.push(kv_entry(&sp, 19, vec![0; 4]));
                 add.push(kv_entry(&sp, 216, fresh_uuid(s.id as u64)));
                 add.push(kv_entry(&sp, 252, vec![1, 1]));
@@ -811,7 +809,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
                 add.extend(step_entries(s).0);
                 let cp = [17, 1, 7, s.id];
                 add.push(marker(&cp));
-                add.push(kv_entry(&cp, 16, encode_text(&s.name)));
+                add.extend(value_entries(&spelled(&cp), 16, &s.name));
                 if s.options != 8 {
                     add.push(kv_entry(&cp, 240, s.options.to_be_bytes().to_vec()));
                 }
@@ -864,19 +862,80 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
         ));
     }
     entries.extend(add);
+    if renamed || ids != old_ids {
+        entries.retain(|e| {
+            !(ipath(e).as_deref() == Some(&[17, 1]) && entry_kv(e).is_some_and(|(k, _)| k == 8))
+        });
+        if let Some(d) = catalog_digest(&entries) {
+            entries.push(kv_entry(&[17, 1], 8, d.to_vec()));
+        }
+    }
     write::sort(&mut entries);
     Ok(write::build(&file.bytes()[..crate::SECTOR], &entries))
 }
 
+/// `[17].[1]` key 8, the integrity digest FileMaker checks when it opens
+/// the file (it refuses a mismatch as "access privileges damaged"): MD5
+/// over the catalog members `[17].[1].[7].[S]` in id order (folders and
+/// separators included), each fed 8 zero bytes then its name in UTF-16BE,
+/// nothing else. `None` for an empty catalog, which has no key 8.
+/// ponytail: the 8 bytes are "private flags" in the public description;
+/// no member in any file we have carries a key for them, so they are zero.
+pub fn catalog_digest(entries: &[Entry]) -> Option<[u8; 16]> {
+    use md5::{Digest, Md5};
+    // id → inline name; (id, key) → chunks of a long name.
+    let mut names: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    let mut long: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
+    for e in entries {
+        let Some(p) = ipath(e) else { continue };
+        if p.len() < 4 || p[..3] != [17, 1, 7] {
+            continue;
+        }
+        let n = names.entry(p[3]).or_default();
+        match (p.len(), entry_kv(e)) {
+            (4, Some((16, v))) => *n = v,
+            (5, Some((k, v))) if p[4] == 16 && k >= 1 => {
+                long.insert((p[3], k), v);
+            }
+            _ => {}
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    let mut h = Md5::new();
+    for (id, inline) in names {
+        let chunks: Vec<u8> = long
+            .range((id, 1)..=(id, u32::MAX))
+            .flat_map(|(_, c)| c.iter().copied())
+            .collect();
+        let b = if chunks.is_empty() { inline } else { chunks };
+        h.update([0u8; 8]);
+        for u in crate::text(&b).encode_utf16() {
+            h.update(u.to_be_bytes());
+        }
+    }
+    let mut out = [0; 16];
+    out.copy_from_slice(&h.finalize());
+    Some(out)
+}
+
 /// New name in the catalog, the script node and the name index.
-fn rename(entries: &mut [Entry], s: &Script) {
+fn rename(entries: &mut Vec<Entry>, add: &mut Vec<Entry>, s: &Script) {
     let idv = len_int(s.id as u64);
+    let bases: [&[u32]; 2] = [&[17, 1, 7, s.id], &[17, 5, s.id]];
+    for base in bases {
+        let mut long = base.to_vec();
+        long.push(16);
+        entries.retain(|e| {
+            let p = ipath(e);
+            let inline = p.as_deref() == Some(base) && entry_kv(e).is_some_and(|(k, _)| k == 16);
+            !(inline || p.as_deref().is_some_and(|p| p.starts_with(&long)))
+        });
+        add.extend(value_entries(&spelled(base), 16, &s.name));
+    }
     for e in entries.iter_mut() {
         let p = ipath(e);
-        let named = p.as_deref() == Some(&[17, 1, 7, s.id]) || p.as_deref() == Some(&[17, 5, s.id]);
-        if named && entry_kv(e).is_some_and(|(k, _)| k == 16) {
-            *e = kv_entry(&p.clone().unwrap_or_default(), 16, encode_text(&s.name));
-        }
         // ponytail: an index entry whose new key is unknown keeps the old
         // key (FileMaker's collation is only known for Latin letters).
         if p.as_deref() == Some(&[17, 1, 1])

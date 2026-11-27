@@ -85,15 +85,6 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 
 ## Known limitations
 
-- **Adding, renaming or deleting scripts.** FileMaker protects the script list
-  with a tamper check bound to the file's access privileges (`[17].[1]` key 8,
-  see [docs/FORMAT.md](docs/FORMAT.md) §8). BaseCraft does not reproduce it, by
-  design: it would mean forging a FileMaker security check. Editing the steps
-  of existing scripts works, and FileMaker opens those files. A file where
-  BaseCraft added, renamed or deleted a script opens in BaseCraft, but
-  FileMaker reports it as damaged, and BaseCraft warns about this when it saves.
-  To change the script list of a file you will open in FileMaker, make that
-  change in FileMaker.
 - **Encrypted files** (encryption at rest) cannot be opened.
 - **Accounts and privilege sets** are read, not written.
 

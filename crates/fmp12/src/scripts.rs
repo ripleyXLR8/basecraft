@@ -636,6 +636,7 @@ impl Script {
 #[derive(Default)]
 struct RawScript {
     list: Vec<u8>,
+    long_name: Vec<u8>,
     long_list: BTreeMap<u32, Vec<u8>>,
     params: BTreeMap<u32, RawParams>,
 }
@@ -665,6 +666,14 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
                     _ => {}
                 }
             }
+            // Names that are not one byte per UTF-16 unit: keys 1…n of
+            // `[S].[16]` (key 0 = counts), as record values (§13).
+            ([17, 5, id, 16], Chunk::Kv { key, data }) if *key >= 1 => {
+                raw.entry(*id)
+                    .or_default()
+                    .long_name
+                    .extend_from_slice(data);
+            }
             // Step lists over 1000 bytes: keys 1…n (key 0 = total length).
             ([17, 5, id, 4], Chunk::Kv { key, data }) if *key >= 1 => {
                 raw.entry(*id)
@@ -692,6 +701,9 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
     })?;
     for (id, mut r) in raw {
         let Some(s) = out.get_mut(&id) else { continue };
+        if !r.long_name.is_empty() {
+            s.name = text(&r.long_name);
+        }
         let list: Vec<u8> = if r.list.is_empty() {
             r.long_list.into_values().flatten().collect()
         } else {

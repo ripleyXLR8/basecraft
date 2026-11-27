@@ -280,3 +280,92 @@ fn edited_and_new_scripts_read_back() {
     );
     let _ = FieldRef::default();
 }
+
+/// Stored `[17].[1]` key 8.
+fn key8(f: &fmp12::File) -> Option<[u8; 16]> {
+    let mut out = None;
+    f.walk(|path, c| {
+        if let fmp12::Chunk::Kv { key: 8, data } = c
+            && fmp12::int_path(path).as_deref() == Some(&[17, 1])
+        {
+            out = (*data).try_into().ok();
+        }
+    })
+    .unwrap();
+    out
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The script catalog digest reproduces key 8 of every committed fixture
+/// (none has scripts, hence none has a key 8) and of every template.
+#[test]
+fn catalog_digest_matches_stored_key8() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![root.join("assets/blank.fmp12")];
+    for f in std::fs::read_dir(root.join("tests/fixtures"))
+        .unwrap()
+        .flatten()
+    {
+        if f.path().extension().is_some_and(|e| e == "fmp12") {
+            files.push(f.path());
+        }
+    }
+    files.extend(template_files());
+    for p in files {
+        let f = fmp12::File::open(&p).unwrap();
+        let d = fmp12::scripts_save::catalog_digest(&write::entries(&f).unwrap());
+        assert_eq!(d, key8(&f), "{}", p.display());
+    }
+}
+
+/// FileMaker 26 writes `786c087f…62da` for one script "Nouveau script"
+/// (in a blank file and in an emptied Tasks); a new file gets the same.
+#[test]
+fn new_script_key8_as_filemaker() {
+    let blank = fmp12::File::from_bytes(fmp12::schema_edit::new_file("T").unwrap()).unwrap();
+    let list = vec![Script {
+        id: 1,
+        name: "Nouveau script".into(),
+        options: 8,
+        steps: vec![Step::new(id::BEEP)],
+    }];
+    let out = fmp12::File::from_bytes(save_scripts(&blank, &list).unwrap()).unwrap();
+    assert_eq!(
+        key8(&out).map(|k| hex(&k)).as_deref(),
+        Some("786c087fff6b2b8133833d37f78462da")
+    );
+    // Deleting it again leaves no key 8, as in a file without scripts.
+    let empty = fmp12::File::from_bytes(save_scripts(&out, &[]).unwrap()).unwrap();
+    assert_eq!(key8(&empty), None);
+}
+
+/// Adding, renaming (also to a non-Latin name) and deleting scripts on the
+/// templates: key 8 follows the new list and the names read back.
+#[test]
+fn script_list_changes_update_key8() {
+    for p in template_files() {
+        let f = fmp12::File::open(&p).unwrap();
+        let mut list = scripts(&f).unwrap();
+        let next = list.iter().map(|s| s.id).max().unwrap() + 1;
+        let first = list.iter().position(|s| s.options == 8).unwrap();
+        list[first].name = "Renommé 改名".into();
+        let gone = list.iter().rposition(|s| s.options == 8).unwrap();
+        list.remove(gone);
+        list.push(Script {
+            id: next,
+            name: "BC Added".into(),
+            options: 8,
+            steps: vec![Step::new(id::BEEP)],
+        });
+        let out = fmp12::File::from_bytes(save_scripts(&f, &list).unwrap()).unwrap();
+        let d = fmp12::scripts_save::catalog_digest(&write::entries(&out).unwrap());
+        assert!(d.is_some() && d != key8(&f), "{}", p.display());
+        assert_eq!(d, key8(&out), "{}", p.display());
+        let back: Vec<String> = scripts(&out).unwrap().into_iter().map(|s| s.name).collect();
+        let want: Vec<String> = list.into_iter().map(|s| s.name).collect();
+        assert_eq!(back, want, "{}", p.display());
+    }
+}

@@ -22,9 +22,12 @@ assets = [
 ]
 
 [dependencies]
+calc = { version = "0.1.0", path = "../calc" }
 eframe = "0.37"
 engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
+# Pictures in container fields; already in the tree through eframe.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 print = { version = "0.1.0", path = "../print" }
 rfd = "0.18.0"
 script = { version = "0.1.0", path = "../script" }

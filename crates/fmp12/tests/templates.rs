@@ -4,6 +4,24 @@
 
 use std::path::PathBuf;
 
+/// Every `<dir>/<template>/<lang>.fmp12`.
+fn template_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for t in std::fs::read_dir(dir).unwrap() {
+        let Ok(files) = std::fs::read_dir(t.unwrap().path()) else {
+            continue;
+        };
+        for f in files {
+            let f = f.unwrap().path();
+            if f.extension().is_some_and(|e| e == "fmp12") {
+                out.push(f);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn template_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("FMP12_TEMPLATES")
         .map(PathBuf::from)
@@ -18,16 +36,8 @@ fn all_templates_parse() {
         return;
     };
     let mut n = 0;
-    for t in std::fs::read_dir(dir).unwrap() {
-        let t = t.unwrap().path();
-        let Ok(files) = std::fs::read_dir(&t) else {
-            continue;
-        };
-        for f in files {
-            let f = f.unwrap().path();
-            if f.extension().is_none_or(|e| e != "fmp12") {
-                continue;
-            }
+    for f in template_files(&dir) {
+        {
             let file = fmp12::File::open(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
             file.walk(|_, _| {})
                 .unwrap_or_else(|e| panic!("{}: {e}", f.display()));
@@ -81,4 +91,54 @@ fn rewrite_preserves_content() {
             again.sector_count()
         );
     }
+}
+
+/// FileMaker's own index sectors decode and re-encode byte for byte.
+#[test]
+fn index_sectors_reencode_byte_for_byte() {
+    let Some(dir) = template_dir() else { return };
+    let mut n = 0;
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        for id in 1..=file.sector_count() {
+            let s = file.sector(id);
+            if s.level == 0 || s.deleted {
+                continue;
+            }
+            let h = &file.bytes()[id as usize * fmp12::SECTOR..];
+            let free = u16::from_be_bytes([h[14], h[15]]) as usize;
+            let orig = &s.payload[..s.payload.len() - free];
+            let seps = fmp12::write::decode_index(orig).unwrap();
+            let again = fmp12::write::encode_index(&seps);
+            assert!(again == orig, "{} sector {id}", f.display());
+            n += 1;
+        }
+    }
+    assert!(n > 0);
+    eprintln!("{n} index sectors re-encoded");
+}
+
+/// Every FileMaker leaf re-packs to its own bytes, except the pops it may
+/// end with (they depend on the next sector, which `pack` is not given).
+#[test]
+fn leaf_sectors_reencode_byte_for_byte() {
+    let Some(dir) = template_dir() else { return };
+    let mut n = 0;
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        for s in file.leaves() {
+            let h = &file.bytes()[s.id as usize * fmp12::SECTOR..];
+            let free = u16::from_be_bytes([h[14], h[15]]) as usize;
+            let orig = &s.payload[..s.payload.len() - free];
+            let es = fmp12::write::leaf_entries(orig).unwrap();
+            let pages = fmp12::write::pack(&es);
+            assert_eq!(pages.len(), 1);
+            let p = &pages[0].0;
+            let same = orig.starts_with(p) && orig[p.len()..].iter().all(|b| *b == 0x40);
+            assert!(same, "{} sector {}", f.display(), s.id);
+            n += 1;
+        }
+    }
+    assert!(n > 0);
+    eprintln!("{n} leaf sectors re-encoded");
 }

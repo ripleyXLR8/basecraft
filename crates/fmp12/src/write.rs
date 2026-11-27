@@ -9,41 +9,88 @@ use crate::{Chunk, Error, File, SECTOR};
 const HEADER_LEN: usize = 20;
 const PAYLOAD: usize = SECTOR - HEADER_LEN;
 
+/// A value to encode with [`encode`], for content built from scratch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Data(Vec<u8>),
-    Kv { key: u32, data: Vec<u8> },
-    KvLong { key: Vec<u8>, data: Vec<u8> },
+    Kv {
+        key: u32,
+        data: Vec<u8>,
+    },
+    KvLong {
+        key: Vec<u8>,
+        data: Vec<u8>,
+    },
+    /// [`Chunk::Marker`].
+    Marker,
 }
 
+/// One chunk of the store at its path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub path: Vec<Vec<u8>>,
-    pub item: Item,
+    /// The encoded chunk: opcode (no pop flag) and operands. Entries read
+    /// from a file keep FileMaker's bytes: the same key can be spelled
+    /// several ways (`06 D8` and `0E 80 58` both read as key 216) and the
+    /// spelling decides where it sorts.
+    pub item: Vec<u8>,
 }
 
-/// The logical content of a file, in leaf order.
+/// The logical content of a file, in leaf order. A node pushed and popped
+/// with nothing inside becomes an entry with an empty item.
 pub fn entries(file: &File) -> Result<Vec<Entry>, Error> {
     let mut out = Vec::new();
-    file.walk(|path, c| {
-        let item = match c {
-            Chunk::Data(d) => Item::Data(d.to_vec()),
-            Chunk::Kv { key, data } => Item::Kv {
-                key: *key,
-                data: data.to_vec(),
-            },
-            Chunk::KvLong { key, data } => Item::KvLong {
-                key: key.to_vec(),
-                data: data.to_vec(),
-            },
-            Chunk::Push(_) | Chunk::Pop => return,
-        };
-        out.push(Entry {
-            path: path.iter().map(|p| p.to_vec()).collect(),
-            item,
-        });
-    })?;
+    for s in file.leaves() {
+        out.extend(leaf_entries(s.payload).map_err(|e| Error::Sector {
+            id: s.id,
+            source: Box::new(e),
+        })?);
+    }
     Ok(out)
+}
+
+/// The entries of one leaf payload.
+pub fn leaf_entries(payload: &[u8]) -> Result<Vec<Entry>, Error> {
+    let mut out = Vec::new();
+    let mut path: Vec<&[u8]> = Vec::new();
+    let mut pushed = false;
+    for (c, raw) in crate::chunk::parse_spans(payload)? {
+        match c {
+            Chunk::Push(p) => {
+                path.push(p);
+                pushed = true;
+                continue;
+            }
+            Chunk::Pop => {
+                if pushed {
+                    out.push(entry(&path, &[]));
+                }
+                path.pop();
+            }
+            _ => out.push(entry(&path, raw)),
+        }
+        pushed = false;
+    }
+    Ok(out)
+}
+
+/// Entry for an item chunk decoded from `raw` (as in [`crate::chunk::parse_spans`]).
+fn entry(path: &[&[u8]], raw: &[u8]) -> Entry {
+    let mut item = raw.to_vec();
+    if let Some(op) = item.first_mut().filter(|op| **op & 0xC0 == 0xC0) {
+        *op &= 0x3F;
+    }
+    Entry {
+        path: path.iter().map(|p| p.to_vec()).collect(),
+        item,
+    }
+}
+
+/// Encodes a new item.
+pub fn encode(item: &Item) -> Vec<u8> {
+    let mut b = Vec::new();
+    encode_item(item, &mut b);
+    b
 }
 
 fn push_code(e: &[u8], out: &mut Vec<u8>) {
@@ -57,9 +104,10 @@ fn push_code(e: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(e);
 }
 
-/// Path-integer encoding of a key (1 byte below 128, else 2 bytes).
+/// Key bytes: a raw byte below 256 (ops 01–07), else a 2-byte path
+/// integer (ops 09–0F). FileMaker never uses the 2-byte form below 256.
 fn key_bytes(k: u32) -> Vec<u8> {
-    if k < 0x80 {
+    if k < 0x100 {
         vec![k as u8]
     } else {
         let v = k - 0x80;
@@ -69,6 +117,7 @@ fn key_bytes(k: u32) -> Vec<u8> {
 
 fn encode_item(item: &Item, out: &mut Vec<u8>) {
     match item {
+        Item::Marker => out.push(0x80),
         Item::Data(d) => {
             let n = d.len();
             match n {
@@ -83,7 +132,7 @@ fn encode_item(item: &Item, out: &mut Vec<u8>) {
         }
         Item::Kv { key, data } => {
             let n = data.len();
-            let short = *key < 0x80;
+            let short = *key < 0x100;
             let kb = key_bytes(*key);
             // 0x0E followed by 0xFF reads as a 6-byte data chunk: avoid it.
             let ff = !short && kb[0] == 0xFF;
@@ -127,127 +176,279 @@ fn encode_item(item: &Item, out: &mut Vec<u8>) {
     }
 }
 
-/// Bytes that move from path `from` to `to`.
-fn path_delta(from: &[Vec<u8>], to: &[Vec<u8>], out: &mut Vec<u8>) {
+/// Bytes that move from path `from` to `to`: pops, then pushes. Returns
+/// the number of pops.
+fn path_delta(from: &[Vec<u8>], to: &[Vec<u8>], out: &mut Vec<u8>) -> usize {
     let common = from.iter().zip(to).take_while(|(a, b)| a == b).count();
-    out.extend(std::iter::repeat_n(0x40, from.len() - common));
+    let pops = from.len() - common;
+    out.extend(std::iter::repeat_n(0x40, pops));
     for e in &to[common..] {
         push_code(e, out);
     }
+    pops
 }
 
-struct Page {
-    payload: Vec<u8>,
-    /// Path and key of the first entry, for the parent index.
-    first: Entry,
-}
-
-/// Packs entries into pages of at most PAYLOAD bytes.
-fn pack(entries: &[Entry]) -> Vec<Page> {
-    let mut pages = Vec::new();
-    let mut cur: Option<(Vec<u8>, Vec<Vec<u8>>, Entry)> = None;
+/// Packs entries into leaf payloads of at most PAYLOAD bytes, each with the
+/// first entry it holds.
+pub fn pack(entries: &[Entry]) -> Vec<(Vec<u8>, &Entry)> {
+    let mut pages: Vec<(Vec<u8>, &Entry)> = Vec::new();
+    let mut prev: &[Vec<u8>] = &[];
     for e in entries {
-        let mut item = Vec::new();
-        encode_item(&e.item, &mut item);
-        if let Some((buf, path, _)) = &mut cur {
-            let mut d = Vec::new();
-            path_delta(path, &e.path, &mut d);
-            if buf.len() + d.len() + item.len() <= PAYLOAD {
-                buf.extend_from_slice(&d);
-                buf.extend_from_slice(&item);
-                *path = e.path.clone();
-                continue;
+        let mut d = Vec::new();
+        let pops = path_delta(prev, &e.path, &mut d);
+        let fits = pages
+            .last()
+            .is_some_and(|(buf, _)| buf.len() + d.len() + e.item.len() <= PAYLOAD);
+        if !fits {
+            // Like FileMaker, keep the pops towards the next entry.
+            if let Some((buf, _)) = pages.last_mut()
+                && buf.len() + pops <= PAYLOAD
+            {
+                buf.extend_from_slice(&d[..pops]);
             }
-            let (payload, _, first) = cur.take().unwrap();
-            pages.push(Page { payload, first });
+            // Each sector restarts from an empty path.
+            d.clear();
+            path_delta(&[], &e.path, &mut d);
+            pages.push((Vec::new(), e));
         }
-        let mut buf = Vec::new();
-        path_delta(&[], &e.path, &mut buf);
-        buf.extend_from_slice(&item);
-        cur = Some((buf, e.path.clone(), e.clone()));
-    }
-    if let Some((payload, _, first)) = cur {
-        pages.push(Page { payload, first });
+        let buf = &mut pages.last_mut().unwrap().0;
+        buf.extend_from_slice(&d);
+        buf.extend_from_slice(&e.item);
+        prev = &e.path;
     }
     pages
 }
 
-fn index_entry(first: &Entry, child: u32) -> Entry {
-    let key = match &first.item {
-        Item::Kv { key, .. } => *key,
-        _ => 0,
-    };
-    Entry {
-        path: first.path.clone(),
-        item: Item::Kv {
-            key,
-            data: child.to_be_bytes().to_vec(),
-        },
+/// One index entry: a separator (path, then key bytes) and the child sector.
+///
+/// `key` is the item opcode without the pop flag, followed by the key and
+/// without the 4-byte child id: `03 k`, `0B k k`, `13 k k k` (Kv with a 1,
+/// 2 or 3-byte key), `1B len key` (long key), or [`LOW`] / `1B 00 FF`
+/// (the path alone, sorting before / after everything under it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sep {
+    pub path: Vec<Vec<u8>>,
+    pub key: Vec<u8>,
+    pub child: u32,
+}
+
+/// Separator "the path itself", sorting before everything under it.
+pub const LOW: [u8; 3] = [0x1B, 0x00, 0x01];
+
+/// Key bytes of the separator naming `e` exactly, read off its opcode.
+/// Ops 00–07, 08–0F and 10–15 are Kv with a 1, 2 or 3-byte key (00, 08
+/// and 10 with an empty value); a [`Chunk::Marker`] sorts as the bare path.
+/// ponytail: ops 18/23 and `1B 00` (never seen in the templates) also get
+/// [`LOW`], which is only valid when the left neighbour lies outside the
+/// path; work out their sort key if real files use them.
+fn sep_key(e: &Entry) -> Vec<u8> {
+    let b = &e.item;
+    match b.first().copied().unwrap_or(0x80) {
+        0x00..=0x07 => vec![0x03, b[1]],
+        0x08..=0x0F => vec![0x0B, b[1], b[2]],
+        0x10..=0x15 => vec![0x13, b[1], b[2], b[3]],
+        0x16 | 0x17 => [&[0x1B, 3], &b[1..4]].concat(),
+        0x19..=0x1F if b[1] > 0 => [&[0x1B], &b[1..2 + b[1] as usize]].concat(),
+        _ => LOW.to_vec(),
     }
+}
+
+fn sep(e: &Entry, child: u32) -> Sep {
+    Sep {
+        path: e.path.clone(),
+        key: sep_key(e),
+        child,
+    }
+}
+
+/// Encodes one index sector. A run of pushes builds the separator's path
+/// on a stack; the entry's item ends it. A pop flag (`| 0xC0`) on the item
+/// pops, after it, every flagged element on top of the stack and then one
+/// unflagged element. So the flag is set on every element that leaves the
+/// stack together with the one below it, and on all of them for the last
+/// entry (the sector ends with an empty stack).
+pub fn encode_index(seps: &[Sep]) -> Vec<u8> {
+    let n = seps.len();
+    // Stack depth kept after entry i (None for the last entry: pop all).
+    let keep: Vec<Option<usize>> = (0..n)
+        .map(|i| {
+            seps.get(i + 1).map(|next| {
+                let p = &seps[i].path;
+                p.iter().zip(&next.path).take_while(|(a, b)| a == b).count()
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut depth = 0;
+    for (i, s) in seps.iter().enumerate() {
+        for (d, e) in s.path.iter().enumerate().skip(depth) {
+            // The element at depth d is popped by the first entry keeping < d + 1.
+            let j = (i..n).find(|&j| keep[j].is_none_or(|k| k <= d)).unwrap();
+            let start = out.len();
+            push_code(e, &mut out);
+            if keep[j] != Some(d) {
+                out[start] |= 0xC0;
+            }
+        }
+        let pop = keep[i].is_none_or(|k| k < s.path.len());
+        out.push(s.key[0] | if pop { 0xC0 } else { 0 });
+        out.extend_from_slice(&s.key[1..]);
+        out.extend_from_slice(&s.child.to_be_bytes());
+        depth = keep[i].map_or(0, |k| k.min(s.path.len()));
+    }
+    out
+}
+
+/// Decodes an index sector payload (inverse of [`encode_index`]).
+pub fn decode_index(payload: &[u8]) -> Result<Vec<Sep>, Error> {
+    let mut stack: Vec<(Vec<u8>, bool)> = Vec::new();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let take = |i: &mut usize, n: usize| -> Result<&[u8], Error> {
+        let s = payload.get(*i..*i + n).ok_or(Error::Truncated(*i))?;
+        *i += n;
+        Ok(s)
+    };
+    while i < payload.len() && payload[i] != 0 {
+        let at = i;
+        let raw = payload[i];
+        i += 1;
+        let flag = raw & 0xC0 == 0xC0;
+        let op = if flag { raw & 0x3F } else { raw };
+        let elem = match op {
+            0x20 if payload.get(i) == Some(&0xFE) => {
+                i += 1;
+                take(&mut i, 8)?
+            }
+            0x20 => take(&mut i, 1)?,
+            0x28 => take(&mut i, 2)?,
+            0x30 => take(&mut i, 3)?,
+            0x38 => {
+                let n = take(&mut i, 1)?[0] as usize;
+                take(&mut i, n)?
+            }
+            0x03 | 0x0B | 0x13 | 0x1B => {
+                let klen = match op {
+                    0x03 => 1,
+                    0x0B => 2,
+                    0x13 => 3,
+                    _ => match take(&mut i, 1)?[0] {
+                        0 => 1,
+                        n => n as usize,
+                    },
+                };
+                i += klen;
+                let mut key = payload.get(at..i).ok_or(Error::Truncated(at))?.to_vec();
+                key[0] = op;
+                let c = take(&mut i, 4)?;
+                out.push(Sep {
+                    path: stack.iter().map(|(e, _)| e.clone()).collect(),
+                    key,
+                    child: u32::from_be_bytes([c[0], c[1], c[2], c[3]]),
+                });
+                if flag {
+                    while stack.last().is_some_and(|e| e.1) {
+                        stack.pop();
+                    }
+                    stack.pop();
+                }
+                continue;
+            }
+            _ => return Err(Error::UnknownOpcode { op: raw, at }),
+        };
+        stack.push((elem.to_vec(), flag));
+    }
+    Ok(out)
+}
+
+/// Splits separators into index sectors of at most PAYLOAD bytes.
+fn pack_index(seps: &[Sep]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    // ponytail: re-encodes the open sector per entry (quadratic in entries
+    // per sector, ~500 at most); track the size incrementally if it shows.
+    for end in 1..=seps.len() {
+        if end - start > 1 && encode_index(&seps[start..end]).len() > PAYLOAD {
+            out.push(start..end - 1);
+            start = end - 1;
+        }
+    }
+    if start < seps.len() {
+        out.push(start..seps.len());
+    }
+    out
 }
 
 /// Builds a complete file. `header` is the 4096-byte header sector to keep.
 pub fn build(header: &[u8], entries: &[Entry]) -> Vec<u8> {
-    // Levels bottom-up; ids are assigned once the root is known (root = 1).
-    let mut levels: Vec<Vec<Page>> = vec![pack(entries)];
-    while levels.last().unwrap().len() > 1 {
-        // Child ids are placeholders here and fixed up below.
-        let idx: Vec<Entry> = levels
-            .last()
-            .unwrap()
-            .iter()
-            .map(|p| index_entry(&p.first, 0))
-            .collect();
-        levels.push(pack(&idx));
+    let leaves = pack(entries);
+    // Separator of each node at the current level: its first key.
+    let mut firsts: Vec<Sep> = leaves.iter().map(|(_, e)| sep(e, 0)).collect();
+    // Index levels bottom-up, as ranges over the level below.
+    let mut levels: Vec<Vec<std::ops::Range<usize>>> = Vec::new();
+    loop {
+        let ranges = pack_index(&firsts);
+        firsts = ranges.iter().map(|r| firsts[r.start].clone()).collect();
+        levels.push(ranges);
+        if firsts.len() == 1 {
+            break;
+        }
     }
-    // A single leaf still needs a root index sector.
-    if levels.len() == 1 {
-        let idx = vec![index_entry(&levels[0][0].first, 0)];
-        levels.push(pack(&idx));
-    }
-    // Assign ids: root = 1, then level by level downwards.
-    let mut ids: Vec<Vec<u32>> = vec![Vec::new(); levels.len()];
+    // Ids: root = 1, then level by level downwards, leaves last.
+    let counts: Vec<usize> = std::iter::once(leaves.len())
+        .chain(levels.iter().map(|l| l.len()))
+        .collect();
+    let mut base = vec![0u32; counts.len()];
     let mut next = 1;
-    for (l, pages) in levels.iter().enumerate().rev() {
-        ids[l] = (next..next + pages.len() as u32).collect();
-        next += pages.len() as u32;
-    }
-    // Re-pack index levels with real child ids.
-    for l in 1..levels.len() {
-        let idx: Vec<Entry> = levels[l - 1]
-            .iter()
-            .zip(&ids[l - 1])
-            .map(|(p, id)| index_entry(&p.first, *id))
-            .collect();
-        let repacked = pack(&idx);
-        assert_eq!(
-            repacked.len(),
-            levels[l].len(),
-            "index re-pack changed size"
-        );
-        levels[l] = repacked;
+    for l in (0..counts.len()).rev() {
+        base[l] = next;
+        next += counts[l] as u32;
     }
     let total = next - 1;
     let mut out = header.to_vec();
     out.resize(SECTOR * (total as usize + 1), 0);
-    for (l, pages) in levels.iter().enumerate() {
-        for (i, p) in pages.iter().enumerate() {
-            let id = ids[l][i];
-            let prev = if i == 0 { 0 } else { ids[l][i - 1] };
-            // Sector 1's "next" holds the sector count.
-            let nxt = if id == 1 {
-                total
-            } else {
-                ids[l].get(i + 1).copied().unwrap_or(0)
-            };
-            let s = &mut out[id as usize * SECTOR..(id as usize + 1) * SECTOR];
-            s[4..8].copy_from_slice(&prev.to_be_bytes());
-            s[8..12].copy_from_slice(&nxt.to_be_bytes());
-            s[12..14].copy_from_slice(&(l as u16).to_be_bytes());
-            s[14..16].copy_from_slice(&((PAYLOAD - p.payload.len()) as u16).to_be_bytes());
-            s[16..20].copy_from_slice(&1u32.to_be_bytes());
-            s[HEADER_LEN..HEADER_LEN + p.payload.len()].copy_from_slice(&p.payload);
+    let mut write = |level: usize, i: usize, payload: &[u8]| {
+        let id = base[level] + i as u32;
+        let prev = if i == 0 { 0 } else { id - 1 };
+        // Sector 1's "next" holds the sector count.
+        let nxt = match id {
+            1 => total,
+            _ if i + 1 < counts[level] => id + 1,
+            _ => 0,
+        };
+        let s = &mut out[id as usize * SECTOR..(id as usize + 1) * SECTOR];
+        s[4..8].copy_from_slice(&prev.to_be_bytes());
+        s[8..12].copy_from_slice(&nxt.to_be_bytes());
+        s[12..14].copy_from_slice(&(level as u16).to_be_bytes());
+        s[14..16].copy_from_slice(&((PAYLOAD - payload.len()) as u16).to_be_bytes());
+        s[16..20].copy_from_slice(&1u32.to_be_bytes());
+        s[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
+    };
+    for (i, (payload, _)) in leaves.iter().enumerate() {
+        write(0, i, payload);
+    }
+    let mut seps: Vec<Sep> = leaves
+        .iter()
+        .enumerate()
+        .map(|(i, (_, e))| sep(e, base[0] + i as u32))
+        .collect();
+    for (l, ranges) in levels.iter().enumerate() {
+        let mut up = Vec::new();
+        for (i, r) in ranges.iter().enumerate() {
+            let mut part = seps[r.clone()].to_vec();
+            up.push(Sep {
+                child: base[l + 1] + i as u32,
+                ..part[0].clone()
+            });
+            // FileMaker starts the leftmost sector of a level with the
+            // lowest possible separator.
+            if i == 0 {
+                part[0].path.clear();
+                part[0].key = LOW.to_vec();
+            }
+            write(l + 1, i, &encode_index(&part));
         }
+        seps = up;
     }
     out
 }
@@ -255,47 +456,16 @@ pub fn build(header: &[u8], entries: &[Entry]) -> Vec<u8> {
 /// Experiment helper: payload of an index sector for the given leaves of
 /// `file`, built the way [`build`] does.
 pub fn index_payload(file: &File, leaves: &[u32]) -> Result<Vec<u8>, Error> {
-    let mut idx = Vec::new();
+    let mut seps = Vec::new();
     for id in leaves {
-        let s = file.sector(*id);
-        let cs = crate::chunk::parse(s.payload)?;
-        let mut path: Vec<Vec<u8>> = Vec::new();
-        for c in cs {
-            let item = match c {
-                Chunk::Push(p) => {
-                    path.push(p.to_vec());
-                    continue;
-                }
-                Chunk::Pop => {
-                    path.pop();
-                    continue;
-                }
-                Chunk::Data(d) => Item::Data(d.to_vec()),
-                Chunk::Kv { key, data } => Item::Kv {
-                    key,
-                    data: data.to_vec(),
-                },
-                Chunk::KvLong { key, data } => Item::KvLong {
-                    key: key.to_vec(),
-                    data: data.to_vec(),
-                },
-            };
-            idx.push(index_entry(
-                &Entry {
-                    path: path.clone(),
-                    item,
-                },
-                *id,
-            ));
-            break;
-        }
+        let es = leaf_entries(file.sector(*id).payload)?;
+        seps.push(sep(&es[0], *id));
     }
-    let pages = pack(&idx);
-    Ok(pages
-        .into_iter()
-        .next()
-        .map(|p| p.payload)
-        .unwrap_or_default())
+    if let Some(s) = seps.first_mut() {
+        s.path.clear();
+        s.key = LOW.to_vec();
+    }
+    Ok(encode_index(&seps))
 }
 
 /// Rewrites `file` from its logical content.
@@ -344,8 +514,7 @@ mod tests {
             },
         ];
         for it in &items {
-            let mut b = Vec::new();
-            encode_item(it, &mut b);
+            let b = encode(it);
             let parsed = crate::chunk::parse(&b).unwrap();
             let back = match parsed[0] {
                 Chunk::Data(d) => Item::Data(d.to_vec()),

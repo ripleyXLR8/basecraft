@@ -41,20 +41,69 @@ Sector *k* starts at offset `k × 4096`. For sector 1 (the B-tree root), the
 
 The sectors form a B-tree. All data lives in the leaves (level 0), which are
 chained through prev/next. The chain starts at the leaf whose prev is 0.
-Index sectors (level ≥ 1) map separator keys to child sectors. Readers can
-ignore them, but **FileMaker validates them**: a file whose root index was
-rebuilt naïvely ("path of first chunk + key → child") is rejected with "file
-access permissions damaged". An entry is a run of path pushes, some with the
-pop-after flag (`E0 xx`, `F8 len …`), then a Kv whose 4-byte value is the child
-sector id (`03 03 00 00 00 4E` = key 3 → sector 78). `1B 00 01 id` is used
-for the leftmost child and for children whose first chunk has a long key.
-Read in emission order, the pushes give the child's first path. How the
-pop-after flags interact across consecutive entries is still open
-(`tools/oracle/idxdec.py`). Until that is settled, OpenMaker only edits files
-in place.
-
 Every leaf payload starts from an empty path and pushes the full path of its
-first chunk. A chunk never spans two sectors.
+first chunk. A chunk never spans two sectors. When the next chunk does not
+fit, FileMaker still writes the pops towards its path at the end of the full
+sector (`… 40 40`).
+
+**Sort order.** Store order is byte order on the sequence of path elements
+followed by the chunk's key bytes. A key is just one more element:
+`[04.05.03.05.11.03] key 6` sorts before `[04.05.03.05.11] key 7` because
+element `03` < key `07`. The *spelling* of a key matters, not its value.
+FileMaker writes key 216 as `06 D8 …` (1-byte key) but key 134 as
+`0B 00 06 …` (2-byte path integer). Both read back as integers, so a writer
+must keep the original bytes (OpenMaker's writer does).
+
+### Index sectors ✅
+
+Index sectors (level ≥ 1) map separators to child sectors. Readers can ignore
+them, but **FileMaker validates them** on open ("Les autorisations d'accès du
+fichier ont été endommagées"). All 66 templates have a single level-1 root.
+Like a leaf, each index payload starts from an empty stack.
+
+An entry is a run of pushes (`20 x`, `28 xx`, `30 xxx`, `38 len …`,
+`20 FE` + 8), then an item whose last 4 bytes are the child sector id:
+
+| Item | Separator |
+|------|-----------|
+| `03 k id` | path + 1-byte key `k` |
+| `0B k k id` | path + 2-byte key |
+| `13 k k k id` | path + 3-byte key |
+| `1B len key id` | path + long key |
+| `1B 00 01 id` | the path itself, sorting before everything under it |
+| `1B 00 FF id` | the path, sorting after everything under it (seen 6×) |
+
+**Pop flags** (`| 0xC0`, e.g. `E0 05`, `F8 04 …`, `C3 …`) replace explicit
+pops. A pushed element stays on the stack whether flagged or not. After a
+flagged item, the decoder pops every flagged element on top of the stack,
+then one unflagged element. An encoder that knows the next separator
+therefore flags an element exactly when it leaves the stack together with
+the element below it. Elements left at the end of the sector are all
+flagged, and so is the last item. This rule re-encodes all 66 FileMaker
+index sectors byte for byte (`tests/templates.rs`,
+`index_sectors_reencode_byte_for_byte`).
+
+**Choice of separator.** FileMaker normally names the child's first chunk
+exactly: path, then that chunk's key in the forms above. A child that starts
+with a node marker (op `80`, §2) gets `1B 00 01` on that path, and the
+leftmost child of the root gets `1B 00 01` on the empty path. A few
+separators are stale but still valid. They lie strictly between the left
+child's last key and the right child's first key, for instance
+`8003.00.07.d00003.d00002` before a child starting at `8003.07`. They are
+left over from earlier content, so the choice cannot always be reproduced
+from the file alone. Any separator in that interval seems acceptable.
+OpenMaker always writes the exact first key.
+
+**Proven with FileMaker Pro 26.** On a copy of Contacts with its original
+leaves and only the root rebuilt by these rules, the file opens. The full
+`fmp12::write::rewrite` output also opens, with all sequence numbers set to 1
+and the header sector unchanged. This holds for Contacts, Tasks, Assets,
+Content Management, Inventory and Meetings (en), Assets (ja), Inventory (it),
+Tasks (zh) and Contacts (fr). For Contacts, Tasks and Assets (en), the *Save a
+Copy as XML* exports of the original and the rewrite are identical. The only
+exception is DDR_INFO: its order and the `DDRREF` ids pointing into it
+change from one export to the next even for the same file. After resolving
+each `DDRREF` to the hash it points to, the diff is empty.
 
 **In-place edits work.** Copies of real files with single bytes changed
 (same length) open in FileMaker without complaint: there is no checksum.
@@ -68,6 +117,12 @@ of byte strings) from an empty stack. Chunks are:
 and *KvLong* (bytes key → value). Opcodes 07/0F, which fmptools reads as "segments", are plain Kv chunks with a 2-byte length. Values over ~64 KB are stored in a sub-path as keys 1…n.
 
 If `op & 0xC0 == 0xC0`, the chunk is decoded as `op & 0x3F` and followed by a Pop.
+
+Ops 00, 08 and 10–15, which the reader still returns as *Data*, are really Kv
+chunks with a 1, 2 or 3-byte key: 00/08/10 with an empty value, 11–15 with
+1/2/4/6/8 bytes (FileMaker's index separators name them by that key).
+`0E FF …` is an ordinary 2-byte-key Kv (key `FF xx`, length byte, value),
+not 6 bytes of data.
 
 | Op | Chunk | Encoding after the op byte |
 |----|-------|----------------------------|
@@ -96,7 +151,8 @@ If `op & 0xC0 == 0xC0`, the chunk is decoded as `op & 0x3F` and followed by a Po
 | 30 | Push | 3 bytes |
 | 38 | Push | len u8, bytes |
 | 3D, 40 | Pop | — |
-| 80, 88 | no-op | — |
+| 80 | Marker | — : the current path exists as a node (46,642 in the templates, always right after a push). Sorts before the node's contents |
+| 88 | no-op | — (never seen) |
 
 **Path integers.** 1 byte: value. 2 bytes: `0x80 + ((b0 & 0x7F) << 8) + b1`.
 3 bytes: `0x80 + (b1 << 8) + b2`.

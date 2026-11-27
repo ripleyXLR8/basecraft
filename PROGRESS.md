@@ -89,10 +89,13 @@ ApplicationArchitecture.
 |---------|-------|
 | Chunk encoder (all opcodes) and leaf packing; round-trips through our reader | ✅ |
 | Same-size in-place edits accepted by FileMaker | ✅ (verified) |
-| Index (separator) sectors that FileMaker accepts | 🚧 rebuilt indexes are rejected; separator rules under study |
+| Leaves keep FileMaker's exact chunk bytes (key spelling, `80` node markers, empty nodes, trailing pops) | ✅ all 6,824 template leaves re-pack byte for byte |
+| Index (separator) sectors: encoding with pop flags, exact first-key separators | ✅ all 66 template roots re-encode byte for byte |
+| Full rewrite (`fmdump <file> rewrite <out>`) opens in FileMaker Pro 26 | ✅ 10 templates verified; XML export identical for Contacts, Tasks, Assets (DDR_INFO order and ids aside) |
+| Multi-level index trees (level ≥ 2) | 🚧 implemented, no template is deep enough to verify |
+| Writing changed content (new or edited values) | ⏳ |
 
 ## M3 — Data engine (`crates/engine`)
-
 | Feature | State |
 |---------|-------|
 | Load tables, fields, records, graph and layouts from `.fmp12` | ✅ |
@@ -104,11 +107,7 @@ ApplicationArchitecture.
 | Portals in the GUI, sorted relationships, other join operators | ⏳ |
 | Summary fields, auto-enter, validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records (no sample data yet) | ⏳ |
-
 ## M4 — GUI (`crates/app`)
-
-| Feature | State |
-|---------|-------|
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |
 | Layout drawn at stored coordinates: parts, fields, text, buttons | ✅ |
 | Browse mode: navigate, edit fields, new/delete record, show all | ✅ |

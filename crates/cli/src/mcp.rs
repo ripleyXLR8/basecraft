@@ -915,6 +915,100 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Accounts and privilege sets through MCP: a protected file opens only
+    /// with the right password, and the account's privileges apply.
+    #[test]
+    fn accounts_and_privileges() {
+        let dir = std::env::temp_dir().join(format!("basecraft-mcp-sec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sec.fmp12").to_string_lossy().to_string();
+        let mut doc = None;
+        let call = |doc: &mut Option<Doc>, name: &str, args: Json| {
+            let r = handle(
+                doc,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name": name, "arguments": args}}),
+            )
+            .unwrap();
+            let text = r["result"]["content"][0]["text"].as_str().unwrap().to_string();
+            (r["result"]["isError"] == true, text)
+        };
+        let ok = |doc: &mut Option<Doc>, name: &str, args: Json| {
+            let (err, text) = call(doc, name, args);
+            assert!(!err, "{name}: {text}");
+            text
+        };
+        ok(&mut doc, "new_file", json!({"path": path, "table": "Notes"}));
+        ok(&mut doc, "create_record", json!({"table": "Notes"}));
+        ok(
+            &mut doc,
+            "set_privileges",
+            json!({"name": "Readers", "create": true, "records": "view", "deny": ["export"]}),
+        );
+        ok(
+            &mut doc,
+            "add_account",
+            json!({"name": "reader", "password": "test123", "privilege_set": "Readers"}),
+        );
+        ok(
+            &mut doc,
+            "update_account",
+            json!({"name": "Admin", "password": "test123"}),
+        );
+        ok(&mut doc, "save_file", json!({}));
+
+        // No credentials, then a wrong password: refused.
+        let (err, text) = call(&mut doc, "open_file", json!({"path": path}));
+        assert!(err && text.contains("password"), "{text}");
+        let (err, text) = call(
+            &mut doc,
+            "open_file",
+            json!({"path": path, "account": "reader", "password": "nope"}),
+        );
+        assert!(err && text.contains("do not match"), "{text}");
+
+        // The reader sees records but cannot change them, export, or manage security.
+        ok(
+            &mut doc,
+            "open_file",
+            json!({"path": path, "account": "READER", "password": "test123"}),
+        );
+        let (err, text) = call(&mut doc, "create_record", json!({"table": "Notes"}));
+        assert!(err && text.contains("200"), "{text}");
+        let (err, _) = call(&mut doc, "export_records", json!({"table": "Notes", "format": "csv"}));
+        assert!(err);
+        let (err, _) = call(&mut doc, "list_security", json!({}));
+        assert!(err);
+        let (err, _) = call(
+            &mut doc,
+            "add_account",
+            json!({"name": "x", "password": "test123"}),
+        );
+        assert!(err);
+        let who = ok(
+            &mut doc,
+            "evaluate",
+            json!({"table": "Notes", "calculation": "Get ( AccountName ) & \"|\" & Get ( AccountPrivilegeSetName )"}),
+        );
+        assert!(who.contains("reader|Readers"), "{who}");
+
+        // Admin lists both and may delete the reader.
+        ok(
+            &mut doc,
+            "open_file",
+            json!({"path": path, "account": "Admin", "password": "test123"}),
+        );
+        let list = ok(&mut doc, "list_security", json!({}));
+        assert!(list.contains("reader") && list.contains("Readers"), "{list}");
+        ok(&mut doc, "delete_account", json!({"name": "reader"}));
+        ok(&mut doc, "save_file", json!({}));
+        let f = fmp12::File::open(&path).unwrap();
+        assert!(fmp12::security::Security::check(&f).unwrap().is_empty());
+        let sec = fmp12::security::Security::load(&f).unwrap();
+        assert!(sec.account_named("reader").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn lists_tools_and_requires_open_file() {
         let mut doc = None;

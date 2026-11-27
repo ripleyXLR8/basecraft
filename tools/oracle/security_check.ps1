@@ -93,3 +93,29 @@ function Test-FmSecurity([string]$file, [string]$Logins, [string]$Xml) {
   }
   $out
 }
+
+# Has FileMaker itself run the account script steps of account_steps.xml
+# in a copy of a file that logs in as Admin by itself (blank.fmp12): Add
+# Account (FileMaker hashes the test passwords), Enable Account, Reset
+# Account Password, Delete Account, Re-Login, Change Password. Returns the
+# text of the closing BCRESULT dialog (the Get ( LastError ) of each step)
+# and leaves the file for BaseCraft to read (passwords, digests, steps).
+#   Invoke-FmAccountSteps $env:TEMP\steps.fmp12 tools\oracle\account_steps.xml
+function Invoke-FmAccountSteps([string]$file, [string]$snippet) {
+  Stop-Fm
+  Start-Fm $file
+  Add-FmScriptSteps (Resolve-Path $snippet) -Run
+  $text = $null
+  for ($i = 0; $i -lt 30 -and -not $text; $i++) {
+    $d = Find-FmWindow "BCRESULT"
+    if ($d) {
+      $text = ($d.FindAll($TS::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+        ? { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Text' } | % { $_.Current.Name }) -join ' '
+      [void](Save-FmWindowShot $d "account-steps")
+      Invoke-Fm "OK"
+    }
+    Start-Sleep 1
+  }
+  Close-Fm
+  $text
+}

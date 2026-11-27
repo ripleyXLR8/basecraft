@@ -239,6 +239,8 @@ pub struct Designer {
     pub snap_grid: bool,
     pub show_rulers: bool,
     pub guides: Vec<Guide>,
+    /// Screen position of the layout's (0, 0) in the last frame.
+    pub canvas_origin: Pos2,
 }
 
 fn rect_of(b: &Bounds) -> Rect {
@@ -415,6 +417,7 @@ impl Designer {
             snap_grid: false,
             show_rulers: true,
             guides: Vec::new(),
+            canvas_origin: Pos2::ZERO,
         }
     }
 
@@ -513,6 +516,18 @@ impl Designer {
             .filter(|o| o.parent.is_none())
             .map(|o| o.id)
             .collect();
+    }
+
+    /// Selects `ids` (the UI tests).
+    #[cfg(test)]
+    pub fn select(&mut self, ids: impl IntoIterator<Item = u64>) {
+        self.sel = ids.into_iter().collect();
+        self.sel_part = None;
+    }
+
+    #[cfg(test)]
+    pub fn selection(&self) -> Vec<u64> {
+        self.sel.iter().copied().collect()
     }
 
     pub fn has_selection(&self) -> bool {
@@ -709,11 +724,11 @@ impl Designer {
             (Tool::Text, "T", "Text tool"),
             (Tool::Line, "╱", "Line tool"),
             (Tool::Rect, "▭", "Rectangle tool"),
-            (Tool::Oval, "◯", "Oval tool"),
+            (Tool::Oval, "( )", "Oval tool"),
             (Tool::Field, "[F]", "Field tool"),
             (Tool::Button, "(B)", "Button tool"),
             (Tool::Portal, "[P]", "Portal tool"),
-            (Tool::TabControl, "[⊓]", "Tab control tool"),
+            (Tool::TabControl, "[Tab]", "Tab control tool"),
         ] {
             if ui
                 .selectable_label(self.tool == t, icon)
@@ -1748,6 +1763,7 @@ impl Designer {
         let size = Vec2::new(ruler + GUTTER + l.width as f32 + 60.0, ruler + total + 60.0);
         let (resp, painter) = ui.allocate_painter(size, egui::Sense::click_and_drag());
         let o0 = resp.rect.min + Vec2::new(ruler + GUTTER, ruler);
+        self.canvas_origin = o0;
         let to_screen = |r: Rect| r.translate(o0.to_vec2());
         let page = Rect::from_min_size(o0, Vec2::new(l.width as f32, total));
         let theme = doc.db.themes.iter().find(|t| t.number == l.theme);
@@ -2732,10 +2748,10 @@ impl Designer {
                 ui.horizontal(|ui| {
                     let cur = props.enum_value(prop::TEXT_ALIGN).unwrap_or(1);
                     for (v, label, tip) in [
-                        (1, "⯇", "Align Left"),
-                        (2, "≡", "Center"),
-                        (3, "⯈", "Align Right"),
-                        (4, "☰", "Justify"),
+                        (1, "L", "Align Left"),
+                        (2, "C", "Center"),
+                        (3, "R", "Align Right"),
+                        (4, "J", "Justify"),
                     ] {
                         if ui
                             .selectable_label(cur == v, label)

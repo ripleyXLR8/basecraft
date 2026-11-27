@@ -1857,7 +1857,7 @@ fn draw_object(
     dirty: &mut bool,
     events: &mut Vec<(u64, u16)>,
 ) {
-    lk.paint_box(painter, r);
+    lk.paint_shape(painter, r, o.kind);
     if o.kind != 1 {
         if let Some(txt) = &o.text {
             lk.paint_text(painter, r, txt);

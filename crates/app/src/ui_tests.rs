@@ -514,3 +514,175 @@ fn field_commit_runs_lookups_and_validation() {
     let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
     assert_eq!(t.records.len(), 1);
 }
+
+/// A mouse drag on the layout canvas, from and to layout coordinates.
+fn drag_canvas(h: &mut Harness<'_, App>, from: (f32, f32), to: (f32, f32)) {
+    let o = h.state().designer.as_ref().unwrap().canvas_origin;
+    let a = o + egui::vec2(from.0, from.1);
+    let b = o + egui::vec2(to.0, to.1);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(egui::Event::PointerMoved(a));
+    h.run_steps(1);
+    h.event(button(a, true));
+    h.run_steps(1);
+    for i in 1..=4 {
+        h.event(egui::Event::PointerMoved(a + (b - a) * (i as f32 / 4.0)));
+        h.run_steps(1);
+    }
+    h.event(button(b, false));
+    h.run_steps(2);
+}
+
+fn designer<'a>(h: &'a Harness<'_, App>) -> &'a design::Designer {
+    h.state().designer.as_ref().unwrap()
+}
+
+/// Layout mode driven like a user: Ctrl+L, a click on a field, the
+/// Inspector tabs, arrow keys, Ctrl+D, undo, the Arrange, Insert and
+/// Layouts menus, the tab control tool on the canvas, then "Save" on
+/// leaving; the edits reach the file. Screenshots `l01`… with
+/// `BASECRAFT_SHOTS`.
+#[test]
+fn layout_mode_flow() {
+    let Some(mut h) = harness("Contacts") else {
+        return;
+    };
+    h.run_steps(4);
+    let list = h
+        .state()
+        .doc
+        .as_ref()
+        .unwrap()
+        .layouts
+        .iter()
+        .position(|l| l.name == "Contact List")
+        .unwrap();
+    h.state_mut().layout = list;
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+    h.run_steps(3);
+    assert!(h.state().designer.is_some(), "Ctrl+L enters Layout mode");
+    shot(&mut h, "l01_layout_mode");
+
+    // Click field 9 (Last Name, 366–632 × 112–156) on the canvas.
+    drag_canvas(&mut h, (400.0, 130.0), (400.0, 130.0));
+    assert_eq!(designer(&h).selection(), [9]);
+    let bounds = |h: &Harness<'_, App>, id: u64| {
+        let ds = designer(h);
+        ds.layout
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap()
+            .bounds
+            .clone()
+    };
+    // Arrow keys nudge by 1 point.
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(bounds(&h, 9).left, 367.0);
+    // Inspector tabs.
+    for tab in ["Styles", "Appearance", "Data", "Position"] {
+        h.get_by_label(tr(tab)).click();
+        h.run_steps(2);
+        shot(&mut h, &format!("l02_inspector_{}", tab.to_lowercase()));
+    }
+    // Ctrl+D duplicates, Ctrl+Z takes it back.
+    let n = designer(&h).layout.objects.len();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(designer(&h).layout.objects.len(), n + 1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(2);
+    assert_eq!(designer(&h).layout.objects.len(), n);
+
+    // Arrange › Group on fields 8 and 9.
+    h.state_mut().designer.as_mut().unwrap().select([8, 9]);
+    h.run_steps(1);
+    h.get_by_label(tr("Arrange")).click();
+    h.run_steps(2);
+    shot(&mut h, "l03_arrange_menu");
+    h.get_by_label_contains(tr("Group")).click();
+    h.run_steps(2);
+    let g = designer(&h).selection()[0];
+    let kind = |h: &Harness<'_, App>, id: u64| {
+        designer(h)
+            .layout
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap()
+            .kind
+    };
+    assert_eq!(kind(&h, g), 8);
+
+    // Insert › Part…: a footer.
+    h.get_by_label(tr("Insert")).click();
+    h.run_steps(2);
+    h.get_by_label(tr("Part…")).click();
+    h.run_steps(6);
+    h.run_steps(2);
+    h.get_by_label(design::part_name(7)).click();
+    h.run_steps(1);
+    shot(&mut h, "l04_part_dialog");
+    h.get_by_label("OK").click();
+    h.run_steps(2);
+    assert!(designer(&h).layout.parts.iter().any(|p| p.kind == 7));
+
+    // The tab control tool, dragged on the canvas, then its setup dialog.
+    h.get_by_label("[Tab]").click();
+    h.run_steps(1);
+    drag_canvas(&mut h, (150.0, 172.0), (450.0, 232.0));
+    h.run_steps(4);
+    shot(&mut h, "l05_tab_dialog");
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    let tc = designer(&h).selection()[0];
+    assert_eq!(kind(&h, tc), 11);
+    shot(&mut h, "l06_tab_control");
+
+    // Leave the layout: "Save" copies the edits into the document.
+    h.get_by_label(tr("Exit Layout")).click();
+    h.run_steps(6);
+    shot(&mut h, "l07_save_question");
+    h.get_by_label(tr("Save")).click();
+    h.run_steps(3);
+    assert!(h.state().designer.is_none());
+    let d = h.state().doc.as_ref().unwrap();
+    let bytes = fmp12::save::save_layouts(&d.file, &d.db.layouts).unwrap();
+    let f = fmp12::File::from_bytes(bytes).unwrap();
+    let back = fmp12::layouts::layouts(&f).unwrap();
+    let l = back.iter().find(|l| l.name == "Contact List").unwrap();
+    assert!(l.objects.iter().any(|o| o.kind == 11));
+    assert!(l.objects.iter().any(|o| o.kind == 8));
+    assert!(l.parts.iter().any(|p| p.kind == 7));
+    shot(&mut h, "l08_browse_after");
+
+    // Layouts › New Layout/Report…: written to the file, then opened.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+    h.run_steps(3);
+    h.get_by_label(tr("Layouts")).click();
+    h.run_steps(2);
+    h.get_by_label(tr("New Layout/Report…")).click();
+    h.run_steps(1);
+    h.run_steps(5);
+    shot(&mut h, "l09_new_layout");
+    let before = h.state().doc.as_ref().unwrap().layouts.len();
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    let d = h.state().doc.as_ref().unwrap();
+    assert_eq!(d.layouts.len(), before + 1);
+    let name = designer(&h).layout.name.clone();
+    assert!(
+        fmp12::layouts::layouts(&d.file)
+            .unwrap()
+            .iter()
+            .any(|l| l.name == name)
+    );
+    shot(&mut h, "l10_new_layout_open");
+}

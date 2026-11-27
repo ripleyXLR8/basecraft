@@ -1,6 +1,6 @@
 # Progress
 
-**Estimated progress to 1.0: ~74 %**, weighted by milestone (see the README table).
+**Estimated progress to 1.0: ~77 %**, weighted by milestone (see the README table).
 
 Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 

@@ -1,13 +1,45 @@
-# BaseCraft
+<p align="center">
+  <img src="assets/icon/basecraft-256.png" width="128" height="128" alt="BaseCraft icon: a stack of record cards on a purple tile">
+</p>
 
-[![CI](https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg)](https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml)
-[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-63%25-orange)](#progress-to-10)
-[![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-blue)](https://ripleyxlr8.github.io/basecraft/)
+<h1 align="center">BaseCraft</h1>
 
-**BaseCraft is an open-source, from-scratch reimplementation, in Rust, of the
-FileMaker Pro 26 desktop database application.** It aims to open, edit and save
-real `.fmp12` files and to behave like the original: calculation language,
-script steps, layouts, find/sort, and Browse / Find / Layout / Preview modes.
+<p align="center">
+  <b>Databases you design, browse and script; an open-source desktop database built from scratch in pure Rust.</b>
+</p>
+
+<p align="center">
+  Tables, relationships, layouts, calculations, scripts, find and sort, in a familiar
+  workflow with Browse, Find, Layout and Preview modes. It opens and saves FileMaker
+  <code>.fmp12</code> files, runs natively on Windows, macOS and Linux, and in the browser
+  through WebAssembly.
+</p>
+
+<p align="center">
+  <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-7040aa?style=flat-square&logo=rust&logoColor=white">
+  <img alt="Runs on Windows, macOS, Linux and the web" src="https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-8a5cc2?style=flat-square">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-7040aa?style=flat-square">
+  <img alt="Agent-drivable over MCP and CLI" src="https://img.shields.io/badge/agents-MCP%20%C2%B7%20CLI-8a5cc2?style=flat-square">
+  <br>
+  <a href="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-63%25-orange?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <a href="https://ripleyxlr8.github.io/basecraft/"><b>Try BaseCraft in your browser</b></a> ·
+  <a href="PROGRESS.md">Progress</a> ·
+  <a href="docs/FORMAT.md">The .fmp12 format</a> ·
+  <a href="#command-line-for-scripts-and-ai-agents">CLI and MCP</a>
+</p>
+
+<p align="center">
+  <a href="#status">Status</a> ·
+  <a href="#progress-to-10">Progress to 1.0</a> ·
+  <a href="#command-line-for-scripts-and-ai-agents">Command line</a> ·
+  <a href="#web-version">Web version</a> ·
+  <a href="#try-it">Try it</a> ·
+  <a href="#testing">Testing</a>
+</p>
 
 > 🇫🇷 *BaseCraft est une recréation libre, en Rust, de FileMaker Pro 26 :
 > lecture et écriture des fichiers `.fmp12`, moteur de calcul, scripts,

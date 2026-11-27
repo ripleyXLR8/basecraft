@@ -930,7 +930,10 @@ mod tests {
                         "params":{"name": name, "arguments": args}}),
             )
             .unwrap();
-            let text = r["result"]["content"][0]["text"].as_str().unwrap().to_string();
+            let text = r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
             (r["result"]["isError"] == true, text)
         };
         let ok = |doc: &mut Option<Doc>, name: &str, args: Json| {
@@ -938,7 +941,11 @@ mod tests {
             assert!(!err, "{name}: {text}");
             text
         };
-        ok(&mut doc, "new_file", json!({"path": path, "table": "Notes"}));
+        ok(
+            &mut doc,
+            "new_file",
+            json!({"path": path, "table": "Notes"}),
+        );
         ok(&mut doc, "create_record", json!({"table": "Notes"}));
         ok(
             &mut doc,
@@ -975,7 +982,11 @@ mod tests {
         );
         let (err, text) = call(&mut doc, "create_record", json!({"table": "Notes"}));
         assert!(err && text.contains("200"), "{text}");
-        let (err, _) = call(&mut doc, "export_records", json!({"table": "Notes", "format": "csv"}));
+        let (err, _) = call(
+            &mut doc,
+            "export_records",
+            json!({"table": "Notes", "format": "csv"}),
+        );
         assert!(err);
         let (err, _) = call(&mut doc, "list_security", json!({}));
         assert!(err);
@@ -999,7 +1010,10 @@ mod tests {
             json!({"path": path, "account": "Admin", "password": "test123"}),
         );
         let list = ok(&mut doc, "list_security", json!({}));
-        assert!(list.contains("reader") && list.contains("Readers"), "{list}");
+        assert!(
+            list.contains("reader") && list.contains("Readers"),
+            "{list}"
+        );
         ok(&mut doc, "delete_account", json!({"name": "reader"}));
         ok(&mut doc, "save_file", json!({}));
         let f = fmp12::File::open(&path).unwrap();

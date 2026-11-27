@@ -213,15 +213,18 @@ impl App {
             ui.heading(format!("{} « {} »", t("Open"), l.name));
             ui.label(t("Sign in to open the file"));
             egui::Grid::new("login_grid").num_columns(2).show(ui, |ui| {
-                ui.label(t("Account Name:"));
-                ui.add(egui::TextEdit::singleline(&mut l.account).id_salt("login_account"));
+                let lab = ui.label(t("Account Name:"));
+                ui.add(egui::TextEdit::singleline(&mut l.account).id_salt("login_account"))
+                    .labelled_by(lab.id);
                 ui.end_row();
-                ui.label(t("Password:"));
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut l.password)
-                        .password(true)
-                        .id_salt("login_password"),
-                );
+                let lab = ui.label(t("Password:"));
+                let r = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut l.password)
+                            .password(true)
+                            .id_salt("login_password"),
+                    )
+                    .labelled_by(lab.id);
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
                 }

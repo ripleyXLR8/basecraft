@@ -21,6 +21,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+mod accounts;
 pub mod text;
 
 use calc::Value;
@@ -558,7 +559,14 @@ impl Engine {
                 continue;
             }
             let pc = top.pc;
-            match self.exec(host, &top.steps, &top.links, pc, &mut top.frame) {
+            let r = self.exec(host, &top.steps, &top.links, pc, &mut top.frame);
+            // An action the account's privileges refused (FileMaker's 200,
+            // 201): the step's error.
+            let r = match (r, host.db().last_denied()) {
+                (Ok(Flow::Next) | Err(_), Some(code)) => Err(code),
+                (r, _) => r,
+            };
+            match r {
                 Ok(Flow::Call(i, p)) => self.push(host, run, i, p),
                 Ok(Flow::Suspend(s, p)) => {
                     run.pending = Some(p);
@@ -838,6 +846,10 @@ impl Engine {
                 let i = script
                     .and_then(|id| self.scripts.iter().position(|s| s.id == id))
                     .ok_or(error::SCRIPT_MISSING)?;
+                // A script the account has no access to does not run.
+                if host.db().script_access(self.scripts[i].id) == fmp12::security::NO_ACCESS {
+                    return Err(engine::PRIVILEGES);
+                }
                 return Ok(Flow::Call(i, p));
             }
             (StepParams::ExitScript(c), _) => {
@@ -1485,6 +1497,15 @@ impl Engine {
             (_, id::FREEZE_WINDOW) => host.freeze(),
             (_, id::REFRESH_WINDOW) => host.refresh(),
             (_, id::BEEP) => host.beep(),
+            (
+                _,
+                accounts::CHANGE_PASSWORD
+                | accounts::ADD_ACCOUNT
+                | accounts::DELETE_ACCOUNT
+                | accounts::RESET_ACCOUNT_PASSWORD
+                | accounts::ENABLE_ACCOUNT
+                | accounts::RE_LOGIN,
+            ) => self.account_step(host, frame, s)?,
             _ => return Err(host.other(s)),
         }
         Ok(Flow::Next)

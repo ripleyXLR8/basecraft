@@ -101,7 +101,9 @@ pub struct Database {
     pub access: Access,
 }
 
-pub use access::{Action, DENIED_MESSAGE, FIELD_DENIED, RECORD_DENIED};
+pub use access::{
+    ADMIN_ACCOUNT, Action, DENIED_MESSAGE, FIELD_DENIED, NO_ACCOUNT, PRIVILEGES, RECORD_DENIED,
+};
 
 /// Who is logged in (`None`: a database built in memory, no restrictions)
 /// and the error of the last refused action.

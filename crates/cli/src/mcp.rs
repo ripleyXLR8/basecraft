@@ -69,6 +69,20 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
             ),
         ),
         (
+            "list_scripts",
+            "List the file's FileMaker scripts with their steps.",
+            s(json!({}), &[]),
+        ),
+        (
+            "run_script",
+            "Run a FileMaker script by name (or id) with an optional parameter, from a layout. Custom dialogs are answered with button `answer` (default 1) and reported. Data changes stay in memory until save_file.",
+            s(
+                json!({ "name": { "type": "string" }, "parameter": { "type": "string" },
+                        "layout": { "type": "string" }, "answer": { "type": "integer" } }),
+                &["name"],
+            ),
+        ),
+        (
             "save_file",
             "Write the open file with all changes. Give `path` to save a copy; omit it to overwrite the opened file.",
             s(json!({ "path": { "type": "string" } }), &[]),

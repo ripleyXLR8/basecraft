@@ -29,7 +29,7 @@ fn time_arg(v: &Value, what: &str) -> Result<Option<Num>, EvalError> {
     v.to_time().map(Some).ok_or_else(|| bad(what))
 }
 
-fn on_date(a: &[Value], what: &str, f: impl FnOnce(i64) -> Value) -> R {
+pub(crate) fn on_date(a: &[Value], what: &str, f: impl FnOnce(i64) -> Value) -> R {
     Ok(date_arg(&a[0], what)?.map(f).unwrap_or_else(Value::empty))
 }
 
@@ -197,7 +197,7 @@ pub fn get_as_timestamp(_: &mut Evaluator, a: &[Value]) -> R {
         _ if v.is_empty() => return Ok(Value::empty()),
         Value::Timestamp(t) | Value::Number(t) | Value::Time(t) => Some(t.clone()),
         Value::Date(d) => Some(make_ts(*d, &num::int(0))),
-        Value::Text(s) => value::parse_timestamp(s)
+        Value::Text(s) | Value::Json { text: s, .. } => value::parse_timestamp(s)
             .or_else(|| value::parse_date(s).map(|d| make_ts(d, &num::int(0)))),
         Value::Container(_) => None,
     };

@@ -9,7 +9,7 @@ use bigdecimal::num_bigint::BigInt;
 use sha2::Digest;
 
 /// Bytes of a value: container data, or the UTF-8 text.
-fn bytes(v: &Value) -> Vec<u8> {
+pub(crate) fn bytes(v: &Value) -> Vec<u8> {
     match v {
         Value::Container(c) => c.data.clone(),
         v => v.to_text().into_bytes(),
@@ -60,7 +60,7 @@ pub fn url_encode(_: &mut Evaluator, a: &[Value]) -> R {
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-fn b64(data: &[u8]) -> String {
+pub(crate) fn b64(data: &[u8]) -> String {
     let mut out = String::new();
     for chunk in data.chunks(3) {
         let n = chunk
@@ -129,10 +129,19 @@ fn decoded(data: Vec<u8>, name: Option<String>) -> Value {
 }
 
 pub fn base64_decode(_: &mut Evaluator, a: &[Value]) -> R {
+    Ok(decoded(
+        b64_decode(&txt(a, 0)),
+        a.get(1).map(Value::to_text),
+    ))
+}
+
+/// Standard or URL-safe Base64; other characters (line breaks, padding)
+/// are skipped.
+pub(crate) fn b64_decode(s: &str) -> Vec<u8> {
     let mut bits = 0u32;
     let mut nbits = 0;
     let mut out = Vec::new();
-    for c in txt(a, 0).bytes() {
+    for c in s.bytes() {
         let v = match c {
             b'-' => 62,
             b'_' => 63,
@@ -148,7 +157,7 @@ pub fn base64_decode(_: &mut Evaluator, a: &[Value]) -> R {
             out.push((bits >> nbits) as u8);
         }
     }
-    Ok(decoded(out, a.get(1).map(Value::to_text)))
+    out
 }
 
 pub fn hex_encode(_: &mut Evaluator, a: &[Value]) -> R {
@@ -158,18 +167,21 @@ pub fn hex_encode(_: &mut Evaluator, a: &[Value]) -> R {
 }
 
 pub fn hex_decode(_: &mut Evaluator, a: &[Value]) -> R {
-    let digits: Vec<u8> = txt(a, 0)
+    Ok(decoded(hex_bytes(&txt(a, 0)), a.get(1).map(Value::to_text)))
+}
+
+pub(crate) fn hex_bytes(s: &str) -> Vec<u8> {
+    let digits: Vec<u8> = s
         .chars()
         .filter_map(|c| c.to_digit(16))
         .map(|d| d as u8)
         .collect();
-    let out = digits
+    digits
         .as_chunks::<2>()
         .0
         .iter()
         .map(|p| p[0] << 4 | p[1])
-        .collect();
-    Ok(decoded(out, a.get(1).map(Value::to_text)))
+        .collect()
 }
 
 /// (digest, block size) for an algorithm name.

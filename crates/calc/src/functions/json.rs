@@ -215,7 +215,7 @@ fn scalar(j: &J) -> Option<String> {
     })
 }
 
-fn compact(j: &J) -> String {
+pub(crate) fn compact(j: &J) -> String {
     let mut out = String::new();
     write_compact(j, &mut out);
     out
@@ -514,7 +514,176 @@ pub fn set_element(ev: &mut Evaluator, a: &[Expr]) -> R {
     if root.is_null() {
         root = J::Object(Map::new());
     }
+    // JSONParsedState reports JSONSetElement's result as parsed.
+    Ok(Value::Json {
+        text: compact(&root),
+        state: type_code(&root),
+    })
+}
+
+fn type_code(j: &J) -> i64 {
+    match j {
+        J::String(_) => STRING,
+        J::Number(_) => NUMBER,
+        J::Object(_) => OBJECT,
+        J::Array(_) => ARRAY,
+        J::Bool(_) => BOOLEAN,
+        J::Null => NULL,
+    }
+}
+
+/// JSONParse: the text unchanged, marked as parsed; invalid JSON gives the
+/// `?` error text, marked invalid. Only an object or an array parses: the
+/// documented JSONParse ( Pi ) is invalid.
+// ponytail: no binary cache; every JSON function reparses its text.
+pub fn json_parse(_: &mut Evaluator, a: &[Value]) -> R {
+    let s = txt(a, 0);
+    let parsed = parse(&s).and_then(|j| match j {
+        J::Object(_) | J::Array(_) => Ok(j),
+        _ => Err("JSONParse needs an object or an array".to_string()),
+    });
+    Ok(match parsed {
+        Ok(j) => Value::Json {
+            text: s,
+            state: type_code(&j),
+        },
+        Err(e) => Value::Json {
+            text: err_text(e).to_text(),
+            state: -1,
+        },
+    })
+}
+
+/// 0 unparsed text, -1 parsed but invalid, else the JSON type (1..6).
+pub fn json_parsed_state(_: &mut Evaluator, a: &[Value]) -> R {
+    Ok(Value::int(match &a[0] {
+        Value::Json { state, .. } => *state,
+        _ => 0,
+    }))
+}
+
+/// A calculation value as the JSON it stands for: JSON text when it parses
+/// (so 1 matches the number 1 and "\"1\"" the string), else a string.
+// ponytail: JSONValueExists & co. are undocumented FileMaker 26 functions;
+// this matching rule and their results below are our reading of the
+// signatures. Verify against FileMaker.
+fn as_json(v: &Value) -> J {
+    match v {
+        Value::Number(n) => Number::from_str(&num::format(n))
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        v => {
+            let s = v.to_text();
+            parse(&s).unwrap_or(J::String(s))
+        }
+    }
+}
+
+/// The values of the array or object at the path, compared by their
+/// compact text (numbers normalised).
+fn members(j: Option<&J>) -> Vec<String> {
+    match j {
+        Some(J::Array(a)) => a.iter().map(compact).collect(),
+        Some(J::Object(m)) => m.values().map(compact).collect(),
+        _ => vec![],
+    }
+}
+
+fn count_of(a: &[Value]) -> R {
+    let want = compact(&as_json(&a[2]));
+    at(a, |j| {
+        Value::int(members(j).iter().filter(|m| **m == want).count() as i64)
+    })
+}
+
+pub fn value_count(_: &mut Evaluator, a: &[Value]) -> R {
+    count_of(a)
+}
+
+pub fn value_exists(_: &mut Evaluator, a: &[Value]) -> R {
+    Ok(match count_of(a)? {
+        Value::Number(n) => Value::bool(!bigdecimal::Zero::is_zero(&n)),
+        v => v,
+    })
+}
+
+/// The values of a JSON array argument (`jsonValuesArray...`).
+fn wanted(v: &Value) -> Result<Vec<String>, String> {
+    match parse(&v.to_text())? {
+        J::Array(a) => Ok(a.iter().map(compact).collect()),
+        j => Ok(vec![compact(&j)]),
+    }
+}
+
+pub fn any_values_exist(_: &mut Evaluator, a: &[Value]) -> R {
+    let want = match wanted(&a[2]) {
+        Ok(w) => w,
+        Err(e) => return Ok(err_text(e)),
+    };
+    at(a, |j| {
+        Value::bool(members(j).iter().any(|m| want.contains(m)))
+    })
+}
+
+/// Rewrites the array or object at the path with `keep`, returning the
+/// whole document.
+fn filter_at(a: &[Value], mut keep: impl FnMut(&str) -> bool) -> R {
+    let mut root = match parse(&txt(a, 0)) {
+        Ok(j) => j,
+        Err(e) => return Ok(err_text(e)),
+    };
+    let path = match parse_path(&txt(a, 1)) {
+        Ok(p) => p,
+        Err(e) => return Ok(err_text(e)),
+    };
+    let mut node = &mut root;
+    for seg in &path {
+        let next = match node {
+            J::Object(m) => match seg {
+                Seg::Key(k) => m.get_mut(k),
+                _ => None,
+            },
+            J::Array(_) => {
+                let i = index(node, seg);
+                i.and_then(|i| node.get_mut(i))
+            }
+            _ => None,
+        };
+        match next {
+            Some(n) => node = n,
+            None => return Ok(Value::Text(compact(&root_copy(a)))),
+        }
+    }
+    match node {
+        J::Array(v) => v.retain(|x| keep(&compact(x))),
+        J::Object(m) => m.retain(|_, x| keep(&compact(x))),
+        _ => {}
+    }
     Ok(Value::Text(compact(&root)))
+}
+
+fn root_copy(a: &[Value]) -> J {
+    parse(&txt(a, 0)).unwrap_or(J::Null)
+}
+
+pub fn remove_values(_: &mut Evaluator, a: &[Value]) -> R {
+    let drop = match wanted(&a[2]) {
+        Ok(w) => w,
+        Err(e) => return Ok(err_text(e)),
+    };
+    filter_at(a, |m| !drop.iter().any(|d| d == m))
+}
+
+/// Keeps the first of equal values.
+pub fn unique_values(_: &mut Evaluator, a: &[Value]) -> R {
+    let mut seen: Vec<String> = vec![];
+    filter_at(a, |m| {
+        let new = !seen.iter().any(|s| s == m);
+        if new {
+            seen.push(m.to_string());
+        }
+        new
+    })
 }
 
 pub fn make_array(_: &mut Evaluator, a: &[Value]) -> R {

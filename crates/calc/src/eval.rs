@@ -5,10 +5,12 @@ use crate::ast::{BinOp, Expr, UnOp};
 use crate::error::{EvalError, code};
 use crate::functions;
 use crate::num::{self, Num};
+use crate::schema::{Rows, Schema};
 use crate::value::{self, Value};
 use bigdecimal::ToPrimitive;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub type R = Result<Value, EvalError>;
 
@@ -43,6 +45,81 @@ pub trait Context {
     /// `$local` and `$$global` variables; `name` includes the dollar signs.
     fn variable(&mut self, name: &str, repetition: usize) -> Value;
     fn set_variable(&mut self, name: &str, repetition: usize, value: Value);
+
+    // ---- design and records. The defaults answer "not available", which
+    // is what a host without the data should say.
+
+    /// Design of the open file `file` (`""` means the current file).
+    /// `None` when no such file is open.
+    fn schema(&mut self, file: &str) -> Option<Arc<Schema>> {
+        let _ = file;
+        None
+    }
+
+    /// The table occurrence unqualified field names resolve in.
+    fn current_occurrence(&mut self) -> Option<String> {
+        None
+    }
+
+    /// GetNthRecord: a field's value in record `n` (1-based) of the found
+    /// set, or of the related set for a related field.
+    fn nth_record(&mut self, table: Option<&str>, name: &str, repetition: usize, n: usize) -> R {
+        let _ = (table, name, repetition, n);
+        Err(unavailable("GetNthRecord"))
+    }
+
+    /// LookupNext: the related value from the next lower or higher match.
+    fn lookup_next(&mut self, table: Option<&str>, name: &str, higher: bool) -> R {
+        let _ = (table, name, higher);
+        Err(unavailable("LookupNext"))
+    }
+
+    /// GetSummary: `summary` for the current group of `break_field`, or for
+    /// the whole found set when both are the same field. Each is
+    /// (table occurrence, field).
+    fn summary(&mut self, summary: (Option<&str>, &str), break_field: (Option<&str>, &str)) -> R {
+        let _ = (summary, break_field);
+        Err(unavailable("GetSummary"))
+    }
+
+    /// `Self`: the value of the object whose calculation is running.
+    fn self_value(&mut self) -> R {
+        Err(unavailable("Self"))
+    }
+
+    /// Record IDs of the found set of `table` (`None`: the current one), in
+    /// found-set order.
+    fn record_ids(&mut self, table: Option<&str>) -> Result<Vec<u64>, EvalError> {
+        let _ = table;
+        Err(unavailable("GetRecordIDsFromFoundSet"))
+    }
+
+    /// ExecuteSQL: every record of a table occurrence, one value per column.
+    /// Empty values are SQL NULL.
+    fn rows(&mut self, table: &str) -> Result<Rows, EvalError> {
+        Err(EvalError::new(
+            code::TABLE_MISSING,
+            format!("table {table} is missing"),
+        ))
+    }
+
+    /// Functions that need the platform, the window or a service: Location,
+    /// LocationValues, GetSensor, RangeBeacons, Furigana, GetLiveText,
+    /// GetLiveTextAsJSON, ReadQRCode, GetTextFromPDF, GetThumbnail,
+    /// GetAVPlayerAttribute, GetAddonInfo, GetPersistentData,
+    /// ListPersistentDataIDs, GetLayoutObjectAttribute,
+    /// GetLayoutObjectOwnerInfo, GetEmbedding, GetTokenCount, ComputeModel,
+    /// PredictFromModel, GetModelAttributes, GetRAGSpaceInfo. `name` is the
+    /// function's canonical name; `None` means not available here.
+    fn host_function(&mut self, name: &str, args: &[Value]) -> Option<R> {
+        let _ = (name, args);
+        None
+    }
+}
+
+/// FileMaker's answer on a platform without the feature.
+pub fn unavailable(what: &str) -> EvalError {
+    EvalError::new(code::UNAVAILABLE, format!("{what} is not available here"))
 }
 
 /// In-memory context for tests and tools. Keys are lower-case
@@ -52,6 +129,14 @@ pub struct MemoryContext {
     pub fields: HashMap<String, Vec<Value>>,
     pub flags: HashMap<String, Value>,
     pub vars: HashMap<(String, usize), Value>,
+    /// Answers every file name.
+    pub schema: Option<Arc<Schema>>,
+    pub current_occurrence: Option<String>,
+    /// Records by lower-case table occurrence name; record IDs are 1, 2...
+    pub tables: HashMap<String, Rows>,
+    /// GetSummary results keyed `summary|break` (lower-case field keys).
+    pub summaries: HashMap<String, Value>,
+    pub self_value: Option<Value>,
 }
 
 fn field_key(table: Option<&str>, name: &str) -> String {
@@ -103,6 +188,71 @@ impl Context for MemoryContext {
     fn set_variable(&mut self, name: &str, repetition: usize, value: Value) {
         self.vars.insert((name.to_lowercase(), repetition), value);
     }
+
+    fn schema(&mut self, _file: &str) -> Option<Arc<Schema>> {
+        self.schema.clone()
+    }
+
+    fn current_occurrence(&mut self) -> Option<String> {
+        self.current_occurrence.clone()
+    }
+
+    /// Related fields come from `fields` (one value per related record);
+    /// others from the current occurrence's `tables` rows.
+    fn nth_record(&mut self, table: Option<&str>, name: &str, repetition: usize, n: usize) -> R {
+        if table.is_some()
+            && let Some(v) = self.fields.get(&field_key(table, name))
+        {
+            return Ok(v
+                .get(n.wrapping_sub(1))
+                .cloned()
+                .unwrap_or_else(Value::empty));
+        }
+        let to = table
+            .map(str::to_string)
+            .or(self.current_occurrence.clone());
+        let rows = to.and_then(|t| self.tables.get(&t.to_lowercase()));
+        let col = rows.and_then(|r| r.columns.iter().position(|c| c.eq_ignore_ascii_case(name)));
+        match (rows, col) {
+            (Some(r), Some(c)) if repetition == 1 => Ok(r
+                .rows
+                .get(n.wrapping_sub(1))
+                .and_then(|row| row.get(c).cloned())
+                .unwrap_or_else(Value::empty)),
+            (Some(_), Some(_)) => Ok(Value::empty()),
+            _ => Err(EvalError::new(
+                code::FIELD_MISSING,
+                format!("field {name} is missing"),
+            )),
+        }
+    }
+
+    fn summary(&mut self, s: (Option<&str>, &str), b: (Option<&str>, &str)) -> R {
+        let key = format!("{}|{}", field_key(s.0, s.1), field_key(b.0, b.1));
+        self.summaries
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| EvalError::new(code::FIELD_MISSING, format!("no summary {key}")))
+    }
+
+    fn self_value(&mut self) -> R {
+        self.self_value.clone().ok_or_else(|| unavailable("Self"))
+    }
+
+    fn record_ids(&mut self, table: Option<&str>) -> Result<Vec<u64>, EvalError> {
+        let to = table
+            .map(str::to_string)
+            .or(self.current_occurrence.clone());
+        let rows = self.rows(&to.unwrap_or_default())?;
+        Ok((1..=rows.rows.len() as u64).collect())
+    }
+
+    fn rows(&mut self, table: &str) -> Result<Rows, EvalError> {
+        self.tables
+            .get(&table.to_lowercase())
+            .cloned()
+            .ok_or_else(|| EvalError::new(code::TABLE_MISSING, format!("table {table} is missing")))
+    }
 }
 
 pub struct Evaluator<'a> {
@@ -130,6 +280,15 @@ fn constant(name: &str) -> Option<Value> {
         "jsonarray" => 4,
         "jsonboolean" => 5,
         "jsonnull" => 6,
+        // GetRecordIDsFromFoundSet types (JSONString and JSONNumber above)
+        "valuenumber" => 0,
+        "valuenumberranges" => 3,
+        "jsonstringranges" => 4,
+        // ConvertToFileMakerPath / ConvertFromFileMakerPath formats
+        // ponytail: values 1-3 assumed from the documented order.
+        "posixpath" => 1,
+        "winpath" => 2,
+        "urlpath" => 3,
         _ => return None,
     };
     Some(Value::int(v))
@@ -293,7 +452,9 @@ fn date(d: Num) -> R {
 /// Text compares case-insensitively; anything else compares as numbers.
 pub fn compare(l: &Value, r: &Value) -> Ordering {
     match (l, r) {
-        (Value::Text(a), Value::Text(b)) => a.to_lowercase().cmp(&b.to_lowercase()),
+        (Value::Text(_) | Value::Json { .. }, Value::Text(_) | Value::Json { .. }) => {
+            l.to_text().to_lowercase().cmp(&r.to_text().to_lowercase())
+        }
         _ => l.num_or_zero().cmp(&r.num_or_zero()),
     }
 }

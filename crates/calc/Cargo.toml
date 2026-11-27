@@ -18,3 +18,21 @@ serde_json = { version = "1.0.154", features = ["arbitrary_precision"] }
 md-5 = "0.11.0"
 sha1 = "0.11.0"
 sha2 = "0.11.2"
+# CryptEncrypt / CryptDecrypt: Claris documents PBKDF2 key derivation and
+# AES-GCM; RustCrypto's audited, pure-Rust implementations (wasm-friendly).
+aes-gcm = "0.11.1"
+pbkdf2 = "0.13.0"
+# Random salt and nonce for CryptEncrypt. Already in the app's dependency
+# tree (through egui); wasm_js uses the browser's crypto.getRandomValues.
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+# CryptGenerateSignature / CryptVerifySignature: RSA PKCS #1 v1.5. rsa 0.10
+# is RustCrypto's pure-Rust RSA on constant-time crypto-bigint and shares the
+# digest 0.11 traits of the hashes above. No default features: no key
+# generation, no OS RNG.
+rsa = { version = "0.10.0", default-features = false, features = ["encoding", "pkcs1v15", "std"] }
+# Password-protected RSA keys in the traditional OpenSSL PEM form
+# (Proc-Type: 4,ENCRYPTED, DES-EDE3-CBC or AES-CBC), as Claris's
+# CryptGenerateSignature example uses. Small RustCrypto block-cipher crates.
+aes = "0.9.4"
+cbc = { version = "0.2.1", features = ["alloc"] }
+des = "0.9.0"

@@ -15,6 +15,13 @@ pub enum Value {
     Time(Num),
     Timestamp(Num),
     Container(Container),
+    /// Text that JSONParse or JSONSetElement produced. It behaves as text;
+    /// `state` is what JSONParsedState reports: -1 invalid, or the JSON type
+    /// (1 string ... 6 null).
+    Json {
+        text: String,
+        state: i64,
+    },
 }
 
 /// Minimal container: a file name and its bytes.
@@ -50,7 +57,7 @@ impl Value {
 
     pub fn is_empty(&self) -> bool {
         match self {
-            Value::Text(s) => s.is_empty(),
+            Value::Text(s) | Value::Json { text: s, .. } => s.is_empty(),
             Value::Container(c) => c.data.is_empty() && c.name.is_empty(),
             _ => false,
         }
@@ -59,7 +66,7 @@ impl Value {
     /// The value as FileMaker displays it in a calculation result.
     pub fn to_text(&self) -> String {
         match self {
-            Value::Text(s) => s.clone(),
+            Value::Text(s) | Value::Json { text: s, .. } => s.clone(),
             Value::Number(n) => num::format(n),
             Value::Date(d) => format_date(*d),
             Value::Time(t) => format_time(t),
@@ -75,7 +82,7 @@ impl Value {
             Value::Number(n) => Some(n.clone()),
             Value::Date(d) => Some(num::int(*d)),
             Value::Time(t) | Value::Timestamp(t) => Some(t.clone()),
-            Value::Text(s) => text_to_num(s),
+            Value::Text(s) | Value::Json { text: s, .. } => text_to_num(s),
             Value::Container(_) => None,
         }
     }
@@ -100,7 +107,9 @@ impl Value {
             Value::Number(n) => n
                 .with_scale_round(0, bigdecimal::RoundingMode::Floor)
                 .to_i64(),
-            Value::Text(s) => parse_date(s).or_else(|| parse_timestamp(s).map(|t| ts_date(&t))),
+            Value::Text(s) | Value::Json { text: s, .. } => {
+                parse_date(s).or_else(|| parse_timestamp(s).map(|t| ts_date(&t)))
+            }
             Value::Time(_) | Value::Container(_) => None,
         }
     }
@@ -111,7 +120,9 @@ impl Value {
             Value::Time(t) => Some(t.clone()),
             Value::Timestamp(t) => Some(ts_time(t)),
             Value::Number(n) => Some(n.clone()),
-            Value::Text(s) => parse_time(s).or_else(|| parse_timestamp(s).map(|t| ts_time(&t))),
+            Value::Text(s) | Value::Json { text: s, .. } => {
+                parse_time(s).or_else(|| parse_timestamp(s).map(|t| ts_time(&t)))
+            }
             Value::Date(_) | Value::Container(_) => None,
         }
     }

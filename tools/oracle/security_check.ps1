@@ -36,6 +36,15 @@ function Submit-FmLogin([string]$account, [string]$password) {
       }
     }
     if ($texts) { return "ALERT: " + ($texts -join ' ') }
+    # Another dialog (e.g. the change of password an account must make).
+    $other = Get-FmWindows | % { @($_) + @($_.FindAll($TS::Children, [System.Windows.Automation.Condition]::TrueCondition)) } |
+      ? { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Window' -and $_.Current.Name -and $_.Current.Name -notlike 'Ouvrir*' -and $_.Current.ClassName -notlike 'FMPRO*' -and $_.Current.Name -ne 'FileMaker Pro' } |
+      Select -First 1
+    if ($other -and $i -gt 4) {
+      [void](Save-FmWindowShot $other "login-dialog-$account")
+      $t = ($other.FindAll($TS::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ? { $_.Current.Name } | % { $_.Current.Name }) -join ' | '
+      return "DIALOG: $($other.Current.Name): $t"
+    }
     $main = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' -and $_.Current.Name }
     if ($main -and -not (Get-FmLoginDialog)) { return "OPEN" }
     Start-Sleep -Milliseconds 500
@@ -43,11 +52,27 @@ function Submit-FmLogin([string]$account, [string]$password) {
   "TIMEOUT"
 }
 
+# FileMaker is shared with other agents: wait until none is running (up to
+# $minutes), never stop one this script did not start.
+function Wait-FmFree([int]$minutes = 30) {
+  for ($i = 0; $i -lt $minutes * 12 -and (Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue); $i++) { Start-Sleep 5 }
+  if (Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue) { throw "FileMaker is busy" }
+}
+
+# Quits the FileMaker this script started (dialogs dismissed first).
+function Stop-MyFm {
+  if (-not $script:MyFm) { return }
+  foreach ($w in Get-FmWindows) { if ($w.Current.Name -eq 'FileMaker Pro') { try { Invoke-Fm "OK" } catch {} } }
+  $p = Get-Process -Id $script:MyFm.Id -ErrorAction SilentlyContinue
+  if ($p) { [void]$p.CloseMainWindow(); if (-not $p.WaitForExit(20000)) { $p.Kill() } }
+  $script:MyFm = $null
+}
+
 # Launches FileMaker on a file and waits for its first window (login dialog
 # or document); dismisses the trial dialog.
 function Start-FmLogin([string]$file) {
-  Stop-Fm
-  Start-Process "C:\Program Files\FileMaker\FileMaker Pro\FileMaker Pro.exe" -ArgumentList "`"$file`""
+  Wait-FmFree
+  $script:MyFm = Start-Process "C:\Program Files\FileMaker\FileMaker Pro\FileMaker Pro.exe" -ArgumentList "`"$file`"" -PassThru
   for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 500
     $ws = @(Get-FmWindows)
@@ -78,7 +103,7 @@ function Test-FmSecurity([string]$file, [string]$Logins, [string]$Xml) {
   foreach ($pair in $Logins.Split(',')) {
     $acc, $pw = $pair.Split(':', 2)
     # A fresh copy each time (FileMaker changes the files it opens).
-    for ($i = 0; $i -lt 30 -and (Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue); $i++) { Stop-Fm; Start-Sleep 1 }
+    Wait-FmFree
     Copy-Item $file $copy -Force
     $start = Start-FmLogin $copy
     $r = [ordered]@{ Login = $acc; Start = $start; Result = $null; Shot = $null }
@@ -90,7 +115,7 @@ function Test-FmSecurity([string]$file, [string]$Logins, [string]$Xml) {
         if ($Xml -and -not $exported -and $acc -eq 'Admin') { Export-FmXml $Xml; $exported = $true }
       }
     }
-    Stop-Fm
+    Stop-MyFm
     $out += [pscustomobject]$r
   }
   $out
@@ -104,7 +129,7 @@ function Test-FmSecurity([string]$file, [string]$Logins, [string]$Xml) {
 # and leaves the file for BaseCraft to read (passwords, digests, steps).
 #   Invoke-FmAccountSteps $env:TEMP\steps.fmp12 tools\oracle\account_steps.xml
 function Invoke-FmAccountSteps([string]$file, [string]$snippet) {
-  Stop-Fm
+  Wait-FmFree
   Start-Fm $file
   Add-FmScriptSteps (Resolve-Path $snippet) -Run
   $text = $null

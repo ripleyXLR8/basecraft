@@ -36,7 +36,7 @@ impl Host for Headless<'_> {
 pub fn list(d: &Doc) -> Res<Json> {
     let engine = d.engine()?;
     Ok(
-        json!({ "scripts": engine.scripts.iter().filter(|s| !s.is_folder() && !s.steps.is_empty()).map(|s| json!({
+        json!({ "scripts": engine.scripts.iter().filter(|s| !s.is_folder() && !s.steps.is_empty() && d.db.script_access(s.id) != fmp12::security::NO_ACCESS).map(|s| json!({
         "id": s.id,
         "name": s.name,
         "steps": s.steps.iter().map(|st| fmp12::scripts::step_name(st.id).unwrap_or("?")).collect::<Vec<_>>(),
@@ -69,6 +69,19 @@ pub fn run(
         }
     };
     let mut engine = d.take_engine()?;
+    let target = engine
+        .scripts
+        .iter()
+        .find(|s| s.name.eq_ignore_ascii_case(name) || name.parse() == Ok(s.id))
+        .map(|s| s.id);
+    if target.is_some_and(|id| d.db.script_access(id) == fmp12::security::NO_ACCESS) {
+        d.engine = Some(engine);
+        return Err(format!(
+            "{} (error {})",
+            engine::DENIED_MESSAGE,
+            engine::RECORD_DENIED
+        ));
+    }
     let window = Window::new(&d.db, layout_id);
     let mut host = Headless {
         db: &mut d.db,

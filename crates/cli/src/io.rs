@@ -29,6 +29,13 @@ fn format_of(explicit: Option<&str>, path: Option<&str>) -> Res<Format> {
 }
 
 pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
+    if !d.db.can_export() {
+        return Err(format!(
+            "{} (error {})",
+            engine::DENIED_MESSAGE,
+            engine::RECORD_DENIED
+        ));
+    }
     let t = d.table(table)?;
     let to = occurrence(d, table, t.id)?;
     let mut found = found_set(d, t, &o.query)?;
@@ -109,6 +116,13 @@ pub fn import_file(d: &mut Doc, table: &str, source: &str, o: &Opts) -> Res<Json
 }
 
 pub fn print_pdf(d: &Doc, layout: &str, o: &Opts) -> Res<Json> {
+    if !d.db.can_print() {
+        return Err(format!(
+            "{} (error {})",
+            engine::DENIED_MESSAGE,
+            engine::RECORD_DENIED
+        ));
+    }
     let l =
         d.db.layouts
             .iter()
@@ -158,7 +172,7 @@ mod tests {
             "First Name,Last Name\r\nAda,Lovelace\r\nAlan,Turing\r\n",
         )
         .unwrap();
-        let mut d = Doc::open(path).unwrap();
+        let mut d = Doc::open(path, None).unwrap();
         let args = |v: &[&str]| opts(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
         let r = run(
             &mut d,

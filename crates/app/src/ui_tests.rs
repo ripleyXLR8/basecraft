@@ -1142,3 +1142,120 @@ fn on_timer_script_runs() {
     let n: u32 = global(&h, "$$tick").unwrap().parse().unwrap();
     assert!(n >= 2, "{n}");
 }
+
+/// blank.fmp12 protected: Admin "test123" and "viewer" "test123" in a
+/// read-only set (that cannot see the file's layouts with `hide_layouts`).
+fn protected_blank(hide_layouts: bool) -> Vec<u8> {
+    use fmp12::security::{self, Security};
+    let f =
+        fmp12::File::from_bytes(include_bytes!("../../fmp12/assets/blank.fmp12").to_vec()).unwrap();
+    let s = Security::load(&f).unwrap();
+    let admin = s.login("Admin", "").unwrap();
+    let mut new = s.clone();
+    let mut set = new.sets[2].clone();
+    set.name = "Viewers".into();
+    set.set_flag(security::flag::EXPORT, false);
+    if hide_layouts {
+        for l in fmp12::layouts::layouts(&f).unwrap() {
+            set.set_item(security::LAYOUTS, Some(l.id), security::NO_ACCESS, 0);
+        }
+    }
+    let id = new.add_set(set);
+    new.add_account(security::Account::new("viewer", "test123", id));
+    for a in new.accounts.iter_mut().filter(|a| a.name == "Admin") {
+        a.set_password("test123");
+    }
+    security::save(&f, &admin, &new).unwrap()
+}
+
+/// A protected file asks for an account; a wrong password gets
+/// FileMaker's alert, the right one opens the file with that account's
+/// privileges: new records are refused with the privilege alert, and
+/// File › Manage › Security… is off.
+#[test]
+fn login_dialog_and_privileges() {
+    let mut app = App::default();
+    app.open("Sec".into(), protected_blank(false));
+    assert!(app.doc.is_none() && app.security.login.is_some());
+    let mut h = harness_for(app);
+    h.run_steps(2);
+    shot(&mut h, "s01_login");
+    h.get_by_label(security_ui::t("Account Name:")).focus();
+    h.get_by_label(security_ui::t("Account Name:"))
+        .type_text("viewer");
+    h.get_by_label(security_ui::t("Password:")).focus();
+    h.get_by_label(security_ui::t("Password:"))
+        .type_text("wrong");
+    h.run_steps(1);
+    h.get_by_label(security_ui::t("Sign In")).click();
+    h.run_steps(2);
+    assert!(h.state().doc.is_none());
+    h.get_by_label(security_ui::wrong_password());
+    shot(&mut h, "s02_wrong_password");
+    h.get_by_label(security_ui::t("Password:")).focus();
+    h.get_by_label(security_ui::t("Password:"))
+        .type_text("test123");
+    h.run_steps(1);
+    h.get_by_label(security_ui::t("Sign In")).click();
+    h.run_steps(3);
+    let d = h.state().doc.as_ref().expect("opened");
+    assert_eq!(d.db.session().unwrap().account_name(), "viewer");
+    assert!(!d.db.full_access());
+
+    h.state_mut().new_record();
+    h.run_steps(3);
+    h.get_by_label(security_ui::denied());
+    shot(&mut h, "s03_denied");
+    h.get_by_label("OK").click();
+    h.run_steps(2);
+
+    // No export privilege: File › Export Records… is refused.
+    h.get_by_label(tr("File")).click();
+    h.run_steps(2);
+    h.get_by_label(records::t("Export Records…")).click();
+    h.run_steps(3);
+    h.get_by_label(security_ui::denied());
+    h.get_by_label("OK").click();
+    h.run_steps(2);
+
+    h.get_by_label(tr("File")).click();
+    h.run_steps(2);
+    h.get_by_label(security_ui::t("Manage")).click();
+    h.run_steps(2);
+    assert!(
+        h.get_by_label(security_ui::t("Security…"))
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+/// Layouts the account has no access to are not listed; full access sees
+/// them, and Manage Security lists the accounts and sets.
+#[test]
+fn hidden_layouts_and_manage_security() {
+    let bytes = protected_blank(true);
+    let open_as = |account: &str| {
+        let mut app = App::default();
+        app.open("Sec".into(), bytes.clone());
+        let l = app.security.login.take().unwrap();
+        let db = Database::load_as(&l.file, account, "test123").unwrap();
+        app.opened(l.name, db, l.file);
+        app
+    };
+    assert!(open_as("viewer").doc.unwrap().layouts.is_empty());
+    let admin = open_as("admin");
+    assert!(!admin.doc.as_ref().unwrap().layouts.is_empty());
+    let mut h = harness_for(admin);
+    h.run_steps(2);
+    h.get_by_label(tr("File")).click();
+    h.run_steps(2);
+    h.get_by_label(security_ui::t("Manage")).click();
+    h.run_steps(2);
+    h.get_by_label(security_ui::t("Security…")).click();
+    h.run_steps(3);
+    shot(&mut h, "s04_manage_security");
+    h.get_by_label("viewer");
+    h.get_by_label(security_ui::t("Privilege Sets")).click();
+    h.run_steps(2);
+    h.get_by_label("Viewers");
+}

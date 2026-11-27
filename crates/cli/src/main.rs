@@ -23,10 +23,16 @@
 //! basecraft-cli run-script <file> <name|id> [--param P] [--layout L] [--answer N] [-o out | --in-place]
 //! basecraft-cli schema add-table|add-field|set-options|add-occurrence|add-relationship|set-relationship|
 //!                       add-valuelist|set-valuelist|rename|delete <file> …   (-o out | --in-place)
+//! basecraft-cli accounts [add|set|delete] <file> …   privileges [add|set|delete] <file> …
+//!                       (File › Manage › Security; see `security.rs`)
 //! basecraft-cli new-file <out.fmp12> [--table Name]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
 //! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
 //! ```
+//!
+//! A protected file (one that does not log in by itself) opens with
+//! `--account NAME --password PW` anywhere on the line (or the password in
+//! `BASECRAFT_PASSWORD`).
 
 use std::io::{BufRead, Write};
 
@@ -34,6 +40,7 @@ mod io;
 mod mcp;
 mod schema;
 mod scripting;
+mod security;
 
 use engine::{Database, Order, Request};
 use serde_json::{Value as Json, json};
@@ -49,9 +56,18 @@ struct Doc {
 }
 
 impl Doc {
-    fn open(path: &str) -> Res<Doc> {
+    fn open(path: &str, login: Option<&Login>) -> Res<Doc> {
         let file = fmp12::File::open(path).map_err(|e| format!("{path}: {e}"))?;
-        let db = Database::load(&file).map_err(|e| e.to_string())?;
+        let db = match login {
+            Some(l) => Database::load_as(&file, &l.account, &l.password),
+            None => Database::load(&file),
+        }
+        .map_err(|e| match e {
+            fmp12::Error::LoginRequired => {
+                format!("{path}: this file is protected: open it with --account NAME --password PW")
+            }
+            e => format!("{path}: {e}"),
+        })?;
         Ok(Doc {
             path: path.to_string(),
             file,
@@ -125,6 +141,43 @@ impl Doc {
     }
 }
 
+/// Account name and password to open a protected file with.
+pub struct Login {
+    pub account: String,
+    pub password: String,
+}
+
+/// Takes `--account A` and `--password P` out of `args`.
+fn take_login(args: &mut Vec<String>) -> Res<Option<Login>> {
+    let mut take = |name: &str| -> Res<Option<String>> {
+        let Some(i) = args.iter().position(|a| a == name) else {
+            return Ok(None);
+        };
+        if i + 1 >= args.len() {
+            return Err(format!("{name} needs a value"));
+        }
+        let v = args.remove(i + 1);
+        args.remove(i);
+        Ok(Some(v))
+    };
+    let account = take("--account")?;
+    let password = take("--password")?;
+    Ok(account.map(|account| Login {
+        account,
+        password: password
+            .or_else(|| std::env::var("BASECRAFT_PASSWORD").ok())
+            .unwrap_or_default(),
+    }))
+}
+
+/// An action the account's privileges refused (FileMaker's error code).
+fn denied(d: &mut Doc) -> Res<()> {
+    match d.db.last_denied() {
+        Some(code) => Err(format!("{} (error {code})", engine::DENIED_MESSAGE)),
+        None => Ok(()),
+    }
+}
+
 fn value_json(v: &calc::Value) -> Json {
     match v {
         calc::Value::Number(n) => {
@@ -165,14 +218,19 @@ fn info(d: &Doc) -> Json {
             "table": db.table(o.base_table).map(|t| t.name.clone()),
         })).collect::<Vec<_>>(),
         "relationships": db.relationships.iter().map(|r| schema::relationship_json(db, r)).collect::<Vec<_>>(),
-        "layouts": db.layouts.iter().filter(|l| l.table_occurrence != 0).map(|l| json!({
+        "layouts": db.layouts.iter().filter(|l| l.table_occurrence != 0 && db.layout_access(l.id) != fmp12::security::NO_ACCESS).map(|l| json!({
             "name": l.name,
             "occurrence": to_name((l.table_occurrence & 0xFFF) as u32),
         })).collect::<Vec<_>>(),
-        "accounts": db.accounts.iter().map(|a| json!({
+        "accounts": if db.full_access() { db.accounts.iter().map(|a| json!({
             "name": a.name,
             "privilege_set": db.privilege_sets.iter().find(|p| p.id == a.privilege_set).map(|p| p.name.clone()),
-        })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>() } else { Vec::new() },
+        "logged_in": db.session().map(|s| json!({
+            "account": s.account_name(),
+            "privilege_set": s.privileges().name,
+            "extended_privileges": s.extended(),
+        })),
         "value_lists": db.value_lists.iter().map(|v| schema::value_list_json(db, v)).collect::<Vec<_>>(),
     })
 }
@@ -271,12 +329,15 @@ fn set_fields(d: &mut Doc, table: u32, idx: usize, values: &[(String, String)]) 
         .map(|(f, v)| Ok((d.field_id(t, f)?, v.clone())))
         .collect::<Res<_>>()?;
     d.db.set_values(table, idx, &ids);
-    Ok(())
+    denied(d)
 }
 
 fn new_record(d: &mut Doc, table: &str, values: &[(String, String)]) -> Res<Json> {
     let tid = d.table(table)?.id;
-    let idx = d.db.new_record(tid).ok_or("no table")?;
+    let idx = match d.db.new_record(tid) {
+        Some(i) => i,
+        None => return denied(d).and(Err("no table".into())),
+    };
     set_fields(d, tid, idx, values)?;
     let errs = d.db.validate(tid, idx);
     let t = d.db.table(tid).ok_or("no table")?;
@@ -311,6 +372,7 @@ fn delete(d: &mut Doc, table: &str, id: u32) -> Res<Json> {
     let tid = d.table(table)?.id;
     let idx = d.index_of(tid, id)?;
     let gone = d.db.delete_record(tid, idx);
+    denied(d)?;
     let also: Vec<Json> = gone
         .iter()
         .skip(1)
@@ -452,6 +514,8 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
         "print-pdf" => io::print_pdf(d, &arg(0, "layout")?, o),
         "scripts" => scripting::list(d),
         "schema" => schema::run(d, &o.rest),
+        "accounts" => security::accounts(d, &o.rest),
+        "privileges" => security::privileges(d, &o.rest),
         "run-script" => scripting::run(
             d,
             &arg(0, "script name or id")?,
@@ -507,9 +571,10 @@ fn session(d: &mut Doc) -> Res<Json> {
 }
 
 fn main_inner() -> Res<Json> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let login = take_login(&mut args)?;
     if args.first().map(String::as_str) == Some("mcp") {
-        mcp::serve(args.get(1).map(String::as_str))?;
+        mcp::serve(args.get(1).map(String::as_str), login.as_ref())?;
         std::process::exit(0);
     }
     if args.first().map(String::as_str) == Some("new-file") {
@@ -521,9 +586,14 @@ fn main_inner() -> Res<Json> {
             .ok_or("usage: basecraft-cli new-file <out.fmp12> [--table Name]")?;
         return schema::new_file(out, o.table.as_deref().unwrap_or("Table"));
     }
-    // `schema <sub> <file> …`: the file comes after the sub-command.
+    // `schema <sub> <file> …`: the file comes after the sub-command (also
+    // `accounts` and `privileges`, whose list form is `accounts <file>`).
+    let sec_sub = |s: &str| matches!(s, "add" | "set" | "delete" | "list");
     let args = match args.as_slice() {
-        [s, sub, file, rest @ ..] if s == "schema" => {
+        [s, sub, file, rest @ ..]
+            if s == "schema"
+                || (matches!(s.as_str(), "accounts" | "privileges") && sec_sub(sub)) =>
+        {
             [vec![s.clone(), file.clone(), sub.clone()], rest.to_vec()].concat()
         }
         _ => args,
@@ -531,16 +601,20 @@ fn main_inner() -> Res<Json> {
     let [cmd, file, rest @ ..] = args.as_slice() else {
         return Err("usage: basecraft-cli <info|records|eval|new|set|delete|export|import|print-pdf|scripts|run-script|schema|session|mcp> <file.fmp12> [args] (see README)".into());
     };
-    let mut d = Doc::open(file)?;
+    let mut d = Doc::open(file, login.as_ref())?;
     if cmd == "session" {
         return session(&mut d);
     }
     let o = opts(rest)?;
     let result = run(&mut d, cmd, &o)?;
-    if matches!(
-        cmd.as_str(),
-        "new" | "set" | "delete" | "run-script" | "import" | "schema"
-    ) {
+    let security_write = matches!(cmd.as_str(), "accounts" | "privileges")
+        && o.rest.first().is_some_and(|s| s != "list");
+    if security_write
+        || matches!(
+            cmd.as_str(),
+            "new" | "set" | "delete" | "run-script" | "import" | "schema"
+        )
+    {
         let target = match (&o.out, o.in_place) {
             (Some(p), _) => p.clone(),
             (None, true) => file.clone(),

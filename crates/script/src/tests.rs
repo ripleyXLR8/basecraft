@@ -214,6 +214,7 @@ fn db(people: &[(&str, &str, &str)]) -> Database {
         layouts: vec![layout(1, "People"), layout(2, "People List")],
         themes: vec![],
         accounts: vec![],
+        access: Default::default(),
         privilege_sets: vec![],
         value_lists: vec![fmp12::valuelists::ValueList {
             id: 1,

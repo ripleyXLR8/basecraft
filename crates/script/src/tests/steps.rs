@@ -127,7 +127,7 @@ fn step_coverage() {
     // to List of Records and Configure Persistent Data (PROGRESS.md M5).
     assert_eq!(
         (runs.len(), stub.len(), host.len()),
-        (124, 70, 28),
+        (130, 70, 22),
         "{host:?}"
     );
 }

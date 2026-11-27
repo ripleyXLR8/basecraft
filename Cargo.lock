@@ -1435,8 +1435,10 @@ dependencies = [
 name = "fmp12"
 version = "0.1.0"
 dependencies = [
+ "hmac",
  "md-5",
  "roxmltree",
+ "sha1",
 ]
 
 [[package]]

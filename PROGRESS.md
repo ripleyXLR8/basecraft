@@ -156,4 +156,4 @@ ApplicationArchitecture.
 | `openmaker-cli`: info, records (find/omit/sort/limit), eval, new, set, delete, JSON output | ✅ |
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
 | Run scripts from the CLI | ⏳ (after M5) |
-| MCP server for AI agents | ⏳ |
+| MCP server for AI agents (`openmaker-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |

@@ -84,6 +84,29 @@ openmaker-cli session Contacts.fmp12
 
 Files written by the CLI open in FileMaker Pro 26.
 
+### MCP server (Claude and other AI agents)
+
+`openmaker-cli mcp [file.fmp12]` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio. It exposes these tools:
+
+* `open_file`, `describe_database`;
+* `find_records`, `evaluate`;
+* `create_record`, `update_record`, `delete_record`;
+* `save_file`.
+
+Changes stay in memory until `save_file` is called.
+
+```sh
+cargo install --path crates/cli                      # installs openmaker-cli
+claude mcp add openmaker -- openmaker-cli mcp         # Claude Code
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{ "mcpServers": { "openmaker": { "command": "openmaker-cli", "args": ["mcp"] } } }
+```
+
 ## Web version
 
 OpenMaker also runs in the browser (WebAssembly): **https://ripleyxlr8.github.io/openmaker/**.

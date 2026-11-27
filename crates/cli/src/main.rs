@@ -13,9 +13,12 @@
 //! openmaker-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! openmaker-cli delete  <file> <table> <id>                   (-o out | --in-place)
 //! openmaker-cli session <file>     JSON-lines commands on stdin, one reply per line
+//! openmaker-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
 //! ```
 
 use std::io::{BufRead, Write};
+
+mod mcp;
 
 use engine::{Database, Order, Request};
 use serde_json::{Value as Json, json};
@@ -408,6 +411,10 @@ fn session(d: &mut Doc) -> Res<Json> {
 
 fn main_inner() -> Res<Json> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("mcp") {
+        mcp::serve(args.get(1).map(String::as_str))?;
+        std::process::exit(0);
+    }
     let [cmd, file, rest @ ..] = args.as_slice() else {
         return Err("usage: openmaker-cli <info|records|eval|new|set|delete|session> <file.fmp12> [args] (see README)".into());
     };

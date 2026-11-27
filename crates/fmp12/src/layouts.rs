@@ -37,8 +37,55 @@ pub mod part {
     pub const BOTTOM_NAVIGATION: u64 = 13;
 }
 
+/// Autosizing anchors: the top four bits of the object options (field 3,
+/// `<Options>` in FileMaker's XML). Left and top are FileMaker's default.
+pub mod anchor {
+    pub const LEFT: u64 = 1 << 28;
+    pub const TOP: u64 = 1 << 29;
+    pub const RIGHT: u64 = 1 << 30;
+    pub const BOTTOM: u64 = 1 << 31;
+    pub const ALL: u64 = LEFT | TOP | RIGHT | BOTTOM;
+}
+
+/// Other object option bits, set one at a time in FileMaker's Layout mode
+/// (Arrange › Lock, Inspector › Sliding & visibility) and read back.
+pub const LOCKED: u64 = 0x2;
+/// Sliding up based on all objects above.
+pub const SLIDE_UP: u64 = 0x10;
+pub const SLIDE_LEFT: u64 = 0x20;
+pub const HIDE_WHEN_PRINTING: u64 = 0x200;
+
+/// Object type (style field 3) of a part kind, as FileMaker gives a new part.
+pub fn part_style_type(kind: u64) -> u32 {
+    match kind {
+        part::TITLE_HEADER => 31,
+        part::HEADER => 32,
+        part::LEADING_GRAND_SUMMARY => 33,
+        part::BODY => 34,
+        part::LEADING_SUB_SUMMARY => 101,
+        part::TRAILING_SUB_SUMMARY => 201,
+        part::TRAILING_GRAND_SUMMARY => 37,
+        part::FOOTER => 38,
+        part::TITLE_FOOTER => 39,
+        part::TOP_NAVIGATION => 40,
+        part::BOTTOM_NAVIGATION => 41,
+        _ => 30,
+    }
+}
+
+/// Position of a part kind in FileMaker's fixed part order (top to bottom).
+pub fn part_rank(kind: u64) -> usize {
+    [12, 8, 1, 2, 3, 4, 5, 6, 7, 9, 13]
+        .iter()
+        .position(|k| *k == kind)
+        .unwrap_or(5)
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Part {
+    /// Key of the part node `[4].[5].[L].[3].[P]`; 0 for a part not yet in
+    /// the file.
+    pub id: u32,
     /// See [`part`].
     pub kind: u64,
     pub top: f64,
@@ -55,6 +102,17 @@ fn break_field(b: &[u8]) -> Option<(u32, u32)> {
     let to = crate::graph::to_ref(b.get(3..7)?)?;
     let n = *b.get(7)? as usize;
     Some((to, crate::path_int(b.get(8..8 + n)?)?))
+}
+
+/// Inverse of [`break_field`].
+pub fn break_field_bytes(to: u32, field: u32) -> Vec<u8> {
+    let [hi, lo] = (to.saturating_sub(128) as u16).to_be_bytes();
+    let f = crate::save::path_elem(field);
+    let mut rest = vec![0, 3, 0xD0, hi, lo, f.len() as u8];
+    rest.extend(f);
+    let mut out = vec![8, rest.len() as u8];
+    out.extend(rest);
+    out
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -82,8 +140,8 @@ pub struct LayoutObject {
     pub name: String,
     /// Containing object (tab panel, portal, button bar…), if any.
     pub parent: Option<u64>,
-    /// Field 6 of containers: one of their children (the front tab panel of a
-    /// tab control; for other containers its meaning is not settled).
+    /// Field 6 of containers (repeated: their direct children, ascending):
+    /// the first child, the front tab panel of a tab control.
     pub active_child: Option<u64>,
     /// Field display: 0 edit box, 1 drop-down list, 2 pop-up menu, … (field 8.5).
     pub display: u64,
@@ -93,6 +151,8 @@ pub struct LayoutObject {
     pub label: Option<Vec<u8>>,
     /// Portal: (table occurrence as in XML, rows shown, first row).
     pub portal: Option<(u64, u32, u32)>,
+    /// Tab panel: offset and width of its tab (field 14, fields 2 and 3).
+    pub tab: Option<(u32, u32)>,
     /// Raw button message (field 16), see [`crate::scripts::button_action`].
     pub button_raw: Option<Vec<u8>>,
     /// Button action: a single step (Perform Script for a script button).
@@ -144,7 +204,7 @@ fn link_parents(objects: &mut [LayoutObject], top: &std::collections::BTreeSet<u
             stack.pop();
         }
         objects[i].parent = stack.last().map(|&p| objects[p].id);
-        if matches!(objects[i].kind, 9 | 11 | 12 | 18) {
+        if matches!(objects[i].kind, 8 | 9 | 11 | 12 | 18) {
             stack.push(i);
         }
     }
@@ -244,6 +304,9 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
                 p.uint(5).unwrap_or(1) as u32,
             )
         }),
+        tab: m
+            .msg(14)
+            .and_then(|t| Some((t.uint(2)? as u32, t.uint(3)? as u32))),
         button_raw: m.bytes(16).map(<[u8]>::to_vec),
         button: m.bytes(16).and_then(|b| {
             let params = u32::try_from(id)
@@ -316,9 +379,10 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             let header = Msg::parse(&r.header).unwrap_or_default();
             let parts = r
                 .parts
-                .values()
-                .filter_map(|b| Msg::parse(b))
-                .map(|m| Part {
+                .iter()
+                .filter_map(|(id, b)| Some((*id, Msg::parse(b)?)))
+                .map(|(id, m)| Part {
+                    id,
                     kind: m.uint(1).unwrap_or(0),
                     top: m.f64(4).unwrap_or(0.0),
                     height: m.f64(5).unwrap_or(0.0),
@@ -337,7 +401,24 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     _ => None,
                 })
                 .collect();
-            link_parents(&mut objects, &top);
+            // Containers list their direct children (repeated field 6);
+            // layouts without such lists fall back to the geometry.
+            let mut kids: BTreeMap<u64, u64> = BTreeMap::new();
+            for o in list.msgs(2) {
+                let id = o.uint(2).unwrap_or(0);
+                for v in o.all(6) {
+                    if let crate::pb::Value::Varint(c) = v {
+                        kids.insert(*c, id);
+                    }
+                }
+            }
+            if kids.is_empty() {
+                link_parents(&mut objects, &top);
+            } else {
+                for o in objects.iter_mut() {
+                    o.parent = kids.get(&o.id).copied();
+                }
+            }
             Layout {
                 id,
                 name: r.name,
@@ -395,15 +476,95 @@ fn field_msg(old: MsgBuf, o: &LayoutObject) -> MsgBuf {
     m
 }
 
+/// Replaces every occurrence of the repeated varint `field` with `values`,
+/// where the first one was (or before the first higher field).
+fn set_repeated(m: &mut MsgBuf, field: u32, values: &[u64]) {
+    let at =
+        m.0.iter()
+            .position(|(f, _)| *f >= field)
+            .unwrap_or(m.0.len());
+    m.remove(field);
+    for (i, v) in values.iter().enumerate() {
+        m.0.insert(at + i, (field, Field::Varint(*v)));
+    }
+}
+
+/// Tab control field 13.5 (the front panel, XML `default`): kept when it
+/// is still one of `panels`, else the first.
+fn set_front_panel(m: &mut MsgBuf, panels: &[u64]) {
+    let mut t = m.msg(13);
+    let cur = match t.get(5) {
+        Some(Field::Varint(v)) => Some(*v),
+        _ => None,
+    };
+    if cur.is_none_or(|c| !panels.contains(&c))
+        && let Some(first) = panels.first()
+    {
+        t.set(5, Field::Varint(*first));
+        m.set_msg(13, &t);
+    }
+}
+
+/// Portal message (object field 15): `{1: 0, 2 TO, 3 options, 5 first row,
+/// 6 rows (double), 7: 1}`, patched over `old`.
+fn portal_msg(old: MsgBuf, (to, rows, first): (u64, u32, u32)) -> MsgBuf {
+    let mut m = old;
+    if m.0.is_empty() {
+        // As in the templates' portals.
+        m.set(1, Field::Varint(0));
+        m.set(3, Field::Varint(273));
+    }
+    m.set(2, Field::Varint(to));
+    m.set(5, Field::Varint(first as u64));
+    m.set(6, Field::F64(rows as f64));
+    if m.get(7).is_none() {
+        m.set(7, Field::Varint(1));
+    }
+    m
+}
+
 /// Re-encodes one object message, patching only what differs between
-/// `old` and `new`; an unchanged object keeps its exact bytes.
-pub fn patch_object(raw: &[u8], old: &LayoutObject, new: &LayoutObject) -> Vec<u8> {
+/// `old` and `new`; an unchanged object keeps its exact bytes. `children`
+/// is the new list of direct children (field 6) when it changed.
+pub fn patch_object(
+    raw: &[u8],
+    old: &LayoutObject,
+    new: &LayoutObject,
+    children: Option<&[u64]>,
+) -> Vec<u8> {
     let Some(mut m) = MsgBuf::parse(raw) else {
         return raw.to_vec();
     };
     let mut changed = false;
     if new.kind != old.kind {
         m.set(1, Field::Varint(new.kind));
+        changed = true;
+    }
+    if new.options != old.options {
+        m.set(3, Field::Varint(new.options));
+        changed = true;
+    }
+    if let Some(c) = children {
+        set_repeated(&mut m, 6, c);
+        if new.kind == 11 {
+            set_front_panel(&mut m, c);
+        }
+        changed = true;
+    }
+    if new.tab != old.tab
+        && let Some((x, w)) = new.tab
+    {
+        let mut t = m.msg(14);
+        t.set(2, Field::Varint(x as u64));
+        t.set(3, Field::Varint(w as u64));
+        m.set_msg(14, &t);
+        changed = true;
+    }
+    if new.portal != old.portal
+        && let Some(p) = new.portal
+    {
+        let pm = portal_msg(m.msg(15), p);
+        m.set_msg(15, &pm);
         changed = true;
     }
     if new.bounds != old.bounds {
@@ -438,21 +599,88 @@ pub fn patch_object(raw: &[u8], old: &LayoutObject, new: &LayoutObject) -> Vec<u
 /// Message of a new object, built on `proto` (an existing object of the
 /// same kind and style type, whose unknown fields FileMaker expects) or
 /// from scratch.
-pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject) -> Vec<u8> {
+pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject, children: &[u64]) -> Vec<u8> {
+    let from_scratch = proto.is_none();
     let mut m = proto.and_then(MsgBuf::parse).unwrap_or_default();
     // Container links, portal setup and actions belong to the prototype.
     m.remove(6);
+    let proto_portal = m.msg(15);
     m.remove(15);
     m.set(1, Field::Varint(o.kind));
     m.set(2, Field::Varint(o.id));
+    if o.options != 0 {
+        m.set(3, Field::Varint(o.options));
+    } else if m.get(3).is_none() {
+        m.set(3, Field::Varint(anchor::LEFT | anchor::TOP));
+    }
     let b = bounds_msg(m.msg(4), &o.bounds);
     m.set_msg(4, &b);
-    m.set(5, Field::Bytes(o.style_raw.clone()));
+    if o.style_raw.is_empty() {
+        // Groups have no style.
+        m.remove(5);
+    } else {
+        m.set(5, Field::Bytes(o.style_raw.clone()));
+    }
+    set_repeated(&mut m, 6, children);
     if o.field.is_some() {
-        let f = field_msg(m.msg(8), o);
+        let mut f = m.msg(8);
+        if f.0.is_empty() {
+            // Options and display flags of the templates' edit boxes.
+            f = MsgBuf(vec![
+                (1, Field::Varint(1179872)),
+                (2, Field::Bytes(Vec::new())),
+                (3, Field::Varint(1)),
+                (4, Field::Varint(0)),
+                (5, Field::Varint(0)),
+                (7, Field::Varint(1)),
+                (8, Field::Varint(1)),
+            ]);
+        }
+        let f = field_msg(f, o);
         m.set_msg(8, &f);
     } else {
         m.remove(8);
+    }
+    if let Some(p) = o.portal {
+        let pm = portal_msg(proto_portal, p);
+        m.set_msg(15, &pm);
+    }
+    if from_scratch {
+        match o.kind {
+            // Text options, as on the templates' text objects.
+            2 => m.set_msg(7, &MsgBuf(vec![(1, Field::Varint(2))])),
+            // Tab control: {1 options, 2, 3 tab width, 5 front panel}.
+            11 => m.set_msg(
+                13,
+                &MsgBuf(vec![
+                    (1, Field::Varint(264)),
+                    (2, Field::Varint(0)),
+                    (3, Field::Varint(45)),
+                    (5, Field::Varint(children.first().copied().unwrap_or(0))),
+                ]),
+            ),
+            _ => {}
+        }
+    }
+    if o.kind == 11 {
+        // The front panel must be one of its own: FileMaker does not draw a
+        // tab control whose front panel is missing.
+        set_front_panel(&mut m, children);
+    }
+    if o.kind == 12 {
+        // Tab panel: {1: 1, 2 tab offset, 3 tab width, 4: 0}, filled in by
+        // the caller through `tab`.
+        if let Some((x, w)) = o.tab {
+            m.set_msg(
+                14,
+                &MsgBuf(vec![
+                    (1, Field::Varint(1)),
+                    (2, Field::Varint(x as u64)),
+                    (3, Field::Varint(w as u64)),
+                    (4, Field::Varint(0)),
+                ]),
+            );
+        }
     }
     match &o.button {
         Some(s) => {
@@ -466,8 +694,11 @@ pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject) -> Vec<u8> {
             b.set_msg(3, &st);
             if b.get(5).is_none() {
                 b.set(5, Field::Varint(16));
-                b.set(6, Field::Varint(0));
             }
+            // A text button: no icon (field 4 = icon type, as XML
+            // `IconData type`; 5 = its size).
+            b.remove(4);
+            b.set(6, Field::Varint(0));
             m.set_msg(16, &b);
         }
         None => m.remove(16),
@@ -511,13 +742,27 @@ pub fn encode_objects(
         }
     }
     let ids: Vec<(u32, Field)> = ids.into_iter().map(|i| (1, Field::Varint(i))).collect();
+    let children = |l: &Layout, id: u64| -> Vec<u64> {
+        let mut v: Vec<u64> = l
+            .objects
+            .iter()
+            .filter(|c| c.parent == Some(id))
+            .map(|c| c.id)
+            .collect();
+        v.sort_unstable();
+        v
+    };
     let objects: Vec<(u32, Field)> = new
         .objects
         .iter()
         .map(|o| {
+            let kids = children(new, o.id);
             let b = match (raws.get(&o.id), olds.get(&o.id)) {
-                (Some(raw), Some(old)) => patch_object(raw, old, o),
-                _ => new_object(proto(o).as_deref(), o),
+                (Some(raw), Some(prev)) => {
+                    let changed = (kids != children(old, o.id)).then_some(kids.as_slice());
+                    patch_object(raw, prev, o, changed)
+                }
+                _ => new_object(proto(o).as_deref(), o, &kids),
             };
             (2, Field::Bytes(b))
         })
@@ -559,6 +804,9 @@ pub fn patch_part(raw: &[u8], old: &Part, new: &Part) -> Vec<u8> {
     if old == new {
         return raw.to_vec();
     }
+    if old.kind != new.kind {
+        m.set(1, Field::Varint(new.kind));
+    }
     if old.top != new.top {
         m.set(4, Field::F64(new.top));
     }
@@ -568,5 +816,39 @@ pub fn patch_part(raw: &[u8], old: &Part, new: &Part) -> Vec<u8> {
     if old.style_raw != new.style_raw {
         m.set(10, Field::Bytes(new.style_raw.clone()));
     }
+    if old.break_field != new.break_field {
+        match new.break_field {
+            Some((to, f)) => {
+                m.set(6, Field::Bytes(break_field_bytes(to, f)));
+                m.0.sort_by_key(|(f, _)| *f);
+            }
+            None => m.remove(6),
+        }
+    }
+    m.encode()
+}
+
+/// Message of a new part, as FileMaker writes one: `{1 kind, 2: 0, 3: 0,
+/// 4 top, 5 height, [6 break field], 10 style, 11 alternate-row style}`.
+pub fn new_part(p: &Part) -> Vec<u8> {
+    let ty = part_style_type(p.kind);
+    let style = if p.style_raw.is_empty() {
+        MsgBuf(vec![(3, Field::Varint(ty as u64))]).encode()
+    } else {
+        p.style_raw.clone()
+    };
+    let alt = if p.kind == part::BODY { 35 } else { ty };
+    let mut m = MsgBuf(vec![
+        (1, Field::Varint(p.kind)),
+        (2, Field::Varint(0)),
+        (3, Field::Varint(0)),
+        (4, Field::F64(p.top)),
+        (5, Field::F64(p.height)),
+    ]);
+    if let Some((to, f)) = p.break_field {
+        m.0.push((6, Field::Bytes(break_field_bytes(to, f))));
+    }
+    m.0.push((10, Field::Bytes(style)));
+    m.set_msg(11, &MsgBuf(vec![(3, Field::Varint(alt as u64))]));
     m.encode()
 }

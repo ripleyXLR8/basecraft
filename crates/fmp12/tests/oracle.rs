@@ -451,11 +451,8 @@ fn layouts_match_xml() {
     eprintln!(
         "{layouts_checked} layouts, {objects_checked} layout objects checked against XML; parents {parents_ok}/{objects_checked}"
     );
-    // ponytail: nesting is inferred from geometry; a few ambiguous objects remain.
-    assert!(
-        parents_ok * 100 >= objects_checked * 97,
-        "nesting accuracy below 97%"
-    );
+    // Containers list their children (object field 6).
+    assert_eq!(parents_ok, objects_checked, "nesting");
 }
 
 struct FileNames {

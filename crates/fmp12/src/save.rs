@@ -471,9 +471,12 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             .iter()
             .filter(|e| ipath(e).as_deref() == Some(&[4, 5, l, 5, id as u32]))
             .filter_map(entry_kv)
-            .filter(|(k, _)| matches!(k, 7 | 13))
+            // Key 13: field formatting (data formats); key 7, the tab
+            // order position, is the object's own.
+            .filter(|(k, _)| *k == 13)
             .collect()
     };
+    let mut renamed = Vec::new();
     for new in layouts {
         let Some(old) = old_all.iter().find(|l| l.id == new.id) else {
             continue;
@@ -484,6 +487,18 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         let l = new.id;
         let lp = [4, 5, l];
         let own_blob = object_blob(&entries, l);
+        // Tab order [L].[21] as stored: key 128 + n → the n-th object.
+        let tab_path = [4, 5, l, 21];
+        let old_tabs: Vec<u64> = {
+            let mut v: Vec<(u32, u64)> = entries
+                .iter()
+                .filter(|e| ipath(e).as_deref() == Some(&tab_path))
+                .filter_map(entry_kv)
+                .filter_map(|(k, d)| Some((k, index_ref(&d)? as u64)))
+                .collect();
+            v.sort_unstable();
+            v.into_iter().map(|(_, id)| id).collect()
+        };
         // Prototype: same kind and type, preferably on this layout.
         let proto_of = |o: &LayoutObject| -> Option<(u32, u64, Vec<u8>)> {
             let ty = crate::theme::ObjectStyle::parse(&o.style_raw).object_type;
@@ -569,14 +584,16 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                 },
                 // Button label calculation and step parameters.
                 _ if p[5] == 3 => o.label == n.label,
+                // Tab label calculation of a panel.
+                _ if p[5] == 2 && n.kind == 12 => o.text == n.text,
                 _ if p[5] == 17 => {
                     o.button.as_ref().map(|s| s.id) == n.button.as_ref().map(|s| s.id)
                 }
                 _ => true,
             }
         });
-        let label_entries = |id: u64, tokens: &[u8]| -> Vec<Entry> {
-            let p = [4, 5, l, 5, id as u32, 3];
+        let calc_entries = |id: u64, sub: u32, tokens: &[u8]| -> Vec<Entry> {
+            let p = [4, 5, l, 5, id as u32, sub];
             vec![
                 marker(&p),
                 kv_entry(&p, 4, vec![1, 0]),
@@ -590,6 +607,9 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                 && let Some(t) = &n.text
             {
                 add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+                if n.kind == 12 {
+                    add.extend(calc_entries(n.id, 2, &text_literal_tokens(t)));
+                }
             }
             if o.name != n.name {
                 add.push(kv_entry(&node(n.id), 16, encode_text(&n.name)));
@@ -597,13 +617,16 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             if o.label != n.label
                 && let Some(t) = &n.label
             {
-                add.extend(label_entries(n.id, t));
+                add.extend(calc_entries(n.id, 3, t));
             }
         }
         for n in &added {
             add.push(marker(&node(n.id)));
             if let Some(t) = &n.text {
                 add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+                if n.kind == 12 {
+                    add.extend(calc_entries(n.id, 2, &text_literal_tokens(t)));
+                }
             }
             for (k, v) in protos_of
                 .get(&n.id)
@@ -617,7 +640,7 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             add.push(kv_entry(&node(n.id), 216, fresh_uuid(seed)));
             add.push(kv_entry(&node(n.id), 217, fresh_uuid(seed)));
             if let Some(t) = &n.label {
-                add.extend(label_entries(n.id, t));
+                add.extend(calc_entries(n.id, 3, t));
             }
         }
         // Last object id: `[4].[5].[L].[5]` key 0.
@@ -698,31 +721,128 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             let mut key = u(b.top).to_vec();
             key.extend(u(b.left));
             key.extend(((n.id.saturating_sub(1)) as u16).to_be_bytes());
-            let r = [vec![1], path_elem(n.id as u32)].concat();
-            let mut data = vec![0, r.len() as u8];
-            data.extend(r);
-            data.extend([0, 0, 0, 0, 1]);
             add.push(Entry {
                 path: spelled(&[4, 5, l, 10]),
-                item: write::encode(&Item::KvLong { key, data }),
+                item: write::encode(&Item::KvLong {
+                    key,
+                    data: object_ref(n.id),
+                }),
             });
         }
 
-        // Parts, in key order as read.
-        if old.parts != new.parts && old.parts.len() == new.parts.len() {
-            let mut i = 0;
-            for e in entries.iter_mut() {
-                if let (Some([4, 5, x, 3, _]), Some((2, d))) = (ipath(e).as_deref(), entry_kv(e))
-                    && *x == l
-                {
-                    if let (Some(o), Some(n)) = (old.parts.get(i), new.parts.get(i)) {
-                        let out = ly::patch_part(&d, o, n);
-                        if out != d {
-                            e.item = write::encode(&Item::Kv { key: 2, data: out });
-                        }
-                    }
-                    i += 1;
+        // Tab order: the object's node key 7 = `00 n`. New fields go to the end.
+        let mut tabs: Vec<u64> = old_tabs
+            .iter()
+            .copied()
+            .filter(|id| news.contains_key(id))
+            .collect();
+        tabs.extend(added.iter().filter(|n| n.kind == 1).map(|n| n.id));
+        if tabs != old_tabs {
+            entries.retain(|e| {
+                let p = ipath(e);
+                let in_tabs = p.as_deref() == Some(&tab_path) && e.item != [0x80];
+                let tab_key = p.as_ref().is_some_and(|p| {
+                    p.len() == 5 && p[..4] == [4, 5, l, 5] && old_tabs.contains(&(p[4] as u64))
+                }) && entry_kv(e).is_some_and(|x| x.0 == 7);
+                !in_tabs && !tab_key
+            });
+            if !entries
+                .iter()
+                .any(|e| ipath(e).as_deref() == Some(&tab_path) && e.item == [0x80])
+            {
+                add.push(marker(&tab_path));
+            }
+            for (i, id) in tabs.iter().enumerate() {
+                add.push(kv_entry(&tab_path, 129 + i as u32, object_ref(*id)));
+                add.push(kv_entry(
+                    &node(*id),
+                    7,
+                    (i as u16 + 1).to_be_bytes().to_vec(),
+                ));
+            }
+        }
+
+        // Parts: patched in place, or the whole `[L].[3]` rewritten when
+        // parts were added, removed or reordered. Each part lists the
+        // top-level objects whose top lies in it (key 7).
+        let lists: Vec<Vec<u8>> = new
+            .parts
+            .iter()
+            .map(|p| {
+                let mut ids: Vec<u64> = new
+                    .objects
+                    .iter()
+                    .filter(|o| o.parent.is_none())
+                    .filter(|o| o.bounds.top >= p.top && o.bounds.top < p.top + p.height)
+                    .map(|o| o.id)
+                    .collect();
+                ids.sort_unstable();
+                let mut v = (ids.len() as u32).to_be_bytes().to_vec();
+                for id in ids {
+                    let r = [vec![1], path_elem(id as u32)].concat();
+                    v.push(r.len() as u8);
+                    v.extend(r);
                 }
+                v
+            })
+            .collect();
+        let same_parts = old.parts.len() == new.parts.len()
+            && old
+                .parts
+                .iter()
+                .zip(&new.parts)
+                .all(|(a, b)| (a.id, a.kind) == (b.id, b.kind));
+        let raw_parts: BTreeMap<u32, Vec<u8>> = entries
+            .iter()
+            .filter_map(|e| match (ipath(e).as_deref(), entry_kv(e)) {
+                (Some([4, 5, x, 3, p]), Some((2, d))) if *x == l => Some((*p, d)),
+                _ => None,
+            })
+            .collect();
+        let part_msg = |n: &crate::layouts::Part| -> Vec<u8> {
+            match (
+                raw_parts.get(&n.id),
+                old.parts
+                    .iter()
+                    .find(|o| (o.id, o.kind) == (n.id, n.kind) && n.id != 0),
+            ) {
+                (Some(raw), Some(o)) => ly::patch_part(raw, o, n),
+                _ => ly::new_part(n),
+            }
+        };
+        if same_parts {
+            for e in entries.iter_mut() {
+                let ip = ipath(e);
+                let (Some([4, 5, x, 3, p]), Some((k, d))) = (ip.as_deref(), entry_kv(e)) else {
+                    continue;
+                };
+                let Some(i) = new.parts.iter().position(|n| n.id == *p) else {
+                    continue;
+                };
+                if *x != l {
+                    continue;
+                }
+                let out = match k {
+                    2 => part_msg(&new.parts[i]),
+                    7 => lists[i].clone(),
+                    _ => continue,
+                };
+                if out != d {
+                    e.item = write::encode(&Item::Kv { key: k, data: out });
+                }
+            }
+        } else {
+            entries.retain(|e| {
+                !matches!(ipath(e).as_deref(), Some([4, 5, x, 3, ..]) if *x == l)
+                    || e.path.len() == 4 && e.item == [0x80]
+            });
+            let pp = [4, 5, l, 3];
+            add.push(kv_entry(&pp, 0, len_int(new.parts.len() as u64)));
+            for (i, n) in new.parts.iter().enumerate() {
+                let p = [4, 5, l, 3, i as u32 + 1];
+                add.push(marker(&p));
+                add.push(kv_entry(&p, 2, part_msg(n)));
+                add.push(kv_entry(&p, 7, lists[i].clone()));
             }
         }
 
@@ -750,20 +870,34 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                     data: m.encode(),
                 });
             }
-            let named = p.as_deref() == Some(&lp) || p.as_deref() == Some(&[4, 1, 7, l]);
-            if named && key == 16 && old.name != new.name {
-                // ponytail: the name index [4].[1].[1] (collation keys) is
-                // left as is; FileMaker's collation is not implemented.
-                e.item = write::encode(&Item::Kv {
-                    key: 16,
-                    data: encode_text(&new.name),
-                });
-            }
+        }
+        if old.name != new.name {
+            renamed.push((l, new.name.clone()));
         }
         entries.extend(add);
     }
     write::sort(&mut entries);
-    Ok(write::build(&file.bytes()[..crate::SECTOR], &entries))
+    let out = write::build(&file.bytes()[..crate::SECTOR], &entries);
+    if renamed.is_empty() {
+        return Ok(out);
+    }
+    // Names: both name keys and the collation-keyed name index.
+    let mut ed = crate::schema_edit::Editor::open(&File::from_bytes(out)?)?;
+    for (l, name) in renamed {
+        // An empty name is refused by the editor and kept as it was.
+        let _ = ed.rename_layout(l, &name);
+    }
+    Ok(ed.finish())
+}
+
+/// Reference to a layout object in its layout's indexes: `00 len 01 id`,
+/// then `00 00 00 00 01` (spatial index `[L].[10]`, tab order `[L].[21]`).
+fn object_ref(id: u64) -> Vec<u8> {
+    let r = [vec![1], path_elem(id as u32)].concat();
+    let mut data = vec![0, r.len() as u8];
+    data.extend(r);
+    data.extend([0, 0, 0, 0, 1]);
+    data
 }
 
 #[cfg(test)]

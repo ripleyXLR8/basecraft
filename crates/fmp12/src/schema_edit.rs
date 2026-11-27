@@ -1072,6 +1072,13 @@ impl Editor {
                     None => e.item.clone(),
                 },
                 (true, Some((16 | 216 | 241 | 252 | 31873..=31875, _))) => continue,
+                // A part's object list (count, then references): empty.
+                (false, Some((7, _))) if first == Some(3) && rest.len() == 2 => {
+                    write::encode(&Item::Kv {
+                        key: 7,
+                        data: vec![0; 4],
+                    })
+                }
                 _ => e.item.clone(),
             };
             add.push(Entry { path, item });
@@ -1114,6 +1121,92 @@ impl Editor {
         self.set(cn, 16, encode_text(name));
         self.cat_add(&lc, l, name);
         Ok(Some(l))
+    }
+
+    /// Layouts › New Layout: a blank layout (header, body and footer of the
+    /// file's first plain layout, no objects) on occurrence `to`.
+    pub fn new_layout(&mut self, to: u32, name: &str) -> Res<u32> {
+        Self::check_name(name)?;
+        if !self.names().occurrences.iter().any(|o| o.id == to) {
+            return Err(EditError::NotFound(format!("table occurrence {to}")));
+        }
+        self.add_layout(to, name)?
+            .ok_or_else(|| EditError::Invalid("no layout to model a new layout on".into()))
+    }
+
+    fn next_layout_id(&self) -> u32 {
+        let lc = Self::layouts_cat();
+        self.cat_last(&lc)
+            .max(self.layout_ids().iter().copied().max().unwrap_or(0))
+            + 1
+    }
+
+    /// Layouts › Duplicate Layout: a copy of layout `l` (objects, parts,
+    /// indexes) named `name`, with fresh UUIDs, at the end of the list.
+    pub fn duplicate_layout(&mut self, l: u32, name: &str) -> Res<u32> {
+        Self::check_name(name)?;
+        if !self.layout_ids().contains(&l) {
+            return Err(EditError::NotFound(format!("layout {l}")));
+        }
+        let n = self.next_layout_id();
+        let (mut copied, mut uuids) = (Vec::new(), Vec::new());
+        for (from, to) in [
+            (sp(&[4, 5, l]), sp(&[4, 5, n])),
+            (sp(&[4, 1, 7, l]), sp(&[4, 1, 7, n])),
+        ] {
+            for e in self.entries.iter().filter(|e| e.path.starts_with(&from)) {
+                let path = [to.clone(), e.path[from.len()..].to_vec()].concat();
+                let top = path.len() == to.len();
+                let item = match entry_kv(e) {
+                    // Every node with a UUID (the layout, its objects) gets new ones.
+                    Some((k @ (216 | 217), _)) => {
+                        uuids.push((path, k));
+                        continue;
+                    }
+                    Some((16 | 252 | 31873..=31875, _)) if top => continue,
+                    Some((241, _)) if top && to[1] == [5] => continue,
+                    Some((241, _)) if top => kv(path.clone(), 241, vec![0; 8]).item,
+                    _ => e.item.clone(),
+                };
+                copied.push(Entry { path, item });
+            }
+        }
+        self.entries.extend(copied);
+        for (path, k) in uuids {
+            let u = self.uuid();
+            self.entries.push(kv(path, k, u));
+        }
+        let np = sp(&[4, 5, n]);
+        self.set(np.clone(), 16, encode_text(name));
+        self.set(np, 252, len_int(1));
+        self.set(sp(&[4, 1, 7, n]), 16, encode_text(name));
+        self.cat_add(&Self::layouts_cat(), n, name);
+        Ok(n)
+    }
+
+    /// Renames layout `l` (Layout Setup): both name keys and the name index.
+    pub fn rename_layout(&mut self, l: u32, name: &str) -> Res<()> {
+        Self::check_name(name)?;
+        if !self.layout_ids().contains(&l) {
+            return Err(EditError::NotFound(format!("layout {l}")));
+        }
+        let lp = sp(&[4, 5, l]);
+        self.set(lp.clone(), 16, encode_text(name));
+        self.bump(lp);
+        self.set(sp(&[4, 1, 7, l]), 16, encode_text(name));
+        self.cat_rename(&Self::layouts_cat(), l, name);
+        Ok(())
+    }
+
+    /// Layouts › Delete Layout: the layout, its objects and catalog entries.
+    pub fn delete_layout(&mut self, l: u32) -> Res<()> {
+        if !self.layout_ids().contains(&l) {
+            return Err(EditError::NotFound(format!("layout {l}")));
+        }
+        self.remove_tree(&sp(&[4, 5, l]));
+        self.remove_tree(&sp(&[4, 1, 7, l]));
+        self.cat_remove(&Self::layouts_cat(), l);
+        Ok(())
     }
 
     fn layout_ids(&self) -> BTreeSet<u32> {

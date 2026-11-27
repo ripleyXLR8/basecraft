@@ -115,7 +115,8 @@ ApplicationArchitecture.
 | Find mode (one request), sort by one field ascending/descending | ✅ |
 | Calculated fields displayed live | ✅ |
 | Theme styles decoded (`fmp12::theme`: colours, borders, fonts, padding, alignment) | ✅ |
-| Theme styles applied when drawing layouts | ⏳ |
+| Theme styles applied when drawing layouts: backgrounds, borders, radius, text colour, size, alignment, padding | ✅ |
+| Fonts (family, weight), icons, button labels, states (hover, focus, pressed) | ⏳ |
 | Form, List (body repeated per record) and Table views | ✅ |
 | Portals, tab controls, popups, value lists | ⏳ |
 | Layout mode, Preview mode | ⏳ |

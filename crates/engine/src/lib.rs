@@ -69,6 +69,7 @@ pub struct Database {
     pub occurrences: Vec<fmp12::graph::TableOccurrence>,
     pub relationships: Vec<fmp12::graph::Relationship>,
     pub layouts: Vec<fmp12::layouts::Layout>,
+    pub themes: Vec<fmp12::theme::Theme>,
 }
 
 /// Names for decompiling calculations into `calc`-parsable source.
@@ -159,6 +160,7 @@ impl Database {
             tables,
             relationships: fmp12::graph::relationships(file)?,
             layouts: fmp12::layouts::layouts(file)?,
+            themes: fmp12::theme::themes(file)?,
             occurrences,
         })
     }

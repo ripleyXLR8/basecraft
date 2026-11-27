@@ -12,7 +12,9 @@ use engine::{Database, Order, Request};
 use fmp12::layouts::Layout;
 
 mod i18n;
+mod look;
 use i18n::tr;
+use look::Look;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -395,6 +397,26 @@ impl App {
         let Some(layout) = doc.layouts.get(self.layout).cloned() else {
             return;
         };
+        let theme = doc
+            .db
+            .themes
+            .iter()
+            .find(|x| x.number == layout.theme)
+            .cloned();
+        let looks: Vec<Look> = layout
+            .objects
+            .iter()
+            .map(|o| {
+                look::resolve(
+                    theme.as_ref(),
+                    &fmp12::theme::ObjectStyle::parse(&o.style_raw),
+                )
+            })
+            .collect();
+        let layout_look = look::resolve(
+            theme.as_ref(),
+            &fmp12::theme::ObjectStyle::of_layout(&layout),
+        );
         if view == View::Table && mode == Mode::Browse {
             table_view(ui, doc, t, &layout, &found, &mut self.dirty);
             return;
@@ -423,12 +445,33 @@ impl App {
         let bg = if mode == Mode::Find {
             Color32::from_rgb(235, 240, 250)
         } else {
-            Color32::from_gray(245)
+            layout_look.background.unwrap_or(Color32::WHITE)
         };
         painter.rect_filled(resp.rect, 0.0, bg);
         // Parts below the body move down by the extra list rows.
         let shift = |y: f64| if y >= btop + bh { y + extra } else { y };
         for p in &layout.parts {
+            if mode == Mode::Browse {
+                let pl = look::resolve(
+                    theme.as_ref(),
+                    &fmp12::theme::ObjectStyle::parse(&p.style_raw),
+                );
+                if let Some(c) = pl.background {
+                    let (top, bottom) = if p.kind == 4 {
+                        (p.top, p.top + p.height + extra)
+                    } else {
+                        (shift(p.top), shift(p.top + p.height))
+                    };
+                    painter.rect_filled(
+                        Rect::from_min_max(
+                            origin + Vec2::new(0.0, top as f32),
+                            origin + Vec2::new(layout.width as f32, bottom as f32),
+                        ),
+                        0.0,
+                        c,
+                    );
+                }
+            }
             let y = origin.y + shift(p.top + p.height) as f32;
             painter.line_segment(
                 [
@@ -438,12 +481,8 @@ impl App {
                 Stroke::new(0.5, Color32::from_gray(210)),
             );
         }
-        let ctx = DrawCtx {
-            table: t,
-            mode,
-            font: egui::FontId::proportional(13.0),
-        };
-        for o in &layout.objects {
+        let ctx = DrawCtx { table: t, mode };
+        for (o, lk) in layout.objects.iter().zip(&looks) {
             let in_body = o.bounds.top >= btop && o.bounds.top < btop + bh;
             let instances: Vec<(f64, Option<usize>)> = if in_body {
                 rows.iter()
@@ -464,6 +503,7 @@ impl App {
                     doc,
                     &ctx,
                     o,
+                    lk,
                     r,
                     rec,
                     &mut self.request,
@@ -477,7 +517,6 @@ impl App {
 struct DrawCtx {
     table: u32,
     mode: Mode,
-    font: egui::FontId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -487,82 +526,59 @@ fn draw_object(
     doc: &mut Doc,
     c: &DrawCtx,
     o: &fmp12::layouts::LayoutObject,
+    lk: &Look,
     r: Rect,
     record: Option<usize>,
     request: &mut BTreeMap<u32, String>,
     dirty: &mut bool,
 ) {
     let t = c.table;
-    let frame = Stroke::new(1.0, Color32::from_gray(200));
-    match o.kind {
-        1 => {
-            let Some((to, field, _)) = o.field else {
-                return;
-            };
-            let ft = doc.db.table_of((to & 0xFFF) as u32).map(|x| x.id);
-            // ponytail: related fields (other base tables) are not shown yet.
-            if ft != Some(t) {
-                painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
-                return;
-            }
-            let field = field as u32;
-            let is_calc = doc
-                .db
-                .table(t)
-                .and_then(|x| x.field(field))
-                .is_some_and(|f| f.calc.is_some());
-            match (c.mode, record) {
-                (Mode::Find, _) => {
-                    let s = request.entry(field).or_default();
-                    ui.put(r, egui::TextEdit::singleline(s).font(c.font.clone()));
-                }
-                (Mode::Browse, None) => {
-                    painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
-                }
-                (Mode::Browse, Some(rec)) if is_calc => {
-                    let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
-                    painter.rect_stroke(r, 2.0, frame, StrokeKind::Inside);
-                    painter.text(
-                        r.left_center() + Vec2::new(4.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        v,
-                        c.font.clone(),
-                        Color32::BLACK,
-                    );
-                }
-                (Mode::Browse, Some(rec)) => {
-                    if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
-                        let s = tbl.records[rec].values.entry(field).or_default();
-                        if ui
-                            .put(r, egui::TextEdit::singleline(s).font(c.font.clone()))
-                            .changed()
-                        {
-                            *dirty = true;
-                        }
-                    }
-                }
-            }
+    lk.paint_box(painter, r);
+    if o.kind != 1 {
+        if let Some(txt) = &o.text {
+            lk.paint_text(painter, r, txt);
         }
-        2 => {
-            if let Some(txt) = &o.text {
-                painter.text(
-                    r.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    txt,
-                    c.font.clone(),
-                    Color32::from_gray(90),
-                );
-            }
-        }
-        10 | 18 => {
+        return;
+    }
+    let Some((to, field, _)) = o.field else {
+        return;
+    };
+    let ft = doc.db.table_of((to & 0xFFF) as u32).map(|x| x.id);
+    // ponytail: related fields (other base tables) are not shown yet.
+    if ft != Some(t) {
+        return;
+    }
+    let field = field as u32;
+    let is_calc = doc
+        .db
+        .table(t)
+        .and_then(|x| x.field(field))
+        .is_some_and(|f| f.calc.is_some());
+    let inner = lk.content_rect(r);
+    match (c.mode, record) {
+        (Mode::Find, _) => {
             painter.rect_stroke(
                 r,
-                4.0,
-                Stroke::new(1.0, Color32::from_gray(160)),
+                0.0,
+                Stroke::new(1.0, Color32::from_gray(150)),
                 StrokeKind::Inside,
             );
+            let s = request.entry(field).or_default();
+            ui.put(inner, lk.edit(s));
         }
-        _ => {}
+        (Mode::Browse, None) => {}
+        (Mode::Browse, Some(rec)) if is_calc => {
+            let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
+            lk.paint_text(painter, r, &v);
+        }
+        (Mode::Browse, Some(rec)) => {
+            if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
+                let s = tbl.records[rec].values.entry(field).or_default();
+                if ui.put(inner, lk.edit(s)).changed() {
+                    *dirty = true;
+                }
+            }
+        }
     }
 }
 

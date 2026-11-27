@@ -330,6 +330,434 @@ fn table_counter(file: &File, table: u32) -> Result<u32, Error> {
     Ok(out)
 }
 
+/// Keys (key, value) copied from a prototype object node.
+type NodeKeys = Vec<(u32, Vec<u8>)>;
+
+/// Integer path of an entry, `None` if an element is not an integer.
+fn ipath(e: &Entry) -> Option<Vec<u32>> {
+    e.path.iter().map(|p| crate::path_int(p)).collect()
+}
+
+/// (key, value) of a Kv entry; `00 k` (key k, empty value) included.
+fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
+    match crate::chunk::parse(&e.item).ok()?.first()? {
+        crate::Chunk::Kv { key, data } => Some((*key, data.to_vec())),
+        crate::Chunk::Data([k]) if e.item.first() == Some(&0) => Some((*k as u32, Vec::new())),
+        _ => None,
+    }
+}
+
+fn spelled(p: &[u32]) -> Vec<Vec<u8>> {
+    p.iter().map(|x| path_elem(*x)).collect()
+}
+
+/// A Kv entry, `00 k` for an empty value as FileMaker writes it.
+fn kv_entry(path: &[u32], key: u32, data: Vec<u8>) -> Entry {
+    if data.is_empty() && key < 0x100 {
+        return Entry {
+            path: spelled(path),
+            item: vec![0x00, key as u8],
+        };
+    }
+    kv(spelled(path), key, data)
+}
+
+fn marker(path: &[u32]) -> Entry {
+    Entry {
+        path: spelled(path),
+        item: vec![0x80],
+    }
+}
+
+/// Calculation token stream of a text literal: `13 len text 00` (length in
+/// UTF-16 units, text XOR-ed SCSU), as in button labels.
+pub fn text_literal_tokens(s: &str) -> Vec<u8> {
+    let units = s.encode_utf16().count().min(255) as u8;
+    let mut out = vec![0x13, units];
+    out.extend(encode_text(s));
+    out.push(0);
+    out
+}
+
+/// A random version-4 UUID for a new object (keys 216/217).
+fn fresh_uuid(seed: u64) -> Vec<u8> {
+    use std::hash::{BuildHasher, Hasher};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let state = std::collections::hash_map::RandomState::new();
+    let mut out = Vec::new();
+    for half in 0..2u64 {
+        let mut h = state.build_hasher();
+        h.write_u64(seed);
+        h.write_u64(n);
+        h.write_u64(half);
+        out.extend_from_slice(&h.finish().to_be_bytes());
+    }
+    out[6] = (out[6] & 0x0F) | 0x40;
+    out[8] = (out[8] & 0x3F) | 0x80;
+    out
+}
+
+/// Object id referenced by a layout index value `00 len 01 id …`
+/// (spatial index `[L].[10]`, tab order `[L].[21]`).
+fn index_ref(v: &[u8]) -> Option<u32> {
+    let n = *v.get(1)? as usize;
+    match v.get(2..2 + n)? {
+        [1, rest @ ..] => crate::path_int(rest),
+        _ => None,
+    }
+}
+
+/// The object list blob of layout `l`: key 7 of `[4].[5].[l]`, or keys 1…n
+/// of `[4].[5].[l].[7]`.
+fn object_blob(entries: &[Entry], l: u32) -> Vec<u8> {
+    let mut parts: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    for e in entries {
+        match (ipath(e).as_deref(), entry_kv(e)) {
+            (Some([4, 5, x]), Some((7, d))) if *x == l => {
+                parts.insert(0, d);
+            }
+            (Some([4, 5, x, 7]), Some((k, d))) if *x == l && k >= 1 => {
+                parts.insert(k, d);
+            }
+            _ => {}
+        }
+    }
+    parts.into_values().flatten().collect()
+}
+
+/// Kinds that FileMaker lists in a layout's spatial index `[L].[10]`
+/// (fields, buttons, tab controls, button bars; not text or shapes).
+fn indexed_kind(kind: u64) -> bool {
+    matches!(kind, 1 | 10 | 11 | 18)
+}
+
+/// Rebuilds `file` with edited layouts. Each layout of `layouts` that
+/// differs from the file's is re-encoded: object list (patched messages,
+/// new objects built on a prototype of the same kind, deleted ones
+/// removed), per-object nodes `[4].[5].[L].[5].[obj]` (text, name, button
+/// label, UUIDs), parts, name, table occurrence, width, the last object
+/// id, and the object indexes `[L].[10]` and `[L].[21]`. Layouts not in
+/// the file are skipped (writing new layouts is not supported yet).
+pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<Vec<u8>, Error> {
+    use crate::layouts::{self as ly, LayoutObject};
+    let old_all = ly::layouts(file)?;
+    let mut entries = write::entries(file)?;
+    // Prototype per (kind, style type): object message and node keys 7, 13.
+    let mut protos: BTreeMap<(u64, u32), (u32, u64, Vec<u8>)> = BTreeMap::new();
+    for l in &old_all {
+        let blob = object_blob(&entries, l.id);
+        let Some(m) = crate::pb::Msg::parse(&blob) else {
+            continue;
+        };
+        for o in m.msgs(2) {
+            let ty = crate::theme::ObjectStyle::parse(o.bytes(5).unwrap_or_default()).object_type;
+            let key = (o.uint(1).unwrap_or(0), ty);
+            protos
+                .entry(key)
+                .or_insert_with(|| (l.id, o.uint(2).unwrap_or(0), o.encode()));
+        }
+    }
+    let node_keys = |entries: &[Entry], l: u32, id: u64| -> Vec<(u32, Vec<u8>)> {
+        entries
+            .iter()
+            .filter(|e| ipath(e).as_deref() == Some(&[4, 5, l, 5, id as u32]))
+            .filter_map(entry_kv)
+            .filter(|(k, _)| matches!(k, 7 | 13))
+            .collect()
+    };
+    for new in layouts {
+        let Some(old) = old_all.iter().find(|l| l.id == new.id) else {
+            continue;
+        };
+        if old == new {
+            continue;
+        }
+        let l = new.id;
+        let lp = [4, 5, l];
+        let own_blob = object_blob(&entries, l);
+        // Prototype: same kind and type, preferably on this layout.
+        let proto_of = |o: &LayoutObject| -> Option<(u32, u64, Vec<u8>)> {
+            let ty = crate::theme::ObjectStyle::parse(&o.style_raw).object_type;
+            let same = old.objects.iter().find(|x| {
+                x.kind == o.kind && crate::theme::ObjectStyle::parse(&x.style_raw).object_type == ty
+            });
+            if let Some(x) = same {
+                let m = crate::pb::Msg::parse(&own_blob)?;
+                let raw = m.msgs(2).find(|m| m.uint(2) == Some(x.id))?.encode();
+                return Some((l, x.id, raw));
+            }
+            protos.get(&(o.kind, ty)).cloned()
+        };
+        let olds: BTreeMap<u64, &LayoutObject> = old.objects.iter().map(|o| (o.id, o)).collect();
+        let news: BTreeMap<u64, &LayoutObject> = new.objects.iter().map(|o| (o.id, o)).collect();
+        let deleted: BTreeSet<u64> = olds
+            .keys()
+            .filter(|i| !news.contains_key(i))
+            .copied()
+            .collect();
+        let added: Vec<&LayoutObject> = new
+            .objects
+            .iter()
+            .filter(|o| !olds.contains_key(&o.id))
+            .collect();
+        // Prototype message and node keys of each new object, read before
+        // anything changes.
+        let protos_of: BTreeMap<u64, (Vec<u8>, NodeKeys)> = added
+            .iter()
+            .filter_map(|o| {
+                let (pl, pid, raw) = proto_of(o)?;
+                Some((o.id, (raw, node_keys(&entries, pl, pid))))
+            })
+            .collect();
+        let mut add: Vec<Entry> = Vec::new();
+
+        // Object list.
+        if old.objects != new.objects {
+            let blob = &own_blob;
+            let out = ly::encode_objects(blob, old, new, &|o| {
+                protos_of.get(&o.id).map(|p| p.0.clone())
+            });
+            if out != *blob {
+                entries.retain(|e| match (ipath(e).as_deref(), entry_kv(e)) {
+                    (Some([4, 5, x]), Some((7, _))) => *x != l,
+                    (Some([4, 5, x, 7, ..]), _) => *x != l,
+                    _ => true,
+                });
+                if out.len() <= INLINE_MAX {
+                    add.push(kv_entry(&lp, 7, out));
+                } else {
+                    let p = [4, 5, l, 7];
+                    add.push(marker(&p));
+                    add.push(kv_entry(&p, 0, (out.len() as u32).to_be_bytes().to_vec()));
+                    for (i, c) in out.chunks(INLINE_MAX).enumerate() {
+                        add.push(kv_entry(&p, i as u32 + 1, c.to_vec()));
+                    }
+                }
+            }
+        }
+
+        // Per-object nodes: removed for deleted objects, rewritten keys for
+        // edited ones, created for new ones.
+        let node = |id: u64| [4, 5, l, 5, id as u32];
+        entries.retain(|e| {
+            let Some(p) = ipath(e) else { return true };
+            if p.len() < 5 || p[..4] != [4, 5, l, 5] {
+                return true;
+            }
+            let id = p[4] as u64;
+            if deleted.contains(&id) {
+                return false;
+            }
+            let (Some(o), Some(n)) = (olds.get(&id), news.get(&id)) else {
+                return true;
+            };
+            let key = entry_kv(e).map(|x| x.0);
+            match p.len() {
+                5 => match key {
+                    Some(1) => o.text == n.text,
+                    Some(16) => o.name == n.name,
+                    _ => true,
+                },
+                // Button label calculation and step parameters.
+                _ if p[5] == 3 => o.label == n.label,
+                _ if p[5] == 17 => {
+                    o.button.as_ref().map(|s| s.id) == n.button.as_ref().map(|s| s.id)
+                }
+                _ => true,
+            }
+        });
+        let label_entries = |id: u64, tokens: &[u8]| -> Vec<Entry> {
+            let p = [4, 5, l, 5, id as u32, 3];
+            vec![
+                marker(&p),
+                kv_entry(&p, 4, vec![1, 0]),
+                kv_entry(&p, 5, tokens.to_vec()),
+                kv_entry(&p, 6, tokens.to_vec()),
+            ]
+        };
+        for n in &new.objects {
+            let Some(o) = olds.get(&n.id) else { continue };
+            if o.text != n.text
+                && let Some(t) = &n.text
+            {
+                add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+            }
+            if o.name != n.name {
+                add.push(kv_entry(&node(n.id), 16, encode_text(&n.name)));
+            }
+            if o.label != n.label
+                && let Some(t) = &n.label
+            {
+                add.extend(label_entries(n.id, t));
+            }
+        }
+        for n in &added {
+            add.push(marker(&node(n.id)));
+            if let Some(t) = &n.text {
+                add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+            }
+            for (k, v) in protos_of
+                .get(&n.id)
+                .map(|p| p.1.clone())
+                .unwrap_or_default()
+            {
+                add.push(kv_entry(&node(n.id), k, v));
+            }
+            add.push(kv_entry(&node(n.id), 16, encode_text(&n.name)));
+            let seed = (l as u64) << 32 | n.id;
+            add.push(kv_entry(&node(n.id), 216, fresh_uuid(seed)));
+            add.push(kv_entry(&node(n.id), 217, fresh_uuid(seed)));
+            if let Some(t) = &n.label {
+                add.extend(label_entries(n.id, t));
+            }
+        }
+        // Last object id: `[4].[5].[L].[5]` key 0.
+        let max_new = new.objects.iter().map(|o| o.id).max().unwrap_or(0);
+        let mut last = 0;
+        for e in &entries {
+            if let (Some([4, 5, x, 5]), Some((0, d))) = (ipath(e).as_deref(), entry_kv(e))
+                && *x == l
+            {
+                last = read_len_int(&d).unwrap_or(0);
+            }
+        }
+        if max_new > last {
+            entries.retain(|e| {
+                !(ipath(e).as_deref() == Some(&[4, 5, l, 5])
+                    && entry_kv(e).is_some_and(|x| x.0 == 0))
+            });
+            if !entries
+                .iter()
+                .any(|e| ipath(e).as_deref() == Some(&[4, 5, l, 5]) && e.item == [0x80])
+            {
+                add.push(marker(&[4, 5, l, 5]));
+            }
+            add.push(kv_entry(&[4, 5, l, 5], 0, len_int(max_new)));
+        }
+
+        // Spatial index [L].[10]: key (top u16, left u16, id − 1 u16) of the
+        // object's absolute position; tab order [L].[21].
+        let mut index_add = Vec::new();
+        entries.retain(|e| {
+            let p = ipath(e);
+            let in_tabs = p.as_deref() == Some(&[4, 5, l, 21]);
+            let in_index = p.as_deref() == Some(&[4, 5, l, 10]);
+            if !in_tabs && !in_index || e.item.first() == Some(&0x80) {
+                return true;
+            }
+            let Ok(chunks) = crate::chunk::parse(&e.item) else {
+                return true;
+            };
+            let (key, data) = match chunks.first() {
+                Some(crate::Chunk::KvLong { key, data }) => (Some(key.to_vec()), data.to_vec()),
+                Some(crate::Chunk::Kv { data, .. }) => (None, data.to_vec()),
+                _ => return true,
+            };
+            let Some(id) = index_ref(&data).map(|x| x as u64) else {
+                return true;
+            };
+            if deleted.contains(&id) {
+                return false;
+            }
+            if let (Some(k), Some(o), Some(n)) = (key, olds.get(&id), news.get(&id))
+                && k.len() == 6
+            {
+                let (a, b) = (old.absolute(o), new.absolute(n));
+                if (a.top, a.left) != (b.top, b.left) {
+                    let at = |i: usize| u16::from_be_bytes([k[i], k[i + 1]]) as f64;
+                    let mv =
+                        |v: f64, d: f64| ((v + d).round().clamp(0.0, 65535.0) as u16).to_be_bytes();
+                    let mut nk = mv(at(0), b.top - a.top).to_vec();
+                    nk.extend(mv(at(2), b.left - a.left));
+                    nk.extend_from_slice(&k[4..]);
+                    index_add.push(Entry {
+                        path: e.path.clone(),
+                        item: write::encode(&Item::KvLong { key: nk, data }),
+                    });
+                    return false;
+                }
+            }
+            true
+        });
+        add.extend(index_add);
+        for n in added
+            .iter()
+            .filter(|n| n.parent.is_none() && indexed_kind(n.kind))
+        {
+            let b = new.absolute(n);
+            let u = |v: f64| (v.round().clamp(0.0, 65535.0) as u16).to_be_bytes();
+            let mut key = u(b.top).to_vec();
+            key.extend(u(b.left));
+            key.extend(((n.id.saturating_sub(1)) as u16).to_be_bytes());
+            let r = [vec![1], path_elem(n.id as u32)].concat();
+            let mut data = vec![0, r.len() as u8];
+            data.extend(r);
+            data.extend([0, 0, 0, 0, 1]);
+            add.push(Entry {
+                path: spelled(&[4, 5, l, 10]),
+                item: write::encode(&Item::KvLong { key, data }),
+            });
+        }
+
+        // Parts, in key order as read.
+        if old.parts != new.parts && old.parts.len() == new.parts.len() {
+            let mut i = 0;
+            for e in entries.iter_mut() {
+                if let (Some([4, 5, x, 3, _]), Some((2, d))) = (ipath(e).as_deref(), entry_kv(e))
+                    && *x == l
+                {
+                    if let (Some(o), Some(n)) = (old.parts.get(i), new.parts.get(i)) {
+                        let out = ly::patch_part(&d, o, n);
+                        if out != d {
+                            e.item = write::encode(&Item::Kv { key: 2, data: out });
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+
+        // Header: table occurrence and width; name.
+        for e in entries.iter_mut() {
+            let p = ipath(e);
+            let Some((key, d)) = entry_kv(e) else {
+                continue;
+            };
+            let header = p.as_deref() == Some(&lp) && key == 2;
+            let listed = p.as_deref() == Some(&[4, 1, 7, l]) && key == 2;
+            if (header || listed)
+                && (old.table_occurrence != new.table_occurrence
+                    || header && old.width != new.width)
+                && let Some(mut m) = crate::pb::MsgBuf::parse(&d)
+            {
+                if old.table_occurrence != new.table_occurrence {
+                    m.set(2, crate::pb::Field::Varint(new.table_occurrence));
+                }
+                if header && old.width != new.width {
+                    m.set(8, crate::pb::Field::F64(new.width));
+                }
+                e.item = write::encode(&Item::Kv {
+                    key: 2,
+                    data: m.encode(),
+                });
+            }
+            let named = p.as_deref() == Some(&lp) || p.as_deref() == Some(&[4, 1, 7, l]);
+            if named && key == 16 && old.name != new.name {
+                // ponytail: the name index [4].[1].[1] (collation keys) is
+                // left as is; FileMaker's collation is not implemented.
+                e.item = write::encode(&Item::Kv {
+                    key: 16,
+                    data: encode_text(&new.name),
+                });
+            }
+        }
+        entries.extend(add);
+    }
+    write::sort(&mut entries);
+    Ok(write::build(&file.bytes()[..crate::SECTOR], &entries))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

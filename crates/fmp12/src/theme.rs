@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::pb::{Field, MsgBuf};
 use crate::{Chunk, Error, File, int_path, layouts::Layout, pb::Msg, text};
 
 /// Elements (CSS pseudo-elements such as `.self`, `.text`).
@@ -432,6 +433,140 @@ pub fn fonts(file: &File) -> Result<BTreeMap<u32, String>, Error> {
     Ok(out)
 }
 
+fn unit_code(u: Unit) -> u64 {
+    match u {
+        Unit::None => 0,
+        Unit::Percent => 1,
+        Unit::Pt => 6,
+        Unit::Em => 7,
+        Unit::Line => 9,
+        Unit::Other(x) => x,
+    }
+}
+
+fn color_msg(c: &Rgba) -> MsgBuf {
+    MsgBuf(vec![
+        (1, Field::F32(c.r)),
+        (2, Field::F32(c.g)),
+        (3, Field::F32(c.b)),
+        (4, Field::F32(c.a)),
+    ])
+}
+
+fn length_msg(l: &Length) -> MsgBuf {
+    MsgBuf(vec![
+        (1, Field::F64(l.value)),
+        (2, Field::Varint(unit_code(l.unit))),
+        (3, Field::Varint(0)),
+    ])
+}
+
+/// Property entry `{1: id, value field}`; `None` for values this writer
+/// does not encode (pairs, shadows, raw).
+fn prop_msg(id: u32, v: &Value) -> Option<MsgBuf> {
+    let mut m = MsgBuf(vec![(1, Field::Varint(id as u64))]);
+    match v {
+        Value::Enum(x) => m.0.push((3, Field::Varint(*x as u64))),
+        Value::Color(c) => m.set_msg(5, &color_msg(c)),
+        Value::Length(l) => m.set_msg(6, &length_msg(l)),
+        _ => return None,
+    }
+    Some(m)
+}
+
+/// `style_raw` (an object style message, §12) with a local property set
+/// (`Some`) or removed (`None`) in the rule for (`element`, `state`). Other
+/// rules and properties keep their bytes.
+pub fn with_local_prop(
+    style_raw: &[u8],
+    element: u32,
+    state: u32,
+    id: u32,
+    v: Option<&Value>,
+) -> Vec<u8> {
+    let mut style = MsgBuf::parse(style_raw).unwrap_or_default();
+    let mut rules = style.msg(1);
+    let is_rule = |b: &Field| match b {
+        Field::Bytes(b) => {
+            let m = Msg::parse(b).unwrap_or_default();
+            m.uint(1) == Some(element as u64) && m.uint(2) == Some(state as u64)
+        }
+        _ => false,
+    };
+    let found = rules.0.iter().position(|(f, b)| *f == 1 && is_rule(b));
+    let mut rule = match found {
+        Some(i) => match &rules.0[i].1 {
+            Field::Bytes(b) => MsgBuf::parse(b).unwrap_or_default(),
+            _ => MsgBuf::default(),
+        },
+        None => MsgBuf(vec![
+            (1, Field::Varint(element as u64)),
+            (2, Field::Varint(state as u64)),
+        ]),
+    };
+    let mut props = rule.msg(3);
+    let pos = props.0.iter().position(|(f, b)| {
+        *f == 1
+            && matches!(b, Field::Bytes(b) if Msg::parse(b).and_then(|m| m.uint(1)) == Some(id as u64))
+    });
+    let new = v
+        .and_then(|v| prop_msg(id, v))
+        .map(|m| Field::Bytes(m.encode()));
+    match (pos, new) {
+        (Some(p), Some(n)) => props.0[p].1 = n,
+        (None, Some(n)) => props.0.push((1, n)),
+        (Some(p), None) => {
+            props.0.remove(p);
+        }
+        (None, None) => return style_raw.to_vec(),
+    }
+    rule.set_msg(3, &props);
+    let rule = Field::Bytes(rule.encode());
+    match found {
+        Some(i) => rules.0[i].1 = rule,
+        None => rules.0.push((1, rule)),
+    }
+    // The local rules come first in FileMaker's style messages.
+    if style.get(1).is_none() {
+        style.0.insert(0, (1, Field::Bytes(rules.encode())));
+    } else {
+        style.set_msg(1, &rules);
+    }
+    style.encode()
+}
+
+/// `style_raw` with named style `name` (CSS class, field 2) and its display
+/// name (field 4, written twice as FileMaker does); an empty name selects
+/// the theme default.
+pub fn with_style_name(style_raw: &[u8], name: &str, display: &str) -> Vec<u8> {
+    let mut style = MsgBuf::parse(style_raw).unwrap_or_default();
+    style.remove(2);
+    style.remove(4);
+    if !name.is_empty() {
+        // Field order as FileMaker writes it: 1 local, 2 name, 3 type, 4, 4.
+        let at = style
+            .0
+            .iter()
+            .position(|(f, _)| *f > 2)
+            .unwrap_or(style.0.len());
+        style
+            .0
+            .insert(at, (2, Field::Bytes(name.as_bytes().to_vec())));
+        for _ in 0..2 {
+            style.0.push((4, Field::Bytes(display.as_bytes().to_vec())));
+        }
+    }
+    style.encode()
+}
+
+/// `style_raw` with object type `ty` (field 3), e.g. 62 when a field
+/// becomes a drop-down list.
+pub fn with_object_type(style_raw: &[u8], ty: u32) -> Vec<u8> {
+    let mut style = MsgBuf::parse(style_raw).unwrap_or_default();
+    style.set(3, Field::Varint(ty as u64));
+    style.encode()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,5 +699,53 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(theme.resolve(&plain, SELF, NORMAL).len(), 2);
+    }
+
+    #[test]
+    fn writes_local_props_and_names() {
+        let base = rule(1, 1, &[prop(75, 3, &[1])]);
+        let style = [ld(1, &base), vi(3, 61)].concat();
+        let red = Value::Color(Rgba {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        });
+        let s = with_local_prop(&style, SELF, NORMAL, prop::BACKGROUND_COLOR, Some(&red));
+        let o = ObjectStyle::parse(&s);
+        assert_eq!(o.object_type, 61);
+        let p = &o.local[&(SELF, NORMAL)];
+        assert_eq!(p.color(prop::BACKGROUND_COLOR).unwrap().hex(), "#ff0000");
+        assert_eq!(p.enum_value(75), Some(1));
+        let pt2 = Length {
+            value: 2.0,
+            unit: Unit::Pt,
+        };
+        let s = with_local_prop(
+            &s,
+            TEXT,
+            NORMAL,
+            prop::BORDER_WIDTH,
+            Some(&Value::Length(pt2)),
+        );
+        let o = ObjectStyle::parse(&s);
+        assert_eq!(
+            o.local[&(TEXT, NORMAL)].length(prop::BORDER_WIDTH),
+            Some(pt2)
+        );
+        let s = with_local_prop(&s, SELF, NORMAL, prop::BACKGROUND_COLOR, None);
+        let o = ObjectStyle::parse(&s);
+        assert!(
+            o.local[&(SELF, NORMAL)]
+                .color(prop::BACKGROUND_COLOR)
+                .is_none()
+        );
+        let s = with_style_name(&s, "small-primary-text", "Small | Primary");
+        assert_eq!(ObjectStyle::parse(&s).name, "small-primary-text");
+        assert_eq!(
+            ObjectStyle::parse(&with_object_type(&s, 62)).object_type,
+            62
+        );
+        assert_eq!(with_local_prop(&style, SELF, NORMAL, 7, None), style);
     }
 }

@@ -11,7 +11,7 @@
       <Directory Id="INSTALLFOLDER" Name="BaseCraft">
         <Component Id="MainExe">
           <File Id="BaseCraftExe" Source="$(var.BinDir)\basecraft.exe" KeyPath="yes" />
-          <ProgId Id="BaseCraft.fmp12" Description="Database file" Icon="BaseCraftIcon">
+          <ProgId Id="BaseCraft.fmp12" Description="Database file" Icon="BaseCraftExe">
             <Extension Id="fmp12">
               <Verb Id="open" TargetFile="BaseCraftExe" Argument="&quot;%1&quot;" />
             </Extension>

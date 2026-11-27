@@ -89,7 +89,8 @@ jobs:
           Copy-Item LICENSE stage/LICENSE.txt
           Copy-Item assets/icon/basecraft.ico stage/
           Compress-Archive -Path stage/* -DestinationPath "dist/$N-portable.zip"
-          dotnet tool install --global wix
+          # WiX 5 (MS-RL): v7 requires accepting a paid-maintenance EULA.
+          dotnet tool install --global wix --version 5.0.2
           # MSI versions must be numeric: drop any -suffix.
           wix build -arch $A -d Version=$($V.Split('-')[0]) -d BinDir=stage packaging/windows/basecraft.wxs -o "dist/$N.msi"
       - uses: actions/upload-artifact@v4

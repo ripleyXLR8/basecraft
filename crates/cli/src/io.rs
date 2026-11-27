@@ -45,6 +45,7 @@ pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
         columns: &cols,
         formatted: o.formatted,
         file_name: &file_name,
+        group_by: &[],
     }
     .write(format);
     let fields: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();

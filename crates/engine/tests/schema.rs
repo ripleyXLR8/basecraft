@@ -406,3 +406,45 @@ fn summary_options_written_and_computed() {
     let t = db.table(s.invoices).unwrap();
     assert!(t.field(pop).unwrap().def.summary_population());
 }
+
+/// File › Import Records from another `.fmp12`: its tables as rows, then
+/// imported by field name.
+#[test]
+fn import_from_fmp12_file() {
+    let mut file = fmp12::File::from_bytes(fmp12::schema_edit::new_file("Notes").unwrap()).unwrap();
+    let mut db = Database::load(&file).unwrap();
+    let t = db.add_table(&mut file, "People").unwrap();
+    let name = db
+        .add_field(&mut file, t, &FieldSpec::new("Name", DataType::Text))
+        .unwrap();
+    let born = db
+        .add_field(&mut file, t, &FieldSpec::new("Born", DataType::Date))
+        .unwrap();
+    for (n, b) in [("Ada", "12/10/1815"), ("Bob", "")] {
+        let r = db.new_record(t).unwrap();
+        db.set_values(t, r, &[(name, n.into()), (born, b.into())]);
+    }
+    let bytes = db.save(&file).unwrap();
+    let tables = engine::import::fmp12_source(&bytes, &db.locale).unwrap();
+    let (_, rows) = tables.iter().find(|(n, _)| n == "People").unwrap();
+    assert_eq!(rows[0], ["Name", "Born"]);
+    assert_eq!(rows[1], ["Ada", "12/10/1815"]);
+    // Into a copy without records.
+    let mut dst = Database::load(&fmp12::File::from_bytes(bytes).unwrap()).unwrap();
+    dst.tables
+        .iter_mut()
+        .find(|x| x.id == t)
+        .unwrap()
+        .records
+        .clear();
+    let o = engine::import::Options {
+        format: engine::export::Format::Tab,
+        first_row_names: true,
+        mapping: engine::import::Mapping::ByName,
+        mode: engine::import::Mode::Add,
+        auto_enter: true,
+    };
+    let rep = engine::import::import(&mut dst, t, &[], rows.clone(), &o).unwrap();
+    assert_eq!(rep.added.len(), 2);
+    assert_eq!(dst.value(t, 1, name).to_text(), "Bob");
+}

@@ -31,6 +31,8 @@ pub enum Format {
     Xlsx,
     /// JSON array of records (a BaseCraft extra).
     Json,
+    /// HTML table (`.htm`): a header row of field names, one row per record.
+    Html,
 }
 
 impl Format {
@@ -45,6 +47,7 @@ impl Format {
             "xml" | "fmpxmlresult" => Format::Xml,
             "xlsx" | "excel" => Format::Xlsx,
             "json" => Format::Json,
+            "htm" | "html" => Format::Html,
             _ => return None,
         })
     }
@@ -165,15 +168,39 @@ pub struct Export<'a> {
     pub formatted: bool,
     /// File name for FMPXMLRESULT's `DATABASE NAME`.
     pub file_name: &'a str,
+    /// "Group by" fields (the sort fields, outermost first): a grouped
+    /// field's value is written in the first record of its group only.
+    pub group_by: &'a [u32],
 }
 
 impl Export<'_> {
     /// Text of every cell: rows × columns × values.
     pub fn cells(&self) -> Vec<Vec<Vec<String>>> {
-        self.found
+        let mut rows: Vec<Vec<Vec<String>>> = self
+            .found
             .iter()
             .map(|&r| self.columns.iter().map(|c| self.texts(r, c)).collect())
-            .collect()
+            .collect();
+        let table = self.db.table_of(self.to).map_or(0, |t| t.id);
+        for k in 0..self.group_by.len() {
+            // A level-k field shows where a group of levels 0..=k starts.
+            let starts: Vec<usize> =
+                crate::groups(self.db, table, self.found, &self.group_by[..=k])
+                    .into_iter()
+                    .map(|g| g.start)
+                    .collect();
+            for (ci, c) in self.columns.iter().enumerate() {
+                if c.to != self.to || c.field != self.group_by[k] {
+                    continue;
+                }
+                for (i, row) in rows.iter_mut().enumerate() {
+                    if !starts.contains(&i) {
+                        row[ci] = vec![String::new()];
+                    }
+                }
+            }
+        }
+        rows
     }
 
     fn texts(&self, record: usize, c: &Column) -> Vec<String> {
@@ -200,7 +227,38 @@ impl Export<'_> {
             Format::Xml => self.xml().into_bytes(),
             Format::Json => self.json().into_bytes(),
             Format::Xlsx => self.xlsx(),
+            Format::Html => self.html().into_bytes(),
         }
+    }
+
+    /// HTML table: one `TH` per field, one `TR` per record; values are
+    /// escaped and returns become `<BR>`.
+    /// 🔍 page layout after FileMaker's documentation, not compared byte
+    /// for byte with a FileMaker export.
+    fn html(&self) -> String {
+        let cell = |s: &str| xml_escape(s).replace("&#13;", "<BR>").replace('\n', "<BR>");
+        let mut out = String::from(
+            "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\">\n<HTML>\n<HEAD>\n<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;charset=utf-8\">\n",
+        );
+        out.push_str(&format!(
+            "<TITLE>\n{}\n</TITLE>\n</HEAD>\n<BODY>\n<TABLE BORDER=1>\n<TR>\n",
+            cell(self.file_name)
+        ));
+        for c in self.columns {
+            out.push_str(&format!("<TH>\n{}\n</TH>\n", cell(&c.name)));
+        }
+        out.push_str("</TR>\n");
+        for row in self.cells() {
+            out.push_str("<TR>\n");
+            for v in row {
+                let v = cell(&v.join("\r"));
+                let v = if v.is_empty() { "<BR>".to_string() } else { v };
+                out.push_str(&format!("<TD>\n{v}\n</TD>\n"));
+            }
+            out.push_str("</TR>\n");
+        }
+        out.push_str("</TABLE>\n</BODY>\n</HTML>\n");
+        out
     }
 
     fn delimited(&self, header: bool) -> String {
@@ -431,6 +489,7 @@ mod tests {
             columns: &cols,
             formatted,
             file_name: "People.fmp12",
+            group_by: &[],
         };
         String::from_utf8(e.write(format)).unwrap()
     }
@@ -470,6 +529,39 @@ mod tests {
     }
 
     #[test]
+    fn html_and_grouped() {
+        let html = run(Format::Html, &["Name", "Note"], false);
+        assert!(html.contains("<TITLE>\nPeople.fmp12\n</TITLE>"));
+        assert!(html.contains("<TR>\n<TH>\nName\n</TH>\n<TH>\nNote\n</TH>\n</TR>"));
+        assert!(html.contains("<TD>\nline 1<BR>line 2\n</TD>"));
+        assert!(html.contains("<TD>\nBob &quot;B&quot;\n</TD>\n<TD>\n<BR>\n</TD>"));
+        // Grouped by City (sorted): the city shows once per group.
+        let db = sample();
+        let cols = columns(&db, T, &["City".into(), "Name".into()]).unwrap();
+        let mut found = vec![0, 1, 2, 3, 4];
+        crate::sort(
+            &db,
+            T,
+            &mut found,
+            &[(crate::tests::CITY, crate::Order::Ascending)],
+        );
+        let e = Export {
+            db: &db,
+            to: T,
+            found: &found,
+            columns: &cols,
+            formatted: false,
+            file_name: "",
+            group_by: &[crate::tests::CITY],
+        };
+        let csv = String::from_utf8(e.write(Format::Csv)).unwrap();
+        assert_eq!(
+            csv,
+            "\"Oslo\",\"Di\"\r\n\"Paris\",\"Bob \"\"B\"\"\"\r\n\"Rome\",\"Ada\"\r\n\"\",\"Cy\"\r\n\"\",\"Ed\"\r\n"
+        );
+    }
+
+    #[test]
     fn xml_and_json() {
         let xml = run(Format::Xml, &["Name", "Amount", "Pets::Pet"], false);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<FMPXMLRESULT xmlns=\"http://www.filemaker.com/fmpxmlresult\"><ERRORCODE>0</ERRORCODE>"));
@@ -506,6 +598,7 @@ mod tests {
             columns: &cols,
             formatted: false,
             file_name: "",
+            group_by: &[],
         };
         assert_eq!(e.write(Format::Tab), b"010.50\t12/10/1815\r\n");
         e.formatted = true;

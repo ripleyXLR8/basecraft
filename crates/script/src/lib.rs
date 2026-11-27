@@ -1169,31 +1169,10 @@ impl Engine {
                     w.current_request = w.requests.len() - 1;
                 } else {
                     let src = rec.ok_or(error::RECORD_MISSING)?;
-                    let db = host.db();
-                    let r = db.new_record(table).ok_or(error::RECORD_MISSING)?;
-                    let t = db
-                        .tables
-                        .iter_mut()
-                        .find(|t| t.id == table)
+                    let r = host
+                        .db()
+                        .duplicate_record(table, src)
                         .ok_or(error::RECORD_MISSING)?;
-                    // Auto-entered values (serials, stamps) stay those of the new record.
-                    let auto: Vec<u32> = t
-                        .fields
-                        .iter()
-                        .filter(|f| {
-                            f.def.auto_serial()
-                                || f.def.auto_stamp().is_some()
-                                || f.def.auto_calculation()
-                        })
-                        .map(|f| f.id)
-                        .collect();
-                    let copy: Vec<(u32, String)> = t.records[src]
-                        .values
-                        .iter()
-                        .filter(|(f, _)| !auto.contains(f))
-                        .map(|(f, v)| (*f, v.clone()))
-                        .collect();
-                    t.records[r].values.extend(copy);
                     let w = host.window();
                     w.found.insert(w.current + 1, r);
                     w.current += 1;

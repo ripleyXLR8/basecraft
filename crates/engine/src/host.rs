@@ -86,18 +86,20 @@ impl Database {
                         .map(|p| {
                             (
                                 field_name(r.left, p.left_field),
-                                "=".to_string(),
+                                p.op.symbol().replace('×', "x"),
                                 field_name(r.right, p.right_field),
                             )
                         })
                         .collect(),
                     left_options: cs::RelOptions {
                         create: r.left_cascade_create(),
-                        ..Default::default()
+                        delete: r.left_cascade_delete(),
+                        sorted: !r.left_sort.is_empty(),
                     },
                     right_options: cs::RelOptions {
                         create: r.right_cascade_create(),
-                        ..Default::default()
+                        delete: r.right_cascade_delete(),
+                        sorted: !r.right_sort.is_empty(),
                     },
                 })
                 .collect(),

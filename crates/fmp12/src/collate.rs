@@ -483,6 +483,12 @@ pub fn name_key(name: &str) -> Option<Vec<u8>> {
 /// field type, data type × 4 (+1 when global), then the name key without
 /// its tertiary part.
 pub fn field_type_key(kind: u8, data_type: u8, global: bool, name: &str) -> Option<Vec<u8>> {
+    index_key(&[kind, data_type * 4 + global as u8], name)
+}
+
+/// `prefix`, then the name key without its tertiary part: the key of the
+/// catalogs' second indexes (fields by type, value lists by source).
+pub fn index_key(prefix: &[u8], name: &str) -> Option<Vec<u8>> {
     let k = name_key(name)?;
     // Primary weights end at the first 00 00 on an even offset.
     let mut i = 0;
@@ -490,7 +496,7 @@ pub fn field_type_key(kind: u8, data_type: u8, global: bool, name: &str) -> Opti
         i += 2;
     }
     let end = i + 2 + k[i + 2..].iter().position(|b| *b == 0)?;
-    let mut out = vec![kind, data_type * 4 + global as u8];
+    let mut out = prefix.to_vec();
     out.extend_from_slice(&k[..end]);
     Some(out)
 }

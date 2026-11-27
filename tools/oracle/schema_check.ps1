@@ -52,3 +52,49 @@ function Test-FmSchema([string]$file, [string]$table, [int]$Records = 2, [int]$L
   Close-Fm
   [pscustomobject]$out
 }
+
+# Checks a file whose relationships, lookups and value lists BaseCraft wrote
+# (graph_demo.sh), in a running FileMaker Pro:
+#   Test-FmGraph <file.fmp12> [-Plan "1:1,2:2,1:1"] [-Xml out.xml]
+# Works on a copy (<file>-check.fmp12). Reports, as one object:
+#   Open       : "OPEN" or the text of the dialog FileMaker shows instead;
+#   Graph      : screenshot of Manage Database › Relationships;
+#   ValueLists : rows of Manage Value Lists (name, source, values);
+#   Records    : the records created, as "layout:count" steps of -Plan (the
+#                layout is the n-th entry of the layout pop-up), in order.
+# With -Script, the steps of that fmxmlsnippet are pasted into a new script
+# and run (graph_lookup.xml: Set Field on a match field, which runs lookups).
+# Read the records back with `basecraft-cli records <copy> <Table>`: the
+# auto-enter calculations and lookups hold what FileMaker computed.
+function Test-FmGraph([string]$file, [string]$Plan = "1:1,2:2,1:1", [string]$Script, [string]$Xml) {
+  $copy = [IO.Path]::ChangeExtension($file, $null).TrimEnd('.') + "-check.fmp12"
+  Copy-Item $file $copy -Force
+  $open = Test-FmOpen $copy
+  $out = [ordered]@{ Copy = $copy; Open = $open; Graph = $null; ValueLists = @(); Records = @(); Shots = @() }
+  if ($open -ne "OPEN") { return [pscustomobject]$out }
+  $name = [IO.Path]::GetFileNameWithoutExtension($copy)
+  Start-Fm $copy
+  $d = Open-FmManageDb
+  Select-FmTab "Liens"; Start-Sleep 2
+  $out.Graph = Save-FmWindowShot $d "$name-graph"
+  Click-FmId "IDOK" $d; Start-Sleep 2
+  $v = Open-FmValueLists; Start-Sleep 1
+  $out.ValueLists = @(Get-FmDbRows)
+  $out.Shots += Save-FmWindowShot $v "$name-valuelists"
+  Click-FmId "IDOK" $v; Start-Sleep 2
+  $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+  [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
+  foreach ($step in $Plan.Split(',')) {
+    $layout, $n = $step.Split(':') | % { [int]$_ }
+    Click-Fm 130 123; Start-Sleep 1
+    Click-Fm 104 (145 + 20 * ($layout - 1)); Start-Sleep 1
+    for ($i = 0; $i -lt $n; $i++) { Click-Fm 471 80; Start-Sleep 1 }
+    Click-Fm 500 500; Start-Sleep 1
+    $out.Records += $step
+  }
+  $out.Shots += Save-FmShot "$name-browse"
+  if ($Script) { Add-FmScriptSteps $Script -Run; $out.Records += "script" }
+  if ($Xml) { Export-FmXml $Xml }
+  Close-Fm
+  [pscustomobject]$out
+}

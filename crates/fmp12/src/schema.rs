@@ -20,6 +20,51 @@ pub struct Field {
     pub options: Vec<u8>,
     /// Raw summary definition of a summary field (key 9), see [`Field::summary`].
     pub summary_raw: Vec<u8>,
+    /// Raw lookup definition (key 8), see [`Field::lookup`].
+    pub lookup_raw: Vec<u8>,
+    /// Value copied when a lookup finds no match (key 11).
+    pub lookup_constant: String,
+    /// Value list of "member of value list" validation (key 7).
+    pub value_list_raw: Vec<u8>,
+    /// Custom validation message: the calculation's text (key 24).
+    pub message: String,
+}
+
+/// What a lookup copies when no related record matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoMatch {
+    DontCopy,
+    /// The value of the record with the next lower match value.
+    Lower,
+    /// The value of the record with the next higher match value.
+    Higher,
+    Constant(String),
+}
+
+/// Auto-enter lookup of a field (key 8): copy `field` of the first record
+/// related through occurrence `from`, starting from occurrence `context`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lookup {
+    /// Occurrence the lookup starts from ("Starting with table").
+    pub context: u32,
+    /// Related occurrence to copy from.
+    pub from: u32,
+    pub field: u32,
+    pub no_match: NoMatch,
+    /// Copy an empty value too ("Don't copy contents if empty" off).
+    pub copy_empty: bool,
+}
+
+/// Field id in a 4-byte reference slot `len 01 path-int` at `b[at..]`.
+fn slot_field(b: &[u8], at: usize) -> Option<u32> {
+    let n = *b.get(at)? as usize;
+    crate::path_int(b.get(at + 2..at + 1 + n)?)
+}
+
+/// Occurrence in a 5-byte reference slot `len 03 D0 hi lo` at `b[at..]`.
+fn slot_to(b: &[u8], at: usize) -> Option<u32> {
+    let n = *b.get(at)? as usize;
+    crate::graph::to_ref(b.get(at + 1..at + 1 + n)?)
 }
 
 /// Operation of a summary field ("Total of", "Count of"...).
@@ -260,6 +305,68 @@ impl Field {
         b
     }
 
+    /// Summary options (key 9 byte 1): 0x04 running total or count, 0x10
+    /// restart for each sorted group, 0x01 a second field is given.
+    pub fn summary_running(&self) -> bool {
+        self.summary_raw.get(1).is_some_and(|b| b & 0x04 != 0)
+    }
+
+    /// The summary's second field: the sort field a running summary
+    /// restarts on, the weight of a weighted average, or the field a
+    /// fraction of total is subtotaled by.
+    pub fn summary_by(&self) -> Option<u32> {
+        let b = &self.summary_raw;
+        b.get(1).filter(|f| **f & 0x01 != 0)?;
+        slot_field(b, 22)
+    }
+
+    /// Increment of the serial number (option bytes 16–19, u32 BE).
+    pub fn serial_increment(&self) -> u32 {
+        self.options
+            .get(16..20)
+            .map_or(1, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+            .max(1)
+    }
+
+    /// Maximum number of characters of "maximum size" validation (option
+    /// bytes 20–23, u32 BE).
+    pub fn max_size(&self) -> Option<u32> {
+        let b = self.options.get(20..24)?;
+        self.validation()
+            .max_size
+            .then(|| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// Value list of "member of value list" validation (key 7 starts with
+    /// `len 01 path-int`).
+    pub fn validation_value_list(&self) -> Option<u32> {
+        self.validation().value_list.then_some(())?;
+        slot_field(&self.value_list_raw, 0)
+    }
+
+    /// Lookup definition (key 8): no-match option (0 don't copy, 1 next
+    /// lower, 2 next higher, 3 constant), copy empty (1), then the source
+    /// as a field reference (occurrence slot, `7F`, field slot, u16, u16
+    /// repetition) and the starting occurrence slot.
+    pub fn lookup(&self) -> Option<Lookup> {
+        if !self.auto_lookup() {
+            return None;
+        }
+        let b = &self.lookup_raw;
+        Some(Lookup {
+            no_match: match b.first()? {
+                1 => NoMatch::Lower,
+                2 => NoMatch::Higher,
+                3 => NoMatch::Constant(self.lookup_constant.clone()),
+                _ => NoMatch::DontCopy,
+            },
+            copy_empty: *b.get(1)? == 1,
+            from: slot_to(b, 2)?,
+            field: slot_field(b, 8)?,
+            context: slot_to(b, 16)?,
+        })
+    }
+
     pub fn validation(&self) -> Validation {
         Validation {
             value_list: self.bit(14, 0),
@@ -317,6 +424,10 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
                     ([], Chunk::Kv { key: 2, data }) => field.options = data.to_vec(),
                     ([], Chunk::Kv { key: 3, data }) => field.comment = text(data),
                     ([], Chunk::Kv { key: 9, data }) => field.summary_raw = data.to_vec(),
+                    ([], Chunk::Kv { key: 8, data }) => field.lookup_raw = data.to_vec(),
+                    ([], Chunk::Kv { key: 11, data }) => field.lookup_constant = text(data),
+                    ([], Chunk::Kv { key: 7, data }) => field.value_list_raw = data.to_vec(),
+                    ([], Chunk::Kv { key: 24, data }) => field.message = text(data),
                     _ => {
                         if let Some((first, s)) = name_part(rel, c) {
                             if first {

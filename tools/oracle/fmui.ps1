@@ -171,7 +171,7 @@ function Set-FmClip([string]$fmt, [string]$xml) {
 
 # Pastes the steps of an fmxmlsnippet file into a new script of the
 # frontmost file (Scripts > Script Workspace, New Script, Ctrl+V, Ctrl+S).
-function Add-FmScriptSteps([string]$snippet) {
+function Add-FmScriptSteps([string]$snippet, [switch]$Run) {
   for ($try = 0; $try -lt 4 -and -not $sw; $try++) {
     $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
     [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
@@ -186,6 +186,8 @@ function Add-FmScriptSteps([string]$snippet) {
   [W32]::Click($r.L + 600, $r.T + 160); Start-Sleep 1
   [System.Windows.Forms.SendKeys]::SendWait("^v"); Start-Sleep 3
   [System.Windows.Forms.SendKeys]::SendWait("^s"); Start-Sleep 2
+  # -Run: the workspace's Run button runs the new script.
+  if ($Run) { Click-FmId "buttonRun" $sw; Start-Sleep 4 }
   $sw.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close(); Start-Sleep 2
   # A long paste may still be running at Ctrl+S: FileMaker then asks on close.
   for ($i = 0; $i -lt 60 -and (Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' }); $i++) {
@@ -231,6 +233,37 @@ function Get-FmDbRows {
   $w = Get-FmWindows | Select -First 1
   $c = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::DataItem)
   $w.FindAll($TS::Descendants, $c) | % { $_.Current.Name -replace '^Réorganiser ', '' }
+}
+
+# A FileMaker window or dialog whose name matches a wildcard pattern.
+function Find-FmWindow([string]$like) {
+  $c = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+  foreach ($w in Get-FmWindows) {
+    if ($w.Current.Name -like $like) { return $w }
+    $d = $w.FindAll($TS::Descendants, $c) | ? { $_.Current.Name -like $like } | Select -First 1
+    if ($d) { return $d }
+  }
+}
+
+# Clicks the control with an automation id (most FileMaker dialogs have
+# them, e.g. IDOK), inside $in or anywhere.
+function Click-FmId([string]$id, $in) {
+  $c = New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $id)
+  $roots = if ($in) { @($in) } else { @(Get-FmWindows) }
+  foreach ($w in $roots) {
+    $e = $w.FindFirst($TS::Descendants, $c)
+    if ($e) { $b = $e.Current.BoundingRectangle; [W32]::Click([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2)); Start-Sleep -Milliseconds 800; return }
+  }
+  throw "not found: $id"
+}
+
+# File > Manage > Value Lists… of the frontmost file; returns the dialog.
+function Open-FmValueLists {
+  $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+  [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
+  Click-Fm 32 40; Start-Sleep -Milliseconds 700; Click-Fm 50 243; Start-Sleep -Milliseconds 700; Click-Fm 305 283
+  for ($i = 0; $i -lt 10; $i++) { Start-Sleep -Milliseconds 500; $d = Find-FmWindow "Gérer les listes de valeurs*"; if ($d) { return $d } }
+  throw "Manage Value Lists did not open"
 }
 
 # Pastes the fields of an fmxmlsnippet (clipboard format Mac-XMFD) into the

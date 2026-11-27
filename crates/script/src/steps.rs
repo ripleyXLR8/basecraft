@@ -69,6 +69,22 @@ pub mod sid {
     pub const REGION_MONITOR: u16 = 185;
     pub const SET_ERROR_LOGGING: u16 = 200;
     pub const ENABLE_TOUCH_KEYBOARD: u16 = 174;
+    pub const CHECK_SELECTION: u16 = 18;
+    pub const CHECK_RECORD: u16 = 19;
+    pub const CHECK_FOUND_SET: u16 = 20;
+    pub const EXIT_APPLICATION: u16 = 44;
+    pub const SET_USE_SYSTEM_FORMATS: u16 = 94;
+    pub const DELETE_PORTAL_ROW: u16 = 104;
+    pub const SORT_BY_FIELD: u16 = 154;
+    pub const REFRESH_OBJECT: u16 = 167;
+    pub const CLOSE_POPOVER: u16 = 169;
+    pub const REFRESH_PORTAL: u16 = 180;
+    pub const OPEN_TRANSACTION: u16 = 205;
+    pub const COMMIT_TRANSACTION: u16 = 206;
+    pub const REVERT_TRANSACTION: u16 = 207;
+    pub const SET_DICTIONARY: u16 = 209;
+    pub const REVERT_ON_ERROR: u16 = 223;
+    pub const FLUSH_WEB_COOKIES: u16 = 237;
     pub const SET_ALLOWED_ORIENTATIONS: u16 = 176;
 }
 
@@ -631,6 +647,68 @@ impl Engine {
             SPEAK | DIAL_PHONE | REGION_MONITOR => Err(error::UNAVAILABLE),
             EXECUTE_SQL => Err(err::COMMAND_INVALID),
             ENABLE_TOUCH_KEYBOARD => Ok(Flow::Next),
+            // No spelling dictionaries, web viewers or popovers are
+            // drawn, and the layout is drawn every frame: nothing to do.
+            CHECK_SELECTION
+            | CHECK_RECORD
+            | CHECK_FOUND_SET
+            | SET_DICTIONARY
+            | SET_USE_SYSTEM_FORMATS
+            | REFRESH_OBJECT
+            | CLOSE_POPOVER
+            | REFRESH_PORTAL
+            | FLUSH_WEB_COOKIES
+            | REVERT_ON_ERROR => Ok(Flow::Next),
+            // Exit Application: BaseCraft closes the file.
+            EXIT_APPLICATION => Ok(Flow::Suspend(
+                Suspend::Ui(UiRequest::CloseFile),
+                Pending::Ui(UiPending::Halt),
+            )),
+            DELETE_PORTAL_ROW => self.delete_portal_row(host, dialog),
+            SORT_BY_FIELD => (|| {
+                self.commit(host)?;
+                let f = s
+                    .inline_field()
+                    .or(host.window().field)
+                    .ok_or(error::FIELD_MISSING)?;
+                // ponytail: ascending; the stored order (bytes 22–23 read
+                // as 2 = descending) was not seen in a file.
+                let o = if s.arg == 2 {
+                    SortOrder::Descending
+                } else {
+                    SortOrder::Ascending
+                };
+                let (table, _, _) = Self::context(host);
+                let mut found = host.window().found.clone();
+                sort(host.db(), table, &mut found, &[(f, o)]);
+                let w = host.window();
+                w.found = found;
+                w.current = 0;
+                w.sorted = true;
+                Ok(Flow::Next)
+            })(),
+            // Transactions: every table as it was at Open Transaction.
+            OPEN_TRANSACTION => (|| {
+                self.commit(host)?;
+                let w = host.window().clone();
+                self.transaction = Some((host.db().tables.clone(), w.found, w.current));
+                Ok(Flow::Next)
+            })(),
+            COMMIT_TRANSACTION => (|| {
+                self.commit(host)?;
+                self.transaction.take().ok_or(err::COMMAND_INVALID)?;
+                Ok(Flow::Next)
+            })(),
+            REVERT_TRANSACTION => (|| {
+                let (tables, found, current) =
+                    self.transaction.take().ok_or(err::COMMAND_INVALID)?;
+                self.open = None;
+                host.db().tables = tables;
+                let w = host.window();
+                w.found = found;
+                w.current = current;
+                Ok(Flow::Next)
+            })(),
             SET_ALLOWED_ORIENTATIONS => Err(err::UNKNOWN_COMMAND),
             id if UNSUPPORTED.contains(&id) => Err(error::UNAVAILABLE),
             _ => return None,
@@ -638,15 +716,30 @@ impl Engine {
         Some(r)
     }
 
-    /// Go to Portal Row: the portal holding the active field, or the
-    /// layout's first portal.
-    fn go_to_portal_row(
-        &mut self,
-        host: &mut dyn Host,
-        frame: &mut Frame,
-        s: &Step,
-    ) -> Result<Flow, u32> {
-        self.commit(host)?;
+    /// Delete Portal Row: the related record of the current portal row.
+    fn delete_portal_row(&mut self, host: &mut dyn Host, dialog: bool) -> Result<Flow, u32> {
+        let (pto, related) = self.active_portal(host)?;
+        let row = host.window().portal_row;
+        let r = *row
+            .checked_sub(1)
+            .and_then(|i| related.get(i))
+            .ok_or(error::RECORD_MISSING)?;
+        let table = host.db().table_of(pto).ok_or(err::TABLE_MISSING)?.id;
+        if dialog {
+            return Ok(confirm_delete(
+                "Permanently delete this related record?",
+                table,
+                vec![r],
+            ));
+        }
+        delete_records(host, table, &[r]);
+        host.window().portal_row = 0;
+        Ok(Flow::Next)
+    }
+
+    /// The portal holding the active field, or the layout's first portal:
+    /// its occurrence and the current record's related records.
+    fn active_portal(&mut self, host: &mut dyn Host) -> Result<(u32, Vec<usize>), u32> {
         let (_, to, rec) = Self::context(host);
         let w = host.window().clone();
         let db = host.db();
@@ -676,10 +769,25 @@ impl Engine {
             .or(portals.first())
             .ok_or(error::UNAVAILABLE)?;
         let pto = portal.portal.map_or(0, |p| (p.0 & 0xFFF) as u32);
-        let rows = rec.map_or(0, |r| db.related(to, r, pto).len());
+        let related = rec.map_or(Vec::new(), |r| db.related(to, r, pto));
+        Ok((pto, related))
+    }
+
+    /// Go to Portal Row: the portal holding the active field, or the
+    /// layout's first portal.
+    fn go_to_portal_row(
+        &mut self,
+        host: &mut dyn Host,
+        frame: &mut Frame,
+        s: &Step,
+    ) -> Result<Flow, u32> {
+        self.commit(host)?;
+        let (_, related) = self.active_portal(host)?;
+        let rows = related.len();
         if rows == 0 {
             return Err(error::RECORD_MISSING);
         }
+        let w = host.window().clone();
         let cur = w.portal_row;
         let exit_after_last = s.options & bit::EXIT_AFTER_LAST != 0;
         let to_row = match s.arg {

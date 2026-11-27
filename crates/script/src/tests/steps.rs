@@ -1,0 +1,644 @@
+//! Tests of the M5 step groups (`steps.rs`) and of the debugger's
+//! stepping, on the People database of `tests.rs`. Parameters are laid out
+//! as FileMaker 26 stores them (FORMAT.md §8).
+
+use super::*;
+use crate::steps::sid;
+
+/// Compiles a calculation in script context.
+fn calc(h: &TestHost, src: &str) -> Calc {
+    text::Names {
+        db: &h.db,
+        scripts: &[],
+    }
+    .compile(src)
+    .unwrap()
+}
+
+/// A raw step without inline reference: calculations at `[128 + i]`,
+/// option bits, bytes 22–23.
+fn rawp(id: u16, calcs: &[Calc], options: u32, arg: u16) -> Step {
+    let mut s = raw_step(id, T, NAME, calcs, options);
+    s.raw[6..20].fill(0);
+    s.arg = arg;
+    s
+}
+
+/// A raw step on field `f` (inline reference).
+fn rawf(id: u16, f: u32, calcs: &[Calc], options: u32) -> Step {
+    raw_step(id, T, f, calcs, options)
+}
+
+/// Puts the three fields on layout 1, named after them.
+fn with_fields(h: &mut TestHost) {
+    h.db.layouts[0].objects = [(NAME, "Name"), (AGE, "Age"), (CITY, "City")]
+        .iter()
+        .enumerate()
+        .map(|(i, (f, n))| fmp12::layouts::LayoutObject {
+            id: i as u64 + 1,
+            kind: 1,
+            field: Some((T as u64, *f as u64, 1)),
+            name: n.to_string(),
+            ..Default::default()
+        })
+        .collect();
+}
+
+/// Runs `steps` as script 1 with error capture on; the result is the
+/// last step's Exit Script value.
+fn go(h: &mut TestHost, steps: Vec<Step>) -> (Engine, Outcome) {
+    let mut all = vec![step(id::SET_ERROR_CAPTURE, StepParams::Switch(true))];
+    all.extend(steps);
+    let mut e = Engine::new(vec![script(1, all)]);
+    let o = e.perform(h, 1, None);
+    (e, o)
+}
+
+fn exit_c(h: &TestHost, src: &str) -> Step {
+    step(id::EXIT_SCRIPT, StepParams::ExitScript(Some(calc(h, src))))
+}
+
+fn var_c(h: &TestHost, name: &str, src: &str) -> Step {
+    step(
+        id::SET_VARIABLE,
+        StepParams::SetVariable {
+            name: name.into(),
+            value: Some(calc(h, src)),
+            repetition: None,
+        },
+    )
+}
+
+/// Every step id of the catalogue: what the engine does with a new step
+/// (FileMaker's default parameters). Prints the table of PROGRESS.md
+/// with `--nocapture`.
+#[test]
+fn step_coverage() {
+    struct Count(TestHost, Vec<u16>);
+    impl Host for Count {
+        fn db(&mut self) -> &mut Database {
+            &mut self.0.db
+        }
+        fn window(&mut self) -> &mut Window {
+            &mut self.0.win
+        }
+        fn other(&mut self, s: &Step) -> u32 {
+            self.1.push(s.id);
+            error::UNAVAILABLE
+        }
+    }
+    let (mut runs, mut stub, mut host) = (Vec::new(), Vec::new(), Vec::new());
+    for id in 1..=250u16 {
+        let Some(name) = fmp12::scripts::step_name(id) else {
+            continue;
+        };
+        let mut h = Count(TestHost::new(PEOPLE), Vec::new());
+        let mut e = Engine::new(vec![script(1, vec![Step::new(id)])]);
+        e.perform(&mut h, 1, None);
+        let line = format!("{id} {name}");
+        if !h.1.is_empty() {
+            host.push(line);
+        } else if UNSUPPORTED.contains(&id)
+            || [
+                sid::SPEAK,
+                sid::DIAL_PHONE,
+                sid::EXECUTE_SQL,
+                sid::INSERT_FROM_URL,
+            ]
+            .contains(&id)
+            || [
+                sid::RECOVER_FILE,
+                sid::SET_ALLOWED_ORIENTATIONS,
+                sid::REGION_MONITOR,
+            ]
+            .contains(&id)
+        {
+            stub.push(line);
+        } else {
+            runs.push(line);
+        }
+    }
+    println!("RUNS {}: {}", runs.len(), runs.join(", "));
+    println!("DESKTOP ERROR {}: {}", stub.len(), stub.join(", "));
+    println!("NOT RUN {}: {}", host.len(), host.join(", "));
+    assert_eq!(runs.len() + stub.len() + host.len(), 222);
+    // Left to the host (error 3 by default): the six account steps (the
+    // security module), container inserts, data files, PDF documents, Go
+    // to List of Records and Configure Persistent Data (PROGRESS.md M5).
+    assert_eq!(
+        (runs.len(), stub.len(), host.len()),
+        (122, 70, 30),
+        "{host:?}"
+    );
+}
+
+#[test]
+fn control_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    // Perform Script by name ([130]) with a parameter ([128]).
+    let mut by_name = rawp(id::PERFORM_SCRIPT, &[calc(&h, "\"p\"")], 0x4800, 0);
+    by_name
+        .raw_params
+        .kv
+        .insert((vec![130, 5], 5), calc(&h, "\"S2\"").0);
+    by_name.params = StepParams::PerformScript {
+        script: None,
+        parameter: Some(calc(&h, "\"p\"")),
+    };
+    let sub = vec![exit_c(&h, "Get ( ScriptParameter ) & Get ( ScriptName )")];
+    let mut timer = rawp(sid::INSTALL_ON_TIMER, &[calc(&h, "1"), calc(&h, "5")], 0, 0);
+    timer.raw[6..9].copy_from_slice(&[2, 1, 2]);
+    let main = vec![
+        step(id::SET_ERROR_CAPTURE, StepParams::Switch(true)),
+        by_name,
+        timer,
+        rawp(sid::SET_ERROR_LOGGING, &[calc(&h, "\"ctx\"")], 0x3_4000, 0),
+        step(id::ALLOW_USER_ABORT, StepParams::Switch(false)),
+        exit_c(&h, "Get ( ScriptResult ) & Get ( AllowAbortState )"),
+    ];
+    let mut e = Engine::new(vec![script(1, main), script(2, sub)]);
+    let o = e.perform(&mut h, 1, None);
+    assert_eq!(o.result.to_text(), "pS20");
+    assert_eq!(
+        e.timer.as_ref().map(|t| (t.script, t.interval)),
+        Some((2, 5.0))
+    );
+    assert!(e.error_logging.is_some());
+    // Halt Script stops every level.
+    let mut e = Engine::new(vec![
+        script(1, vec![perform(2, None), var("$x", "1")]),
+        script(2, vec![plain(id::HALT_SCRIPT)]),
+    ]);
+    assert!(e.perform(&mut h, 1, None).halted);
+}
+
+#[test]
+fn navigation_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    with_fields(&mut h);
+    let steps = vec![
+        rawp(sid::NEXT_FIELD, &[], 0, 0),
+        rawp(sid::NEXT_FIELD, &[], 0, 0),
+        var_c(&h, "$a", "Get ( ActiveFieldName )"),
+        rawp(sid::PREVIOUS_FIELD, &[], 0, 0),
+        rawp(sid::PREVIOUS_FIELD, &[], 0, 0),
+        var_c(&h, "$b", "Get ( ActiveFieldName )"),
+        step(
+            id::GO_TO_OBJECT,
+            StepParams::GoToObject {
+                name: Some(calc(&h, "\"Age\"")),
+                repetition: None,
+            },
+        ),
+        var_c(&h, "$c", "Get ( ActiveFieldName )"),
+        step(
+            id::GO_TO_OBJECT,
+            StepParams::GoToObject {
+                name: Some(calc(&h, "\"Nope\"")),
+                repetition: None,
+            },
+        ),
+        exit_c(
+            &h,
+            "$a & \"/\" & $b & \"/\" & $c & \"/\" & Get ( LastError )",
+        ),
+    ];
+    let (_, o) = go(&mut h, steps);
+    // Previous from the first field wraps to the last.
+    assert_eq!(o.result.to_text(), "Age/City/Age/116");
+}
+
+#[test]
+fn go_to_related_record() {
+    let (mut h, [inv, ito, ..]) = lookup_host();
+    let cto =
+        h.db.occurrences
+            .iter()
+            .find(|o| o.name == "Clients")
+            .unwrap()
+            .id;
+    let clients =
+        h.db.layouts
+            .iter()
+            .find(|l| l.name == "Clients")
+            .unwrap()
+            .id;
+    let lo = (cto - 128) as u16;
+    let gtrr = |options: u32| {
+        let mut s = rawp(sid::GO_TO_RELATED_RECORD, &[], options, 5);
+        s.raw[6..9].copy_from_slice(&[2, 1, clients as u8]);
+        s.raw_params
+            .kv
+            .insert((vec![128], 17), vec![3, 0xD0, (lo >> 8) as u8, lo as u8]);
+        s
+    };
+    let (_, o) = go(&mut h, vec![gtrr(0x100)]);
+    assert_eq!(o.last_error, 0);
+    assert_eq!(h.win.layout, clients);
+    // Only the related client (Ada), not Bob.
+    assert_eq!(h.win.found.len(), 1);
+    // From Clients back to Invoices on the current layout: 414.
+    let back = {
+        let lo = (ito - 128) as u16;
+        let mut s = rawp(sid::GO_TO_RELATED_RECORD, &[], 0x100, 1);
+        s.raw_params
+            .kv
+            .insert((vec![128], 17), vec![3, 0xD0, (lo >> 8) as u8, lo as u8]);
+        s
+    };
+    let (_, o) = go(&mut h, vec![back]);
+    assert_eq!(o.last_error, 414);
+    // In a new window: the first window stays behind it.
+    let invoices =
+        h.db.layouts
+            .iter()
+            .find(|l| l.name == "Invoices")
+            .unwrap()
+            .id;
+    h.win = Window::new(&h.db, invoices);
+    let (e, o) = go(&mut h, vec![gtrr(0x2_0100)]);
+    assert_eq!(o.last_error, 0);
+    assert_eq!(e.windows.len(), 1);
+    assert_eq!(e.windows[0].layout, invoices);
+    let _ = inv;
+}
+
+#[test]
+fn editing_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    with_fields(&mut h);
+    let steps = vec![
+        rawf(sid::COPY, NAME, &[], 0),
+        rawf(id::PASTE, CITY, &[], 0x1000),
+        step(
+            id::GO_TO_FIELD,
+            StepParams::GoToField {
+                field: Some(field(CITY)),
+                select: false,
+            },
+        ),
+        rawp(sid::SELECT_ALL, &[], 0, 0),
+        var_c(
+            &h,
+            "$a",
+            "Get ( ActiveSelectionStart ) & \"/\" & Get ( ActiveSelectionSize )",
+        ),
+        rawf(sid::SET_SELECTION, CITY, &[calc(&h, "2"), calc(&h, "3")], 0),
+        var_c(
+            &h,
+            "$b",
+            "Get ( ActiveSelectionStart ) & \"/\" & Get ( ActiveSelectionSize )",
+        ),
+        rawf(sid::CLEAR, AGE, &[], 0),
+        var_c(&h, "$c", "People::Age"),
+        rawp(sid::UNDO_REDO, &[], 0, 1),
+        var_c(&h, "$d", "People::Age"),
+        rawp(sid::UNDO_REDO, &[], 0, 2),
+        exit_c(
+            &h,
+            "People::City & \"|\" & $a & \"|\" & $b & \"|\" & $c & \"|\" & $d & \"|\" & People::Age",
+        ),
+    ];
+    let (e, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "Ann|1/3|2/2||34|");
+    assert_eq!(e.clipboard.as_deref(), Some("Ann"));
+}
+
+#[test]
+fn field_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    // Set Next Serial Value on a field that is not a serial: 5.
+    let serial = vec![rawf(sid::SET_NEXT_SERIAL, AGE, &[calc(&h, "100")], 0x4000)];
+    let (_, o) = go(&mut h, serial);
+    assert_eq!(o.last_error, 5);
+    // Insert from Last Visited: the record committed last.
+    let steps = vec![
+        plain(id::COMMIT),
+        step(
+            id::GO_TO_RECORD,
+            StepParams::GoToRecord {
+                dest: RecordDest::Next,
+                exit_after_last: false,
+                dialog: false,
+            },
+        ),
+        rawf(sid::INSERT_FROM_LAST_VISITED, CITY, &[], 0x1000),
+        exit_c(&h, "People::City"),
+    ];
+    let (_, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "Paris");
+    // Insert from Index: the user picks a value of the field's index.
+    let mut e = Engine::new(vec![script(
+        1,
+        vec![rawf(sid::INSERT_FROM_INDEX, NAME, &[], 0x1000)],
+    )]);
+    let mut run = e.start(&mut h, 1, None);
+    let Status::Suspended(Suspend::Ui(UiRequest::Index { values })) =
+        run.resume(&mut e, &mut h, Answer::Start)
+    else {
+        panic!("no index")
+    };
+    assert_eq!(values, ["Ann", "Bob", "Cid", "Dee"]);
+    run.resume(&mut e, &mut h, Answer::Text("Zed".into()));
+    assert_eq!(h.db.tables[0].records[1].values[&NAME], "Zed");
+    // Export Field Contents: the text and the stored path.
+    let mut s = rawf(sid::EXPORT_FIELD, NAME, &[], 0);
+    let path: Vec<u8> = [&[0u8, 0, 0, 1, 4][..], b"file", &[0, 7], b"out.txt"]
+        .concat()
+        .iter()
+        .map(|b| b ^ 0x5A)
+        .collect();
+    s.raw_params.kv.insert((vec![128], 130), path);
+    let mut e = Engine::new(vec![script(1, vec![s])]);
+    let mut run = e.start(&mut h, 1, None);
+    assert_eq!(
+        run.resume(&mut e, &mut h, Answer::Start),
+        Status::Suspended(Suspend::Ui(UiRequest::ExportField {
+            path: Some("file:out.txt".into()),
+            text: "Zed".into(),
+        }))
+    );
+}
+
+#[test]
+fn record_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    let steps = vec![
+        rawp(sid::OPEN_RECORD, &[], 0, 0),
+        set_field(NAME, "\"Xavier\""),
+        plain(id::REVERT_RECORD),
+        rawp(sid::COPY_RECORD, &[], 0, 0),
+        exit("People::Name"),
+    ];
+    with_fields(&mut h);
+    let (e, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "Ann");
+    assert_eq!(e.clipboard.as_deref(), Some("Ann\t34\tParis"));
+    let (e, _) = go(&mut h, vec![rawp(sid::COPY_ALL_RECORDS, &[], 0, 0)]);
+    assert_eq!(e.clipboard.unwrap().split('\r').count(), 4);
+    // Truncate Table: no table chosen is 106; a table, no dialog, empties it.
+    let (_, o) = go(&mut h, vec![rawp(sid::TRUNCATE_TABLE, &[], 0x80, 0)]);
+    assert_eq!((o.last_error, h.db.tables[0].records.len()), (106, 4));
+    let mut tt = rawp(sid::TRUNCATE_TABLE, &[], 0x80, 1);
+    tt.raw[6..10].copy_from_slice(&[3, 2, 0x80, (T - 128) as u8]);
+    let (_, o) = go(&mut h, vec![tt]);
+    assert_eq!((o.last_error, h.db.tables[0].records.len()), (0, 0));
+    assert!(h.win.found.is_empty());
+}
+
+#[test]
+fn found_set_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    with_fields(&mut h);
+    // Find Matching Records on Age (27): Bob and Dee; constrain by City.
+    let steps = vec![
+        step(
+            id::GO_TO_RECORD,
+            StepParams::GoToRecord {
+                dest: RecordDest::Next,
+                exit_after_last: false,
+                dialog: false,
+            },
+        ),
+        rawf(sid::FIND_MATCHING, AGE, &[], 0),
+        var_c(&h, "$a", "Get ( FoundCount )"),
+        step(
+            id::ENTER_FIND_MODE,
+            StepParams::Find {
+                restore: false,
+                requests: Vec::new(),
+                pause: false,
+            },
+        ),
+        set_field(CITY, "\"Paris\""),
+        rawp(sid::CONSTRAIN, &[], 0, 0),
+        var_c(&h, "$b", "Get ( FoundCount ) & People::Name"),
+        rawp(sid::MODIFY_LAST_FIND, &[], 0, 0),
+        var_c(&h, "$c", "Get ( WindowMode )"),
+        step(id::ENTER_BROWSE_MODE, StepParams::Mode { pause: false }),
+        rawp(sid::QUICK_FIND, &[calc(&h, "\"oslo\"")], 0x4000, 0),
+        var_c(&h, "$d", "Get ( FoundCount ) & People::Name"),
+        rawp(sid::QUICK_FIND, &[calc(&h, "\"zzz\"")], 0x4000, 0),
+        exit_c(
+            &h,
+            "$a & \"|\" & $b & \"|\" & $c & \"|\" & $d & \"|\" & Get ( LastError ) & Get ( FoundCount )",
+        ),
+    ];
+    let (_, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "2|1Dee|1|1Bob|4011");
+    // Find Matching Records with no field and no active field: 401.
+    h.win.field = None;
+    let (_, o) = go(&mut h, vec![rawp(sid::FIND_MATCHING, &[], 0, 0)]);
+    assert_eq!(o.last_error, 401);
+}
+
+#[test]
+fn window_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    h.win.name = "People".into();
+    let geo = |h: &TestHost, v: [&str; 4]| -> Vec<Calc> {
+        std::iter::once(calc(h, "\"W2\""))
+            .chain(v.iter().map(|s| calc(h, s)))
+            .collect()
+    };
+    let steps = vec![
+        rawp(
+            sid::NEW_WINDOW,
+            &geo(&h, ["300", "400", "30", "40"]),
+            0x4002,
+            1,
+        ),
+        var_c(
+            &h,
+            "$a",
+            "Get ( WindowName ) & Get ( WindowWidth ) & Get ( WindowHeight )",
+        ),
+        rawp(sid::SELECT_WINDOW, &[calc(&h, "\"People\"")], 0x4002, 1),
+        var_c(&h, "$b", "Get ( WindowName )"),
+        rawp(sid::SELECT_WINDOW, &[calc(&h, "\"Nope\"")], 0x4002, 1),
+        var_c(&h, "$c", "Get ( LastError )"),
+        rawp(sid::CLOSE_WINDOW, &[calc(&h, "\"W2\"")], 0x4002, 1),
+        rawp(
+            sid::MOVE_RESIZE_WINDOW,
+            &[calc(&h, "\"\""), calc(&h, "500")],
+            0x4002,
+            0,
+        ),
+        rawp(sid::VIEW_AS, &[], 2, 3),
+        rawp(sid::SET_ZOOM_LEVEL, &[], 2, 5),
+        rawp(sid::SET_ZOOM_LEVEL, &[], 2, 9),
+        rawp(sid::SHOW_HIDE_TOOLBARS, &[], 2, 2),
+        rawp(
+            sid::SET_WINDOW_TITLE,
+            &[calc(&h, "\"\""), calc(&h, "\"T9\"")],
+            0x4002,
+            0,
+        ),
+        exit_c(
+            &h,
+            "$a & \"|\" & $b & \"|\" & $c & \"|\" & Get ( WindowHeight ) & \"|\" & Get ( LayoutViewState ) & \"|\" & Get ( WindowZoomLevel ) & \"|\" & Get ( StatusAreaState ) & \"|\" & Get ( WindowName )",
+        ),
+    ];
+    let (e, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "W2400300|People|112|500|2|200|0|T9");
+    assert!(e.windows.is_empty());
+    // Adjust Window is the app's: maximize.
+    let mut e = Engine::new(vec![script(1, vec![rawp(sid::ADJUST_WINDOW, &[], 2, 2)])]);
+    let mut run = e.start(&mut h, 1, None);
+    assert_eq!(
+        run.resume(&mut e, &mut h, Answer::Start),
+        Status::Suspended(Suspend::Ui(UiRequest::Adjust(Adjust::Maximize)))
+    );
+    // Closing the last window closes the file and stops the script.
+    let (_, o) = go(
+        &mut h,
+        vec![rawp(sid::CLOSE_WINDOW, &[], 2, 0), var("$x", "1")],
+    );
+    assert!(o.halted);
+}
+
+#[test]
+fn file_and_misc_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    let ui = |h: &mut TestHost, s: Step| {
+        let mut e = Engine::new(vec![script(1, vec![s])]);
+        let mut run = e.start(h, 1, None);
+        match run.resume(&mut e, h, Answer::Start) {
+            Status::Suspended(Suspend::Ui(r)) => Some(r),
+            _ => None,
+        }
+    };
+    let url = rawp(
+        sid::OPEN_URL,
+        &[calc(&h, "\"https://example.com\"")],
+        0x4080,
+        0,
+    );
+    assert_eq!(
+        ui(&mut h, url),
+        Some(UiRequest::OpenUrl {
+            url: "https://example.com".into(),
+            dialog: false,
+        })
+    );
+    // Send Mail: To [128], CC [129], subject [131], message [132].
+    let mut cs = vec![
+        calc(&h, "\"a@b.c\""),
+        calc(&h, "\"c@d.e\""),
+        calc(&h, "\"\""),
+    ];
+    cs.push(calc(&h, "\"Hi there\""));
+    cs.push(calc(&h, "\"Body\""));
+    let mail = rawp(sid::SEND_MAIL, &cs, 0x4080, 0);
+    assert_eq!(
+        ui(&mut h, mail),
+        Some(UiRequest::OpenUrl {
+            url: "mailto:a@b.c?cc=c%40d.e&subject=Hi%20there&body=Body".replace("c%40d.e", "c@d.e"),
+            dialog: false,
+        })
+    );
+    assert_eq!(
+        ui(&mut h, rawp(sid::NEW_FILE, &[], 0, 0)),
+        Some(UiRequest::NewFile)
+    );
+    // Get Folder Path: the answer goes into the variable.
+    let mut gf = rawp(sid::GET_FOLDER_PATH, &[], 0x4104, 0);
+    let name: Vec<u8> = b"$folder".iter().map(|b| b ^ 0x5A).collect();
+    gf.raw_params.kv.insert((vec![128], 1), name);
+    let mut e = Engine::new(vec![script(1, vec![gf, exit("$folder")])]);
+    let mut run = e.start(&mut h, 1, None);
+    run.resume(&mut e, &mut h, Answer::Start);
+    let Status::Finished(o) = run.resume(&mut e, &mut h, Answer::Text("/C:/x/".into())) else {
+        panic!()
+    };
+    assert_eq!(o.result.to_text(), "/C:/x/");
+    // Stubs and refused steps return FileMaker's desktop errors.
+    for (id, code) in [
+        (sid::SPEAK, 3),
+        (sid::DIAL_PHONE, 3),
+        (sid::EXECUTE_SQL, 5),
+        (sid::RECOVER_FILE, 3),
+        (sid::INSERT_FROM_URL, 3),
+        (sid::SET_ALLOWED_ORIENTATIONS, 4),
+        (164, 3), // Perform Script on Server
+        (212, 3), // Configure AI Account
+    ] {
+        let (_, o) = go(&mut h, vec![rawp(id, &[], 0x80, 0)]);
+        assert_eq!(o.last_error, code, "step {id}");
+    }
+    let (_, o) = go(&mut h, vec![rawp(sid::SET_MULTI_USER, &[], 2, 3)]);
+    assert_eq!(o.last_error, 0);
+}
+
+/// The debugger: stop at the first step, step over a sub-script, step
+/// into one, step out, run to a breakpoint, halt.
+#[test]
+fn debugger_stepping() {
+    let mut h = TestHost::new(PEOPLE);
+    let main = vec![
+        var("$a", "1"),
+        perform(2, None),
+        var("$b", "2"),
+        perform(2, None),
+        var("$c", "3"),
+    ];
+    let sub = vec![var("$s", "1"), var("$t", "2")];
+    let mut e = Engine::new(vec![script(1, main), script(2, sub)]);
+    let mut run = e.start(&mut h, 1, None);
+    run.set_debug(true);
+    let go = |run: &mut Run, e: &mut Engine, h: &mut TestHost, s: Stepping| {
+        run.set_stepping(s);
+        let st = run.resume(e, h, Answer::Continue);
+        (st, run.current())
+    };
+    assert_eq!(
+        run.resume(&mut e, &mut h, Answer::Start),
+        Status::Suspended(Suspend::Breakpoint)
+    );
+    assert_eq!(run.current(), Some((1, 0)));
+    // Step: $a, then over Perform Script.
+    assert_eq!(go(&mut run, &mut e, &mut h, Stepping::Over).1, Some((1, 1)));
+    assert_eq!(go(&mut run, &mut e, &mut h, Stepping::Over).1, Some((1, 2)));
+    assert_eq!(run.locals()[0].0, "$a");
+    // Into the second call, then out of it.
+    assert_eq!(go(&mut run, &mut e, &mut h, Stepping::Over).1, Some((1, 3)));
+    assert_eq!(go(&mut run, &mut e, &mut h, Stepping::Into).1, Some((2, 0)));
+    assert_eq!(run.stack().len(), 2);
+    assert_eq!(go(&mut run, &mut e, &mut h, Stepping::Out).1, Some((1, 4)));
+    // A breakpoint, then halt there.
+    let mut run = e.start(&mut h, 1, None);
+    run.set_debug(true);
+    run.breakpoints.insert((2, 1));
+    run.resume(&mut e, &mut h, Answer::Start);
+    assert_eq!(go(&mut run, &mut e, &mut h, Stepping::Run).1, Some((2, 1)));
+    let Status::Finished(o) = run.resume(&mut e, &mut h, Answer::Cancel) else {
+        panic!()
+    };
+    assert!(o.halted);
+    // Debugger off: breakpoints are ignored.
+    let mut run = e.start(&mut h, 1, None);
+    run.breakpoints.insert((1, 2));
+    assert!(matches!(
+        run.resume(&mut e, &mut h, Answer::Start),
+        Status::Finished(_)
+    ));
+}
+
+#[test]
+fn transactions() {
+    let mut h = TestHost::new(PEOPLE);
+    let steps = vec![
+        rawp(sid::OPEN_TRANSACTION, &[], 0, 0),
+        set_field(NAME, "\"Xavier\""),
+        plain(id::NEW_RECORD),
+        rawp(sid::REVERT_TRANSACTION, &[], 0, 0),
+        var("$a", "People::Name & Get(FoundCount)"),
+        rawp(sid::OPEN_TRANSACTION, &[], 0, 0),
+        set_field(NAME, "\"Yves\""),
+        rawp(sid::COMMIT_TRANSACTION, &[], 0, 0),
+        exit("$a & People::Name"),
+    ];
+    let (_, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "Ann4Yves");
+    assert_eq!(h.db.tables[0].records.len(), 4);
+}

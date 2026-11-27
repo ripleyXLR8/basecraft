@@ -589,6 +589,8 @@ pub struct Engine {
     /// Text of the last Cut, Copy, Copy Record (also given to
     /// [`Host::set_clipboard`]); Paste uses it when the host has none.
     pub clipboard: Option<String>,
+    /// Open Transaction: the tables, found set and record before it.
+    transaction: Option<(Vec<engine::Table>, Vec<usize>, usize)>,
 }
 
 /// Install OnTimer Script.
@@ -747,6 +749,7 @@ impl Engine {
             last_visited: None,
             redo: None,
             clipboard: None,
+            transaction: None,
         }
     }
 
@@ -2144,6 +2147,11 @@ fn delete_records(host: &mut dyn Host, table: u32, records: &[usize]) {
                 t.records.remove(r);
             }
         }
+    }
+    // Records of another table (a portal row): the found set stays.
+    let layout = host.window().layout;
+    if layout_table(host.db(), layout).map(|(_, t)| t.id) != Some(table) {
+        return;
     }
     let w = host.window();
     w.found = w

@@ -41,11 +41,17 @@ Sector *k* starts at offset `k × 4096`. For sector 1 (the B-tree root), the
 
 The sectors form a B-tree. All data lives in the leaves (level 0), which are
 chained through prev/next. The chain starts at the leaf whose prev is 0.
-Index sectors (level ≥ 1) map paths to child sectors. Readers can ignore
-them, but a writer must keep them consistent. Each index entry rebuilds the
-path of the first chunk of a child sector (pushes, with pop-after codes), then a Kv
-chunk whose key is that chunk's key and whose 4-byte value is the child
-sector id (e.g. `… 03 03 00 00 00 4E` means key 3 → sector 78).
+Index sectors (level ≥ 1) map separator keys to child sectors. Readers can
+ignore them, but **FileMaker validates them**: a file whose root index was
+rebuilt naïvely ("path of first chunk + key → child") is rejected with "file
+access permissions damaged". An entry is a run of path pushes, some with the
+pop-after flag (`E0 xx`, `F8 len …`), then a Kv whose 4-byte value is the child
+sector id (`03 03 00 00 00 4E` = key 3 → sector 78). `1B 00 01 id` is used
+for the leftmost child and for children whose first chunk has a long key.
+Read in emission order, the pushes give the child's first path. How the
+pop-after flags interact across consecutive entries is still open
+(`tools/oracle/idxdec.py`). Until that is settled, OpenMaker only edits files
+in place.
 
 Every leaf payload starts from an empty path and pushes the full path of its
 first chunk. A chunk never spans two sectors.
@@ -82,7 +88,7 @@ If `op & 0xC0 == 0xC0`, the chunk is decoded as `op & 0x3F` and followed by a Po
 | 17 | KvLong | key 3 bytes, len u16, value |
 | 18, 23 | Data | len u8, value |
 | 1B 00 | Kv | key u8, 4 bytes |
-| 19–1D | Data | len u8, value, then (op==19)+2×(op−19) trailing bytes 🔍 |
+| 19–1D | KvLong | klen u8, key, then a fixed-size value of (op==19)+2×(op−19) bytes |
 | 1E | KvLong | klen u8, key, len u8, value |
 | 1F | KvLong | klen u8, key, len u16, value |
 | 20 | Push | 1 byte, or `FE` + 8 bytes |

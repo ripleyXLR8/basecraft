@@ -104,17 +104,23 @@ fn encode_item(item: &Item, out: &mut Vec<u8>) {
         }
         Item::KvLong { key, data } => {
             let n = data.len();
-            match (key.len(), n <= 255) {
-                (3, true) => out.push(0x16),
-                (3, false) => out.push(0x17),
-                (k, true) => out.extend_from_slice(&[0x1E, k as u8]),
-                (k, false) => out.extend_from_slice(&[0x1F, k as u8]),
+            let k = key.len();
+            match (k, n) {
+                // 0x1B 00 is reserved for a short-key form, so no empty key there.
+                (_, 1) => out.extend_from_slice(&[0x19, k as u8]),
+                (_, 2 | 6 | 8) | (1.., 4) => {
+                    out.extend_from_slice(&[0x19 + (n / 2) as u8, k as u8])
+                }
+                (3, _) if n <= 255 => out.push(0x16),
+                (3, _) => out.push(0x17),
+                _ if n <= 255 => out.extend_from_slice(&[0x1E, k as u8]),
+                _ => out.extend_from_slice(&[0x1F, k as u8]),
             }
             out.extend_from_slice(key);
-            if n <= 255 {
-                out.push(n as u8);
-            } else {
-                out.extend_from_slice(&(n as u16).to_be_bytes());
+            match (k, n) {
+                (_, 1 | 2 | 6 | 8) | (1.., 4) => {}
+                _ if n <= 255 => out.push(n as u8),
+                _ => out.extend_from_slice(&(n as u16).to_be_bytes()),
             }
             out.extend_from_slice(data);
         }
@@ -244,6 +250,52 @@ pub fn build(header: &[u8], entries: &[Entry]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Experiment helper: payload of an index sector for the given leaves of
+/// `file`, built the way [`build`] does.
+pub fn index_payload(file: &File, leaves: &[u32]) -> Result<Vec<u8>, Error> {
+    let mut idx = Vec::new();
+    for id in leaves {
+        let s = file.sector(*id);
+        let cs = crate::chunk::parse(s.payload)?;
+        let mut path: Vec<Vec<u8>> = Vec::new();
+        for c in cs {
+            let item = match c {
+                Chunk::Push(p) => {
+                    path.push(p.to_vec());
+                    continue;
+                }
+                Chunk::Pop => {
+                    path.pop();
+                    continue;
+                }
+                Chunk::Data(d) => Item::Data(d.to_vec()),
+                Chunk::Kv { key, data } => Item::Kv {
+                    key,
+                    data: data.to_vec(),
+                },
+                Chunk::KvLong { key, data } => Item::KvLong {
+                    key: key.to_vec(),
+                    data: data.to_vec(),
+                },
+            };
+            idx.push(index_entry(
+                &Entry {
+                    path: path.clone(),
+                    item,
+                },
+                *id,
+            ));
+            break;
+        }
+    }
+    let pages = pack(&idx);
+    Ok(pages
+        .into_iter()
+        .next()
+        .map(|p| p.payload)
+        .unwrap_or_default())
 }
 
 /// Rewrites `file` from its logical content.

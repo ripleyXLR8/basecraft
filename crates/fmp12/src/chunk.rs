@@ -156,12 +156,19 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Chunk<'_>>, Error> {
                     data: c.take(4)?,
                 }
             }
+            // Length-prefixed key, fixed-size value (like 0x01–0x05).
             0x19..=0x1D => {
-                let n = c.byte()? as usize;
-                let data = c.take(n)?;
-                // ponytail: trailing bytes are skipped, meaning still unknown.
-                c.take((op == 0x19) as usize + 2 * (op as usize - 0x19))?;
-                Chunk::Data(data)
+                let k = c.byte()? as usize;
+                let key = c.take(k)?;
+                let n = if op == 0x19 {
+                    1
+                } else {
+                    2 * (op as usize - 0x19)
+                };
+                Chunk::KvLong {
+                    key,
+                    data: c.take(n)?,
+                }
             }
             0x1E => {
                 let k = c.byte()? as usize;

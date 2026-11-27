@@ -13,7 +13,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M4 | GUI: Browse / Find / List / Table views | ⏳ |
 | M5 | Script engine and Script Workspace | ⏳ |
 | M6 | Layout mode | ⏳ |
-| M7 | Write `.fmp12` files that FileMaker Pro opens | ⏳ |
+| M7 | Write `.fmp12` files that FileMaker Pro opens | 🚧 |
 | M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | ⏳ |
 | M9 | Out of scope for now: Server hosting, WebDirect, ODBC, plug-ins, AI steps | — |
 
@@ -80,3 +80,11 @@ ApplicationArchitecture.
 | Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped | 🚧 |
 | Schema, design, layout, SQL, AI, sensor and encryption functions | ⏳ |
 | Custom functions, file-locale date/number formats | ⏳ |
+
+## M7 — Writing `.fmp12`
+
+| Feature | State |
+|---------|-------|
+| Chunk encoder (all opcodes) and leaf packing; round-trips through our reader | ✅ |
+| Same-size in-place edits accepted by FileMaker | ✅ (verified) |
+| Index (separator) sectors that FileMaker accepts | 🚧 rebuilt indexes are rejected; separator rules under study |

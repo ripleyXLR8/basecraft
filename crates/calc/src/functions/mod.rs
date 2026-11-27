@@ -13,6 +13,7 @@ mod sql;
 mod text;
 
 pub use datetime::builtin_get;
+pub(crate) use text::base_key;
 
 use crate::ast::Expr;
 use crate::error::{EvalError, code};
@@ -367,6 +368,14 @@ pub fn lookup(name: &str) -> Option<&'static Func> {
     FUNCTIONS.iter().find(|f| f.name.eq_ignore_ascii_case(name))
 }
 
+/// Whether `name` is a FileMaker function (implemented or not).
+pub fn exists(name: &str) -> bool {
+    lookup(name).is_some()
+        || REFERENCE
+            .lines()
+            .any(|l| reference_name(l).eq_ignore_ascii_case(name))
+}
+
 pub fn call(ev: &mut Evaluator, name: &str, args: &[Expr]) -> R {
     let Some(f) = lookup(name) else {
         let known = REFERENCE
@@ -384,6 +393,12 @@ pub fn call(ev: &mut Evaluator, name: &str, args: &[Expr]) -> R {
             )
         });
     };
+    if args.is_empty() && f.min > 0 {
+        return Err(EvalError::new(
+            code::OPERAND_EXPECTED,
+            format!("{} ( ) needs a parameter", f.name),
+        ));
+    }
     if args.len() < f.min {
         return Err(EvalError::new(
             code::TOO_FEW_PARAMS,
@@ -396,7 +411,7 @@ pub fn call(ev: &mut Evaluator, name: &str, args: &[Expr]) -> R {
             format!("too many parameters in {}", f.name),
         ));
     }
-    match f.imp {
+    let r = match f.imp {
         Imp::Lazy(g) => g(ev, args),
         Imp::Eager(g) => {
             let vals = args
@@ -405,8 +420,53 @@ pub fn call(ev: &mut Evaluator, name: &str, args: &[Expr]) -> R {
                 .collect::<Result<Vec<_>, _>>()?;
             g(ev, &vals)
         }
+    };
+    // Design functions answer a missing file, table, layout, field or
+    // value list with empty text, not an error.
+    match r {
+        Err(e)
+            if EMPTY_WHEN_MISSING.contains(&f.name)
+                && matches!(
+                    e.code,
+                    code::FILE_MISSING
+                        | code::FIELD_MISSING
+                        | code::LAYOUT_MISSING
+                        | code::TABLE_MISSING
+                ) =>
+        {
+            Ok(Value::empty())
+        }
+        r => r,
     }
 }
+
+const EMPTY_WHEN_MISSING: [&str; 25] = [
+    "BaseTableComment",
+    "BaseTableIDs",
+    "BaseTableNames",
+    "FieldAnnotation",
+    "FieldBounds",
+    "FieldComment",
+    "FieldDisplayNames",
+    "FieldIDs",
+    "FieldNames",
+    "FieldRepetitions",
+    "FieldStyle",
+    "FieldType",
+    "GetNextSerialValue",
+    "LayoutIDs",
+    "LayoutNames",
+    "LayoutObjectNames",
+    "RelationInfo",
+    "ScriptIDs",
+    "ScriptNames",
+    "TableIDs",
+    "TableNames",
+    "ValueListIDs",
+    "ValueListItems",
+    "ValueListNames",
+    "GetFieldsOnLayout",
+];
 
 // ---- small argument helpers shared by the function modules -------------
 
@@ -469,7 +529,7 @@ fn while_(ev: &mut Evaluator, a: &[Expr]) -> R {
         while ev.eval(&a[1])?.truth() {
             n += 1;
             if n > ev.max_iterations {
-                return Err(EvalError::generic("While exceeded its iteration limit"));
+                return Err(EvalError::generic(WHILE_LIMIT));
             }
             ev.bind(&a[2])?;
         }
@@ -480,11 +540,9 @@ fn while_(ev: &mut Evaluator, a: &[Expr]) -> R {
 fn evaluate(ev: &mut Evaluator, a: &[Expr]) -> R {
     let src = ev.eval(&a[0])?.to_text();
     if let Some(triggers) = a.get(1) {
-        // Trigger fields only matter for stored calculations; evaluate for errors.
-        match triggers {
-            Expr::List(items) => items.iter().try_for_each(|e| ev.eval(e).map(drop))?,
-            e => drop(ev.eval(e)?),
-        }
+        // Trigger fields only matter for stored calculations; evaluate for
+        // errors (a [list] is one: 1204).
+        ev.eval(triggers)?;
     }
     if src.trim().is_empty() {
         return Ok(Value::empty());
@@ -499,11 +557,17 @@ fn evaluate(ev: &mut Evaluator, a: &[Expr]) -> R {
     r
 }
 
+/// The error code of its argument; a While or recursion limit is not
+/// caught (FileMaker returns "?").
 fn evaluation_error(ev: &mut Evaluator, a: &[Expr]) -> R {
-    Ok(Value::int(
-        ev.eval(&a[0]).err().map_or(0, |e| e.code as i64),
-    ))
+    match ev.eval(&a[0]) {
+        Ok(_) => Ok(Value::int(0)),
+        Err(e) if e.message == WHILE_LIMIT => Err(e),
+        Err(e) => Ok(Value::int(e.code as i64)),
+    }
 }
+
+const WHILE_LIMIT: &str = "While exceeded its iteration limit";
 
 fn is_empty(ev: &mut Evaluator, a: &[Expr]) -> R {
     Ok(Value::bool(ev.eval(&a[0]).map_or(true, |v| v.is_empty())))
@@ -513,8 +577,52 @@ fn is_valid(ev: &mut Evaluator, a: &[Expr]) -> R {
     Ok(Value::bool(ev.eval(&a[0]).is_ok()))
 }
 
-fn is_valid_expression(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(Value::bool(crate::parser::parse(&txt(a, 0)).is_ok()))
+/// Valid when it parses and every field it names exists (Let and While
+/// variables aside).
+fn is_valid_expression(ev: &mut Evaluator, a: &[Value]) -> R {
+    let Ok(e) = crate::parser::parse(&txt(a, 0)) else {
+        return Ok(Value::bool(false));
+    };
+    Ok(Value::bool(fields_exist(ev, &e, &mut vec![])))
+}
+
+fn fields_exist(ev: &mut Evaluator, e: &Expr, locals: &mut Vec<String>) -> bool {
+    let missing = |r: R| matches!(r, Err(e) if e.code == code::FIELD_MISSING);
+    match e {
+        Expr::Field {
+            table: None, name, ..
+        } if locals.iter().any(|l| l.eq_ignore_ascii_case(name)) || ev.local(name).is_some() => {
+            true
+        }
+        Expr::Field { table, name, .. } => !missing(ev.ctx.field(table.as_deref(), name, 1)),
+        Expr::Call { name, args } => {
+            let binds = ["Let", "While"]
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case(name));
+            if binds && let Some(b) = args.first() {
+                let list = match b {
+                    Expr::List(items) => items.as_slice(),
+                    one => std::slice::from_ref(one),
+                };
+                for item in list {
+                    if let Expr::Binary(_, target, value) = item {
+                        if !fields_exist(ev, value, locals) {
+                            return false;
+                        }
+                        if let Expr::Field { name, .. } = &**target {
+                            locals.push(name.clone());
+                        }
+                    }
+                }
+                return args[1..].iter().all(|a| fields_exist(ev, a, locals));
+            }
+            args.iter().all(|a| fields_exist(ev, a, locals))
+        }
+        Expr::Unary(_, x) => fields_exist(ev, x, locals),
+        Expr::Binary(_, l, r) => fields_exist(ev, l, locals) && fields_exist(ev, r, locals),
+        Expr::List(items) => items.iter().all(|a| fields_exist(ev, a, locals)),
+        _ => true,
+    }
 }
 
 fn set_precision(ev: &mut Evaluator, a: &[Expr]) -> R {
@@ -643,7 +751,20 @@ fn expand(ev: &mut Evaluator, e: &Expr) -> Result<Vec<Value>, EvalError> {
     }
 }
 
+/// An aggregate given a single value that is not a field: error 1214.
+fn field_alone(a: &[Expr]) -> Result<(), EvalError> {
+    match a {
+        [Expr::Field { .. }] => Ok(()),
+        [_] => Err(EvalError::new(
+            code::FIELD_ALONE_NEEDED,
+            "a field alone is needed here",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn values(ev: &mut Evaluator, a: &[Expr]) -> Result<Vec<Value>, EvalError> {
+    field_alone(a)?;
     let mut out = Vec::new();
     for e in a {
         out.extend(expand(ev, e)?);
@@ -676,27 +797,33 @@ fn count(ev: &mut Evaluator, a: &[Expr]) -> R {
     ))
 }
 
+/// Min / Max: text values compare as text (collation order) when every
+/// value is text, otherwise as numbers (text without a number counts as
+/// 0); on a tie the later value wins.
 fn extreme(ev: &mut Evaluator, a: &[Expr], want: std::cmp::Ordering) -> R {
-    let vals = values(ev, a)?;
-    let mut best: Option<(Num, Value)> = None;
+    let vals: Vec<Value> = values(ev, a)?
+        .into_iter()
+        .filter(|v| !v.is_empty())
+        .collect();
+    let all_text = vals
+        .iter()
+        .all(|v| matches!(v, Value::Text(_) | Value::Json { .. }));
+    let mut best: Option<Value> = None;
     for v in vals {
-        if let Some(n) = v.to_num()
-            && best.as_ref().is_none_or(|(b, _)| n.cmp(b) == want)
-        {
-            best = Some((n, v));
+        let better = best.as_ref().is_none_or(|b| {
+            let o = if all_text {
+                text::collate(&v.to_text(), &b.to_text())
+            } else {
+                num::shown(&v.num_or_zero()).cmp(&num::shown(&b.num_or_zero()))
+            };
+            o == want || o.is_eq()
+        });
+        if better {
+            best = Some(v);
         }
     }
-    Ok(best
-        .map(|(n, v)| {
-            if matches!(v, Value::Text(_) | Value::Json { .. }) {
-                Value::Number(n)
-            } else {
-                v
-            }
-        })
-        .unwrap_or_else(Value::empty))
+    Ok(best.unwrap_or_else(Value::empty))
 }
-
 fn min(ev: &mut Evaluator, a: &[Expr]) -> R {
     extreme(ev, a, std::cmp::Ordering::Less)
 }
@@ -758,6 +885,7 @@ fn list(ev: &mut Evaluator, a: &[Expr]) -> R {
 
 /// Sum of payment_i / (1 + rate)^i, i starting at 1.
 fn npv(ev: &mut Evaluator, a: &[Expr]) -> R {
+    field_alone(&a[..1])?;
     let payments = expand(ev, &a[0])?;
     let rate = ev.eval(&a[1])?.num_or_zero();
     let w = ev.scale + 10;

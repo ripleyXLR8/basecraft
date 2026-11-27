@@ -7,7 +7,7 @@ use crate::functions;
 use crate::num::{self, Num};
 use crate::schema::{Rows, Schema};
 use crate::value::{self, Value};
-use bigdecimal::ToPrimitive;
+use bigdecimal::{ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -285,10 +285,28 @@ fn constant(name: &str) -> Option<Value> {
         "valuenumberranges" => 3,
         "jsonstringranges" => 4,
         // ConvertToFileMakerPath / ConvertFromFileMakerPath formats
-        // ponytail: values 1-3 assumed from the documented order.
+        // (values checked against FileMaker)
         "posixpath" => 1,
         "winpath" => 2,
         "urlpath" => 3,
+        // TextStyleAdd / TextStyleRemove styles
+        "plain" => 0,
+        "strikethrough" => 1,
+        "smallcaps" => 2,
+        "superscript" => 4,
+        "subscript" => 8,
+        "uppercase" => 16,
+        "lowercase" => 32,
+        "titlecase" => 48,
+        "wordunderline" => 64,
+        "doubleunderline" => 128,
+        "bold" => 256,
+        "italic" => 512,
+        "underline" => 1024,
+        "highlightyellow" => 4096,
+        "condense" => 8192,
+        "extend" => 16384,
+        "allstyles" => 32767,
         _ => return None,
     };
     Some(Value::int(v))
@@ -320,7 +338,7 @@ impl<'a> Evaluator<'a> {
             Expr::Number(n) => Ok(Value::Number(n.clone())),
             Expr::Text(s) => Ok(Value::Text(s.clone())),
             Expr::List(_) => Err(EvalError::new(
-                code::LIST_NOT_ALLOWED,
+                code::OPERAND_EXPECTED,
                 "list usage is not allowed here",
             )),
             Expr::Field {
@@ -344,6 +362,7 @@ impl<'a> Evaluator<'a> {
                 let v = self.eval(e)?;
                 Ok(match (op, v) {
                     (UnOp::Not, v) => Value::bool(!v.truth()),
+                    (UnOp::Neg, v) if v.is_empty() => Value::empty(),
                     (UnOp::Neg, Value::Time(t)) => Value::Time(-t),
                     (UnOp::Neg, v) => Value::num(-v.num_or_zero()),
                     (UnOp::Plus, v @ (Value::Date(_) | Value::Time(_) | Value::Timestamp(_))) => v,
@@ -412,7 +431,7 @@ impl<'a> Evaluator<'a> {
         for b in list {
             let Expr::Binary(BinOp::Eq, target, value) = b else {
                 return Err(EvalError::new(
-                    code::OPERATOR_MISSING,
+                    code::OPERAND_EXPECTED,
                     "\"=\" expected in variable definition",
                 ));
             };
@@ -443,20 +462,41 @@ fn temporal(v: &Value) -> bool {
     matches!(v, Value::Date(_) | Value::Time(_) | Value::Timestamp(_))
 }
 
+/// Date arithmetic: whole days; below day 1 the result is a plain number,
+/// past 12/31/4000 an error (both as FileMaker does).
 fn date(d: Num) -> R {
-    let d = num::trunc(&d, 0).to_i64().filter(|d| value::valid_day(*d));
-    d.map(Value::Date)
-        .ok_or_else(|| EvalError::generic("date out of range"))
+    let d = num::floor(&d);
+    match d.to_i64() {
+        Some(i) if value::valid_day(i) => Ok(Value::Date(i)),
+        Some(i) if i < 1 => Ok(Value::num(d)),
+        _ => Err(EvalError::new(code::DATE_INVALID, "date out of range")),
+    }
 }
 
-/// Text compares case-insensitively; anything else compares as numbers.
-pub fn compare(l: &Value, r: &Value) -> Ordering {
-    match (l, r) {
-        (Value::Text(_) | Value::Json { .. }, Value::Text(_) | Value::Json { .. }) => {
-            l.to_text().to_lowercase().cmp(&r.to_text().to_lowercase())
-        }
-        _ => l.num_or_zero().cmp(&r.num_or_zero()),
+fn timestamp(t: Num) -> R {
+    if value::valid_day(value::ts_date(&t)) {
+        Ok(Value::Timestamp(t))
+    } else {
+        Err(EvalError::new(code::DATE_INVALID, "timestamp out of range"))
     }
+}
+
+/// Seconds since 1/1/0001 of a date or timestamp.
+fn ts_seconds(v: &Value) -> Num {
+    match v {
+        Value::Date(d) => value::make_ts(*d, &num::int(0)),
+        v => v.num_or_zero(),
+    }
+}
+
+/// When either side is text, values compare as text, ignoring case and
+/// accents (`10 < "9"`, "é" is not after "e"); otherwise as numbers.
+pub fn compare(l: &Value, r: &Value) -> Ordering {
+    let text = |v: &Value| matches!(v, Value::Text(_) | Value::Json { .. });
+    if text(l) || text(r) {
+        return functions::base_key(&l.to_text()).cmp(&functions::base_key(&r.to_text()));
+    }
+    num::shown(&l.num_or_zero()).cmp(&num::shown(&r.num_or_zero()))
 }
 
 pub fn binary(op: BinOp, l: Value, r: Value, scale: i64) -> R {
@@ -471,25 +511,41 @@ pub fn binary(op: BinOp, l: Value, r: Value, scale: i64) -> R {
         Le => Value::bool(compare(&l, &r).is_le()),
         Gt => Value::bool(compare(&l, &r).is_gt()),
         Ge => Value::bool(compare(&l, &r).is_ge()),
+        // Two empty operands give an empty sum ("" + "" is empty, "" + 3 is 3).
+        Add | Sub if l.is_empty() && r.is_empty() => Value::empty(),
         Add => match (&l, &r) {
-            (Date(_), x) | (x, Date(_)) if !temporal(x) => date(a + b)?,
-            (Time(_), x) | (x, Time(_)) if !temporal(x) => Time(num::fix(a + b)),
-            (Timestamp(_), x) | (x, Timestamp(_)) if !matches!(x, Date(_) | Timestamp(_)) => {
-                Timestamp(num::fix(a + b))
+            (Date(d), Time(t)) | (Time(t), Date(d)) => timestamp(value::make_ts(*d, t))?,
+            (Date(_), x) | (x, Date(_)) if !temporal(x) => date(num::add(&a, &b))?,
+            (Time(_), x) | (x, Time(_)) if !matches!(x, Date(_) | Timestamp(_)) => {
+                Time(num::add(&a, &b))
             }
-            _ => Value::num(a + b),
+            (Timestamp(_), x) | (x, Timestamp(_)) if !matches!(x, Date(_) | Timestamp(_)) => {
+                timestamp(num::add(&a, &b))?
+            }
+            _ => Value::num(num::add(&a, &b)),
         },
         Sub => match (&l, &r) {
-            (Date(_), x) if !temporal(x) => date(a - b)?,
-            (Time(_), x) if !matches!(x, Date(_) | Timestamp(_)) => Time(num::fix(a - b)),
-            (Timestamp(_), x) if !matches!(x, Date(_) | Timestamp(_)) => Timestamp(num::fix(a - b)),
-            _ => Value::num(a - b),
+            (Date(d), Time(t)) => timestamp(value::make_ts(*d, &-t))?,
+            (Date(_), x) if !temporal(x) => date(num::sub(&a, &b))?,
+            (Time(_), x) if !matches!(x, Date(_) | Timestamp(_)) => Time(num::sub(&a, &b)),
+            (Timestamp(_), Date(_) | Timestamp(_)) => {
+                Time(num::sub(&ts_seconds(&l), &ts_seconds(&r)))
+            }
+            (Timestamp(_), _) => timestamp(num::sub(&a, &b))?,
+            _ => Value::num(num::sub(&a, &b)),
         },
-        Mul => Value::num(a * b),
-        Div => {
-            Number(num::div(&a, &b, scale).ok_or_else(|| EvalError::generic("division by zero"))?)
-        }
-        Pow => Number(num::pow(&a, &b, scale).ok_or_else(|| EvalError::generic("invalid power"))?),
+        Mul => Value::num(num::mul(&a, &b)),
+        Div => Number(
+            num::div(&a, &b, scale)
+                .ok_or_else(|| EvalError::new(code::DIVIDE_BY_ZERO, "division by zero"))?,
+        ),
+        Pow => Number(num::pow(&a, &b, scale).ok_or_else(|| {
+            if a.is_zero() {
+                EvalError::new(code::DIVIDE_BY_ZERO, "division by zero")
+            } else {
+                EvalError::new(code::NUMBER_DOMAIN, "invalid power")
+            }
+        })?),
         And | Or | Xor => unreachable!("logical operators short-circuit in eval"),
     })
 }

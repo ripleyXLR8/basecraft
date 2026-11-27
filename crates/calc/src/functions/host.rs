@@ -9,10 +9,27 @@ use crate::eval::{Evaluator, R, unavailable};
 use crate::num;
 use crate::value::{Container, Value};
 
+/// Functions FileMaker Pro on a desktop answers with empty text, not an
+/// error, when there is nothing to report (oracle on Windows).
+const EMPTY_BY_DEFAULT: [&str; 8] = [
+    "Location",
+    "LocationValues",
+    "RangeBeacons",
+    "Furigana",
+    "GetThumbnail",
+    "GetAVPlayerAttribute",
+    "ListPersistentDataIDs",
+    "GetLayoutObjectAttribute",
+];
+
 fn host(ev: &mut Evaluator, name: &str, a: &[Value]) -> R {
-    ev.ctx
-        .host_function(name, a)
-        .unwrap_or_else(|| Err(unavailable(name)))
+    ev.ctx.host_function(name, a).unwrap_or_else(|| {
+        if EMPTY_BY_DEFAULT.contains(&name) {
+            Ok(Value::empty())
+        } else {
+            Err(unavailable(name))
+        }
+    })
 }
 
 macro_rules! host_fns {
@@ -236,7 +253,7 @@ pub fn get_container_attribute(_: &mut Evaluator, a: &[Value]) -> R {
             Value::Text(
                 md5::Md5::digest(&c.data)
                     .iter()
-                    .map(|b| format!("{b:02x}"))
+                    .map(|b| format!("{b:02X}"))
                     .collect(),
             )
         }
@@ -322,8 +339,8 @@ pub fn convert_to_filemaker_path(_: &mut Evaluator, a: &[Value]) -> R {
         2 => {
             let p = p.replace('\\', "/");
             match p.strip_prefix("//") {
-                Some(unc) => format!("filewin://{unc}"),
-                None => format!("filewin:/{}", p.trim_start_matches('/')),
+                Some(unc) => format!("file://{unc}"),
+                None => format!("file:/{}", p.trim_start_matches('/')),
             }
         }
         3 => {

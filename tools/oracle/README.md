@@ -33,3 +33,11 @@ from files we authored ourselves.
 * Saving records: `cargo run -p engine --example edit -- <in> <out> new:Products "set:Products:+:Name=x" del:Products:3 …`
   writes a copy through `Database::save`; open it with `Test-FmOpen` and read
   fields back through UI Automation (`Edit` controls named `Field: Table::Field`).
+* `calc_oracle.ps1` + `calc_snippet.py`: calculation oracle. `Invoke-FmCalcs exprs.txt out.tsv`
+  (or `Invoke-FmCalcBatches` for long files, 150 lines per script) pastes a script that
+  `Evaluate`s each line and stores `index TAB result TAB EvaluationError` in
+  `Tasks::Description` of a new record, runs it from the Script Workspace and reads the field
+  back through UI Automation. Run it in a copy of `DynamicTemplates\Tasks\en.fmp12` (en_US
+  formats) opened with `Start-Fm`. Expressions that produce lone UTF-16 surrogates or
+  control characters can garble the field; wrap them in `Code ( ... )`. The results feed
+  `crates/calc/tests/oracle.tsv`.

@@ -76,28 +76,44 @@ built-in flags are CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimest
 CurrentTimeUTCMicroseconds, UUID, CalculationRepetitionNumber, SystemPlatform and
 ApplicationArchitecture.
 
+Oracle: **1,987 expressions** evaluated by FileMaker Pro 26.0.1 (Windows, English Tasks
+template, en_US formats) in [crates/calc/tests/oracle.tsv](crates/calc/tests/oracle.tsv),
+produced by `tools/oracle/calc_oracle.ps1`; `cargo test -p calc --test oracle` checks
+them all. 1,934 match; 53 are listed as known differences (see below).
+
 | Feature | State |
 |---------|-------|
-| Lexer, parser with error positions and codes, AST, round-trip pretty-printer | ✅ |
-| Operators, precedence, coercions, exact decimal arithmetic (400 digits) | ✅ |
-| If / Case / Choose / Let / While / Evaluate / EvaluationError / IsValid / SetPrecision | ✅ |
-| Text, value-list and word functions | ✅ |
-| Number, financial and math functions (decimal Exp/Ln/Sqrt/Pi; trig through f64) | ✅ |
-| Date, time and timestamp functions (en_US formats) | ✅ |
-| JSON (Set/Get/Delete/ListKeys/ListValues/Format/MakeArray/GetElementType, Parse/ParsedState) | ✅ |
-| JSONValueExists/ValueCount/AnyValuesExist/RemoveValues/UniqueValues (undocumented; semantics inferred from the signatures) | 🚧 |
-| Base64, hex, URL encoding, CryptDigest, CryptAuthCode, TextEncode/Decode (UTF-8) | ✅ |
+| Lexer, parser with error positions and FileMaker's error codes (1204, 1208, 1212...), exponent literals (`1e3`) | ✅ oracle |
+| Operators, precedence (unary minus before `^`, `not` before comparisons), coercions (text vs number compares as text) | ✅ oracle |
+| Decimal arithmetic: exact + - *, division and math functions with 2 guard digits beyond the 16 shown (`1/3*3` = 1) | ✅ oracle |
+| Number display: no leading zero (`.5`), `1.0E+9` / `1.5E-10` notation, 16 decimals | ✅ oracle |
+| Text to number (exponents, `(5)` negative, full-width digits) | ✅ oracle |
+| If / Case / Choose / Let / While / Evaluate / EvaluationError / IsValid / IsValidExpression / SetPrecision | ✅ oracle |
+| Text, value-list and word functions (non-overlapping Position/PatternCount, Proper, Trim widths, LF/CR LF value breaks, word rules, accent-aware sorting) | ✅ oracle |
+| Number, financial and math functions (errors 14/15/1218, Factorial/Combination domains, Mod by 0) | ✅ oracle |
+| Date, time and timestamp functions (en_US): 12-hour timestamps, 6-digit time fractions, two-digit year window, errors 500/501 | ✅ oracle |
+| JSON (Set/Get/Delete/ListKeys/ListValues/Format/MakeArray/GetElementType, Parse/ParsedState): JsonCpp number text and error messages | ✅ oracle |
+| JSONValueExists/ValueCount/AnyValuesExist/RemoveValues/UniqueValues (undocumented): array values, case-insensitive text match | ✅ oracle |
+| Design function formats (RelationInfo, GetTableDDL, FieldType, GetFieldsOnLayout; empty text for a missing file/field) | ✅ checked against FileMaker by hand (template schema not committed) |
+| Base64 (CRLF after every line), hex, URL encoding, CryptDigest, CryptAuthCode, TextEncode/Decode (UTF-8, ISO-8859-1, windows-1252) | ✅ oracle |
 | Aggregates over lists, repetitions and related records (through `Context`) | ✅ |
-| Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped; GetAsCSS/GetAsSVG of plain text | 🚧 |
+| Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped; GetAsCSS/GetAsSVG of plain text (✅ oracle) | 🚧 |
 | Design functions (FieldNames, FieldType, RelationInfo, GetTableDDL, LayoutObjectNames…) on `Context::schema` | ✅ |
 | Record functions (GetNthRecord, Lookup, LookupNext, GetSummary, Self, Status, GetRecordIDsFromFoundSet) through `Context` | ✅ |
 | ExecuteSQL / ExecuteSQLe: single-table SELECT, WHERE, ORDER BY, DISTINCT, COUNT(*), OFFSET/FETCH, `?` arguments, over `Context::rows` | 🚧 no joins, GROUP BY or system tables |
-| Japanese: kana width and script, KanjiNumeral, NumToJText, YearName, MonthNameJ (formats partly unverified) | 🚧 |
+| Japanese: kana width and script, KanjiNumeral, NumToJText, YearName, MonthNameJ, TrimAll types | ✅ oracle |
 | CryptGenerateSignature / CryptVerifySignature (RSA PKCS #1 v1.5, plain and DES-EDE3/AES-encrypted PEM keys) | ✅ matches OpenSSL |
 | CryptEncrypt / CryptDecrypt (+Base64): PBKDF2 + AES-128-GCM with SHA-256 digest, own byte layout | 🚧 not FileMaker-compatible |
 | Embeddings (CosineSimilarity, Add/Subtract/NormalizeEmbedding, GetEmbeddingAsText/File), container size/attributes, path conversion | ✅ |
 | Location, sensors, Live Text, AI models, persistent data, layout-object attributes: `Context::host_function`, "not available" (error 3) by default | ✅ |
 | Custom functions, file-locale date/number formats | ⏳ |
+
+Known differences (rows after `# known differences` in oracle.tsv):
+
+* Times keep no "12-hour" flag: FileMaker shows `GetAsTime ( "1:30 PM" )` as `1:30 PM`, we show `13:30:00`; dates from text keep their separator in FileMaker (`1.15.2024`).
+* Trigonometry differs in the last shown digit for about 1 argument in 5 (`Sin ( Pi / 6 )`); `Exp` of large arguments (FileMaker's `Exp ( 100 )` is off from the exact value; `Exp ( 1000 )` exceeds our 400 digits).
+* Guard digits beyond the 16 shown, visible only through `* 10^20` probes, differ for transcendental functions.
+* Styled text (no style runs), lone UTF-16 surrogates from `Char`, JSON duplicate keys, Shift_JIS/UTF-16 TextEncode, Windows-specific path conversion, and a few error codes that come with a value (`Count ( 1 ; 1/0 )`).
 
 ## M5 — Script engine (`crates/script`)
 

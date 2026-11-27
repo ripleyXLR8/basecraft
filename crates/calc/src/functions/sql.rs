@@ -388,9 +388,9 @@ impl P<'_> {
             .ok_or_else(|| err("operand expected"))?;
         if let Tok::Word(w) = &t {
             let parse: Option<fn(&str) -> Option<Value>> = match w.to_ascii_uppercase().as_str() {
-                "DATE" => Some(|s| value::parse_date(s).map(Value::Date)),
+                "DATE" => Some(|s| sql_date(s).map(Value::Date)),
                 "TIME" => Some(|s| value::parse_time(s).map(Value::Time)),
-                "TIMESTAMP" => Some(|s| value::parse_timestamp(s).map(Value::Timestamp)),
+                "TIMESTAMP" => Some(|s| sql_timestamp(s).map(Value::Timestamp)),
                 "NULL" => {
                     self.i += 1;
                     return Ok(Ex::Lit(Value::empty()));
@@ -425,6 +425,26 @@ impl P<'_> {
     }
 }
 
+/// SQL date literal: `YYYY-MM-DD`, or the file's date format.
+fn sql_date(s: &str) -> Option<i64> {
+    let p: Vec<&str> = s.trim().split('-').collect();
+    if let [y, m, d] = p[..]
+        && y.len() == 4
+    {
+        let (y, m, d) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
+        let day = value::day_number(y, m, d);
+        return (value::civil(day) == (y, m, d)).then_some(day);
+    }
+    value::parse_date(s)
+}
+
+fn sql_timestamp(s: &str) -> Option<num::Num> {
+    match s.trim().split_once(' ') {
+        Some((d, t)) => Some(value::make_ts(sql_date(d)?, &value::parse_time(t)?)),
+        None => value::parse_timestamp(s),
+    }
+}
+
 fn is_null(v: &Value) -> bool {
     v.is_empty()
 }
@@ -435,9 +455,9 @@ fn sql_cmp(a: &Value, b: &Value) -> Ordering {
     let typed = |v: &Value| !matches!(v, Value::Text(_) | Value::Json { .. } | Value::Container(_));
     let coerce = |v: &Value, like: &Value| -> Option<num::Num> {
         match (v, like) {
-            (Value::Text(s), Value::Date(_)) => value::parse_date(s).map(num::int),
+            (Value::Text(s), Value::Date(_)) => sql_date(s).map(num::int),
             (Value::Text(s), Value::Time(_)) => value::parse_time(s),
-            (Value::Text(s), Value::Timestamp(_)) => value::parse_timestamp(s),
+            (Value::Text(s), Value::Timestamp(_)) => sql_timestamp(s),
             _ => v.to_num(),
         }
     };

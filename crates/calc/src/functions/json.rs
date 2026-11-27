@@ -14,7 +14,6 @@ use crate::value::Value;
 use serde_json::{Map, Number, Value as J};
 use std::str::FromStr;
 
-const RAW: i64 = 0;
 const STRING: i64 = 1;
 const NUMBER: i64 = 2;
 const OBJECT: i64 = 3;
@@ -22,13 +21,64 @@ const ARRAY: i64 = 4;
 const BOOLEAN: i64 = 5;
 const NULL: i64 = 6;
 
-// ponytail: messages are serde_json's, not the exact FileMaker wording.
 fn err_text(msg: impl std::fmt::Display) -> Value {
     Value::Text(format!("? {msg}"))
 }
 
+const NOT_A_DOCUMENT: &str = "A valid JSON document must be either an array or an object value.";
+const VALUE_EXPECTED: &str = "Syntax error: value, object or array expected.";
+
+/// Parses a JSON document, which must be an object or an array (FileMaker's
+/// JsonCpp runs in strict-root mode). Errors use JsonCpp's wording.
+// ponytail: only the common JsonCpp messages are reproduced (empty text,
+// a non-JSON first character, a scalar root); other syntax errors carry
+// serde_json's message, and duplicate keys are not detected.
 fn parse(s: &str) -> Result<J, String> {
-    serde_json::from_str(s).map_err(|e| e.to_string())
+    let Some((line, col, first)) = s.lines().enumerate().find_map(|(l, t)| {
+        t.char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .map(|(i, c)| (l + 1, t[..i].chars().count() + 1, c))
+    }) else {
+        return Err(format!(
+            "* Line 1, Column 1\r  {VALUE_EXPECTED}\r* Line 1, Column 1\r  {NOT_A_DOCUMENT}"
+        ));
+    };
+    match serde_json::from_str::<J>(s) {
+        Ok(j @ (J::Object(_) | J::Array(_))) => Ok(j),
+        Ok(_) => Err(format!("* Line {line}, Column {col}\r  {NOT_A_DOCUMENT}")),
+        Err(_) if !"{[\"-0123456789tfn".contains(first) => Err(format!(
+            "* Line {line}, Column {col}\r  {VALUE_EXPECTED}\r* Line {line}, Column {}\r  Extra non-whitespace after JSON value.",
+            col + 1
+        )),
+        Err(e) => {
+            // serde_json's messages in JsonCpp's words; at end of input
+            // JsonCpp points one column further.
+            let m = e.to_string();
+            let (msg, past) = if m.starts_with("trailing characters") {
+                ("Extra non-whitespace after JSON value.", 0)
+            } else if m.starts_with("expected value") {
+                (VALUE_EXPECTED, 0)
+            } else if m.starts_with("EOF while parsing an object") {
+                ("Missing ',' or '}' in object declaration", 1)
+            } else if m.starts_with("EOF while parsing a list") {
+                ("Missing ',' or ']' in array declaration", 1)
+            } else if m.starts_with("key must be a string") {
+                ("Missing '}' or object member name", 0)
+            } else {
+                return Err(format!("* Line {}, Column {}\r  {m}", e.line(), e.column()));
+            };
+            Err(format!(
+                "* Line {}, Column {}\r  {msg}",
+                e.line(),
+                e.column() + past
+            ))
+        }
+    }
+}
+
+/// Any JSON value (JSONRaw input).
+fn parse_value(s: &str) -> Option<J> {
+    serde_json::from_str(s).ok()
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,8 +89,12 @@ enum Seg {
     Append,
 }
 
-/// `a.b[2]['c.d'][:][+]`
+/// `a.b[2]['c.d'][:][+]`. Errors use JsonCpp's path message.
 fn parse_path(p: &str) -> Result<Vec<Seg>, String> {
+    parse_path_at(p).map_err(|at| format!("* Offset {at} in \"{p}\"\r  JSON path syntax error."))
+}
+
+fn parse_path_at(p: &str) -> Result<Vec<Seg>, usize> {
     let c: Vec<char> = p.chars().collect();
     let mut out = vec![];
     let mut i = 0;
@@ -50,23 +104,21 @@ fn parse_path(p: &str) -> Result<Vec<Seg>, String> {
             '[' => {
                 let close = if matches!(c.get(i + 1), Some('\'' | '"')) {
                     let q = c[i + 1];
-                    let end = (i + 2..c.len())
-                        .find(|&j| c[j] == q)
-                        .ok_or("unterminated quoted key")?;
+                    let end = (i + 2..c.len()).find(|&j| c[j] == q).ok_or(i + 1)?;
                     out.push(Seg::Key(c[i + 2..end].iter().collect()));
                     end + 1
                 } else {
-                    let end = (i..c.len()).find(|&j| c[j] == ']').ok_or("missing ]")?;
+                    let end = (i..c.len()).find(|&j| c[j] == ']').ok_or(i + 1)?;
                     let inner: String = c[i + 1..end].iter().collect();
                     out.push(match inner.trim() {
                         ":" => Seg::Last,
                         "+" => Seg::Append,
-                        n => Seg::Index(n.parse().map_err(|_| format!("invalid index [{n}]"))?),
+                        n => Seg::Index(n.parse().map_err(|_| i + 1)?),
                     });
                     end
                 };
                 if c.get(close) != Some(&']') {
-                    return Err("missing ]".into());
+                    return Err(close);
                 }
                 i = close + 1;
             }
@@ -117,21 +169,27 @@ fn set(node: &mut J, path: &[Seg], value: J) -> Result<(), String> {
     match node {
         J::Object(m) => match seg {
             Seg::Key(k) => set(m.entry(k.clone()).or_insert(J::Null), rest, value),
-            _ => Err("array index used on an object".into()),
+            _ => Err("in Json::Value::operator[](ArrayIndex): requires arrayValue".into()),
         },
         J::Array(a) => {
             let i = match seg {
                 Seg::Append => a.len(),
                 Seg::Last => a.len().saturating_sub(1),
                 Seg::Index(i) => *i,
-                Seg::Key(k) => k.parse().map_err(|_| format!("key {k} used on an array"))?,
+                Seg::Key(k) => k.parse().map_err(|_| {
+                    "in Json::Value::resolveReference(key, end): requires objectValue".to_string()
+                })?,
             };
             if a.len() <= i {
                 a.resize(i + 1, J::Null);
             }
             set(&mut a[i], rest, value)
         }
-        _ => Err("cannot set an element inside a scalar".into()),
+        _ => Err(match seg {
+            Seg::Key(_) => "in Json::Value::resolveReference(key, end): requires objectValue",
+            _ => "in Json::Value::operator[](ArrayIndex): requires arrayValue",
+        }
+        .into()),
     }
 }
 
@@ -178,9 +236,71 @@ fn delete(node: &mut J, path: &[Seg]) {
     }
 }
 
+/// JsonCpp's number text: integers as written, other numbers as doubles
+/// with 15 significant digits (`%.15g`), ".0" added when that looks whole
+/// (1e3 -> 1000.0, 12345678901234567890123 -> 1.23456789012346e+22).
 fn number_text(n: &Number) -> String {
     let s = n.to_string();
-    num::parse(&s).map(|d| num::format(&d)).unwrap_or(s)
+    if !s.contains(['.', 'e', 'E']) {
+        if let Ok(i) = s.parse::<i64>() {
+            return i.to_string();
+        }
+        if let Ok(u) = s.parse::<u64>() {
+            return u.to_string();
+        }
+    }
+    let g = g15(s.parse::<f64>().unwrap_or(0.0));
+    if g.contains(['.', 'e', 'n', 'i']) {
+        g
+    } else {
+        format!("{g}.0")
+    }
+}
+
+/// C's `%.15g`, except that small numbers stay in plain notation
+/// (FileMaker writes 10^-5 as 0.00001).
+fn g15(f: f64) -> String {
+    let g = g15_c(f);
+    if let Some((_, e)) = g.split_once("e-") {
+        let places = 14 + e.parse::<usize>().unwrap_or(0);
+        let p = format!("{f:.places$}");
+        return p.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    g
+}
+
+fn g15_c(f: f64) -> String {
+    if f == 0.0 {
+        return "0".into();
+    }
+    let e = format!("{f:.14e}");
+    let (m, exp) = e.split_once('e').unwrap();
+    let exp: i32 = exp.parse().unwrap();
+    let trim = |s: &str| {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    if !(-4..15).contains(&exp) {
+        let sign = if exp < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", trim(m), exp.abs())
+    } else {
+        trim(&format!("{f:.*}", (14 - exp).max(0) as usize))
+    }
+}
+
+/// A calculation number as JSON: whole numbers that fit 64 bits exactly,
+/// others through a double.
+fn json_number(n: &num::Num) -> J {
+    let n = num::shown(n);
+    let text = if n.is_integer() && n.to_string().parse::<i64>().is_ok() {
+        num::plain(&n)
+    } else {
+        g15(num::to_f64(&n))
+    };
+    Number::from_str(&text).map(J::Number).unwrap_or(J::Null)
 }
 
 fn quote(s: &str, out: &mut String) {
@@ -217,11 +337,18 @@ fn scalar(j: &J) -> Option<String> {
 
 pub(crate) fn compact(j: &J) -> String {
     let mut out = String::new();
-    write_compact(j, &mut out);
+    write_compact(j, &mut out, ":");
     out
 }
 
-fn write_compact(j: &J, out: &mut String) {
+/// Compact, but with " : " after keys (GetFieldsOnLayout's layout).
+pub(crate) fn spaced(j: &J) -> String {
+    let mut out = String::new();
+    write_compact(j, &mut out, " : ");
+    out
+}
+
+fn write_compact(j: &J, out: &mut String, colon: &str) {
     match j {
         J::Array(a) => {
             out.push('[');
@@ -229,7 +356,7 @@ fn write_compact(j: &J, out: &mut String) {
                 if i > 0 {
                     out.push(',');
                 }
-                write_compact(v, out);
+                write_compact(v, out, colon);
             }
             out.push(']');
         }
@@ -240,8 +367,8 @@ fn write_compact(j: &J, out: &mut String) {
                     out.push(',');
                 }
                 quote(k, out);
-                out.push(':');
-                write_compact(v, out);
+                out.push_str(colon);
+                write_compact(v, out, colon);
             }
             out.push('}');
         }
@@ -249,9 +376,8 @@ fn write_compact(j: &J, out: &mut String) {
     }
 }
 
-/// JsonCpp's StyledStreamWriter layout with tab indentation.
-// ponytail: line ends are CR (FileMaker's paragraph separator); verify
-// against FileMaker whether it emits LF.
+/// JsonCpp's StyledStreamWriter layout with tab indentation and CR line
+/// ends (checked against FileMaker).
 struct Styled {
     out: String,
     indent: String,
@@ -355,16 +481,15 @@ fn styled(j: &J) -> String {
     w.out
 }
 
-/// The FileMaker value of an element: strings unquoted, numbers and
-/// booleans as numbers, null as empty, containers as compact JSON.
+/// The FileMaker value of an element: strings unquoted (line feeds become
+/// returns), numbers as JsonCpp writes them, booleans as 1/0, null as
+/// empty, containers as compact JSON.
 fn element(j: &J) -> Value {
     match j {
         J::Null => Value::empty(),
         J::Bool(b) => Value::bool(*b),
-        J::Number(n) => num::parse(&n.to_string())
-            .map(Value::Number)
-            .unwrap_or_else(Value::empty),
-        J::String(s) => Value::text(s.clone()),
+        J::Number(n) => Value::Text(number_text(n)),
+        J::String(s) => Value::text(s.replace("\r\n", "\r").replace('\n', "\r")),
         j => Value::Text(compact(j)),
     }
 }
@@ -390,7 +515,7 @@ pub fn get_element(_: &mut Evaluator, a: &[Value]) -> R {
 pub fn get_element_type(_: &mut Evaluator, a: &[Value]) -> R {
     at(a, |j| {
         Value::int(match j {
-            None => 0,
+            None => return err_text("Incorrect key, index, or path"),
             Some(J::String(_)) => STRING,
             Some(J::Number(_)) => NUMBER,
             Some(J::Object(_)) => OBJECT,
@@ -414,13 +539,11 @@ pub fn list_keys(_: &mut Evaluator, a: &[Value]) -> R {
 
 pub fn list_values(_: &mut Evaluator, a: &[Value]) -> R {
     at(a, |j| {
-        let text = |c: &J| match c {
-            J::Bool(b) => b.to_string(),
-            c => element(c).to_text(),
-        };
+        // null values are left out.
+        let text = |c: &J| (!c.is_null()).then(|| element(c).to_text());
         let vals: Vec<String> = match j {
-            Some(J::Object(m)) => m.values().map(text).collect(),
-            Some(J::Array(v)) => v.iter().map(text).collect(),
+            Some(J::Object(m)) => m.values().filter_map(text).collect(),
+            Some(J::Array(v)) => v.iter().filter_map(text).collect(),
             _ => vec![],
         };
         Value::Text(vals.join("\r"))
@@ -450,25 +573,27 @@ pub fn format_elements(_: &mut Evaluator, a: &[Value]) -> R {
 fn typed(v: &Value, ty: i64) -> Result<J, String> {
     Ok(match ty {
         STRING => J::String(v.to_text()),
-        NUMBER => {
-            let n = num::format(&v.num_or_zero());
-            J::Number(Number::from_str(&n).map_err(|e| e.to_string())?)
-        }
+        NUMBER => json_number(&v.num_or_zero()),
         BOOLEAN => J::Bool(match v.to_text().trim().to_ascii_lowercase().as_str() {
             "true" => true,
             "false" => false,
             _ => v.truth(),
         }),
         NULL => J::Null,
-        OBJECT | ARRAY if v.is_empty() => {
-            if ty == OBJECT {
-                J::Object(Map::new())
-            } else {
-                J::Array(vec![])
-            }
+        // Anything that is not an object (array) becomes an empty one.
+        OBJECT => match parse_value(&v.to_text()) {
+            Some(j @ J::Object(_)) => j,
+            _ => J::Object(Map::new()),
+        },
+        ARRAY => match parse_value(&v.to_text()) {
+            Some(j @ J::Array(_)) => j,
+            _ => J::Array(vec![]),
+        },
+        // JSONRaw (and unknown types): JSON as is, anything else as a string.
+        _ => {
+            let s = v.to_text();
+            parse_value(&s).unwrap_or(J::String(s))
         }
-        OBJECT | ARRAY | RAW => parse(&v.to_text())?,
-        _ => return Err(format!("invalid JSON type {ty}")),
     })
 }
 
@@ -562,35 +687,26 @@ pub fn json_parsed_state(_: &mut Evaluator, a: &[Value]) -> R {
     }))
 }
 
-/// A calculation value as the JSON it stands for: JSON text when it parses
-/// (so 1 matches the number 1 and "\"1\"" the string), else a string.
-// ponytail: JSONValueExists & co. are undocumented FileMaker 26 functions;
-// this matching rule and their results below are our reading of the
-// signatures. Verify against FileMaker.
-fn as_json(v: &Value) -> J {
-    match v {
-        Value::Number(n) => Number::from_str(&num::format(n))
-            .map(J::Number)
-            .unwrap_or(J::Null),
-        v => {
-            let s = v.to_text();
-            parse(&s).unwrap_or(J::String(s))
-        }
-    }
+// JSONValueExists & co. (undocumented FileMaker 26 functions) match values
+// by their FileMaker text, case-insensitively, and only inside arrays
+// (oracle: ["1"] contains 1, {"a":1} contains nothing).
+
+/// Matching key of a JSON value: its FileMaker text, case-insensitive, so
+/// the number 1 matches "1" and "a" matches "A".
+fn key(j: &J) -> String {
+    element(j).to_text().to_lowercase()
 }
 
-/// The values of the array or object at the path, compared by their
-/// compact text (numbers normalised).
+/// The values of the array at the path (objects are not searched).
 fn members(j: Option<&J>) -> Vec<String> {
     match j {
-        Some(J::Array(a)) => a.iter().map(compact).collect(),
-        Some(J::Object(m)) => m.values().map(compact).collect(),
+        Some(J::Array(a)) => a.iter().map(key).collect(),
         _ => vec![],
     }
 }
 
 fn count_of(a: &[Value]) -> R {
-    let want = compact(&as_json(&a[2]));
+    let want = a[2].to_text().to_lowercase();
     at(a, |j| {
         Value::int(members(j).iter().filter(|m| **m == want).count() as i64)
     })
@@ -609,9 +725,10 @@ pub fn value_exists(_: &mut Evaluator, a: &[Value]) -> R {
 
 /// The values of a JSON array argument (`jsonValuesArray...`).
 fn wanted(v: &Value) -> Result<Vec<String>, String> {
-    match parse(&v.to_text())? {
-        J::Array(a) => Ok(a.iter().map(compact).collect()),
-        j => Ok(vec![compact(&j)]),
+    match parse_value(&v.to_text()) {
+        Some(J::Array(a)) => Ok(a.iter().map(key).collect()),
+        Some(j) => Ok(vec![key(&j)]),
+        None => parse(&v.to_text()).map(|j| vec![key(&j)]),
     }
 }
 
@@ -654,10 +771,8 @@ fn filter_at(a: &[Value], mut keep: impl FnMut(&str) -> bool) -> R {
             None => return Ok(Value::Text(compact(&root_copy(a)))),
         }
     }
-    match node {
-        J::Array(v) => v.retain(|x| keep(&compact(x))),
-        J::Object(m) => m.retain(|_, x| keep(&compact(x))),
-        _ => {}
+    if let J::Array(v) = node {
+        v.retain(|x| keep(&key(x)));
     }
     Ok(Value::Text(compact(&root)))
 }
@@ -690,10 +805,11 @@ pub fn make_array(_: &mut Evaluator, a: &[Value]) -> R {
     let list = txt(a, 0);
     let sep = txt(a, 1);
     let ty = super::int(a, 2)?;
-    let items: Vec<&str> = if sep.is_empty() || sep == "\r" {
-        super::text::split_values(&list)
-    } else if list.is_empty() {
+    // A trailing separator makes a last, empty item ("1¶x¶" -> [1,0,0]).
+    let items: Vec<&str> = if list.is_empty() {
         vec![]
+    } else if sep.is_empty() || sep == "\r" {
+        list.split(['\r', '\n']).collect()
     } else {
         list.split(sep.as_str()).collect()
     };

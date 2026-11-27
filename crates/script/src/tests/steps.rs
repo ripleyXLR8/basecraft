@@ -425,7 +425,7 @@ fn found_set_steps() {
         ),
     ];
     let (_, o) = go(&mut h, steps);
-    assert_eq!(o.result.to_text(), "2|1Dee|1|1Bob|4011");
+    assert_eq!(o.result.to_text(), "2|1Dee|1|1Bob|4010");
     // Find Matching Records with no field and no active field: 401.
     h.win.field = None;
     let (_, o) = go(&mut h, vec![rawp(sid::FIND_MATCHING, &[], 0, 0)]);

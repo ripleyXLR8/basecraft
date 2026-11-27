@@ -680,7 +680,14 @@ Set Multi-User, Copy All Records, Omit Multiple, Show Omitted Only, Sort
 Records without keys, View As, Set Zoom Level, Show/Hide Toolbars 0.
 `Get ( WindowName )` of a file's first window is the file name without
 extension; after New Window [Name: "W2"] it is `W2`; Set Zoom Level
-[Zoom In] from 150 % gives 200; View As [Cycle] from Table gives Form.
+[Zoom In] from 150 % gives 200; View As [Cycle] from Table gives Form. Go to Record by calculation past the
+end, 0, or Previous on the first record: 101. Perform Quick Find with no
+match: 401 and an empty found set. Go to Portal Row with no related
+record: 0 (nothing happens); with an active field outside any portal: 3.
+Go to Related Record with no related record: 101 (layout unchanged).
+Execute SQL without a data source: 5. Modify Last Find enters Find mode
+(`Get ( WindowMode )` 1); Set Window Title [Current; "T9"] makes
+`Get ( WindowName )` `T9`.
 ## 9. Value lists ✅
 
 `[33].[5].[V]`: key 16 = name, key 3 = custom values (CR-separated),

@@ -452,10 +452,7 @@ impl Engine {
                             .all(|w| all.iter().any(|v| v.contains(w.as_str())))
                     })
                     .collect();
-                // No match: error 401, the found set stays as it was.
-                if hits.is_empty() {
-                    return Err(error::NO_MATCH);
-                }
+                // No match: error 401 and an empty found set (FileMaker 26).
                 self.found(host, hits, Vec::new())
             })(),
             // Windows.
@@ -763,11 +760,13 @@ impl Engine {
                 })
             })
         };
-        let portal = portals
-            .iter()
-            .find(|o| in_portal(o))
-            .or(portals.first())
-            .ok_or(error::UNAVAILABLE)?;
+        // The active field's portal; a field outside any portal: 3
+        // (FileMaker 26); no active field: the first portal.
+        let portal = match w.field {
+            Some(_) => portals.iter().find(|o| in_portal(o)),
+            None => portals.first(),
+        }
+        .ok_or(error::UNAVAILABLE)?;
         let pto = portal.portal.map_or(0, |p| (p.0 & 0xFFF) as u32);
         let related = rec.map_or(Vec::new(), |r| db.related(to, r, pto));
         Ok((pto, related))
@@ -784,8 +783,9 @@ impl Engine {
         self.commit(host)?;
         let (_, related) = self.active_portal(host)?;
         let rows = related.len();
+        // No related records: nothing to go to, no error (FileMaker 26).
         if rows == 0 {
-            return Err(error::RECORD_MISSING);
+            return Ok(Flow::Next);
         }
         let w = host.window().clone();
         let cur = w.portal_row;

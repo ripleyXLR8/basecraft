@@ -231,3 +231,78 @@ fn entries_are_in_store_order() {
         }
     }
 }
+
+/// Every calculation of every template field (calculated fields, auto-enter
+/// and validation calculations): compiling its decompiled text gives back
+/// FileMaker's token stream (key 5) and compiled form (key 6).
+#[test]
+fn field_calculations_recompile() {
+    use std::collections::BTreeMap;
+    let Some(dir) = template_dir() else {
+        eprintln!("no FileMaker templates found, skipping");
+        return;
+    };
+    let (mut ok, mut total, mut fails) = (0, 0, Vec::new());
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        let names = fmp12::calc::FileNames::load(&file).unwrap();
+        // Nodes under a field definition: key → value (long values sit in
+        // sub-nodes [5] / [6], keys 1…n).
+        let mut kv: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
+        file.walk(|path, c| {
+            let (Some(p), fmp12::Chunk::Kv { key, data }) = (fmp12::int_path(path), c) else {
+                return;
+            };
+            if p.len() >= 5 && p[0] >= 128 && p[1..3] == [3, 5] {
+                kv.entry(p)
+                    .or_default()
+                    .entry(*key)
+                    .or_default()
+                    .extend_from_slice(data);
+            }
+        })
+        .unwrap();
+        for (p, m) in &kv {
+            let Some(k4) = m.get(&4) else { continue };
+            let long = |k: u32| {
+                let mut q = p.clone();
+                q.push(k);
+                kv.get(&q).map(|s| {
+                    s.range(1..)
+                        .flat_map(|(_, v)| v.clone())
+                        .collect::<Vec<u8>>()
+                })
+            };
+            let k5 = m.get(&5).cloned().or_else(|| long(5));
+            let k6 = m.get(&6).cloned().or_else(|| long(6));
+            let (Some(k5), Some(k6)) = (k5, k6) else {
+                continue;
+            };
+            let ctx = fmp12::calc::context(k4).unwrap_or(0);
+            total += 1;
+            let src = fmp12::calc::decompile(&k5, ctx, &names).unwrap();
+            let c = fmp12::calc::compile(&src, ctx, &names)
+                .unwrap_or_else(|e| panic!("{}: {src:?}: {e}", f.display()));
+            let exotic = src
+                .chars()
+                .any(|c| c as u32 >= 0x100 && !(0x2000..0x2080).contains(&(c as u32)));
+            let same_text =
+                fmp12::calc::decompile(&c.tokens, ctx, &names).as_deref() == Ok(src.as_str());
+            if c.tokens == k5 && c.compiled == k6 || exotic && same_text {
+                ok += 1;
+            } else {
+                fails.push(format!(
+                    "{}: {src:?}\n  {:02x?}\n  {:02x?}",
+                    f.display(),
+                    c.compiled,
+                    k6
+                ));
+            }
+        }
+    }
+    for x in fails.iter().take(10) {
+        eprintln!("{x}");
+    }
+    eprintln!("{ok}/{total} template field calculations recompile");
+    assert!(total > 0 && fails.is_empty());
+}

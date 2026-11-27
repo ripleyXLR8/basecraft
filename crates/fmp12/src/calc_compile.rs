@@ -1,0 +1,1024 @@
+//! Calculation compiler: source text → token stream (key 5, keeps the
+//! formatting) and compiled form (key 6, what FileMaker evaluates). Without
+//! key 6 FileMaker evaluates a calculation to "?" (FORMAT.md §11).
+//!
+//! The compiled form is prefix notation without punctuation or trivia:
+//! an operator or function token, then its operands. Functions with a
+//! variable number of arguments write a u16 count and their arguments in
+//! reverse order.
+
+use crate::calc_tables::{EXTERNAL, FUNCTIONS, FUNCTIONS2, GET_FLAGS};
+use crate::save::{encode_text, path_elem};
+
+/// Names a calculation can refer to.
+pub trait Resolve {
+    /// Table occurrences: (id, name).
+    fn occurrences(&self) -> Vec<(u32, String)>;
+    /// Fields (id, name) of the base table behind occurrence `to`.
+    fn fields(&self, to: u32) -> Vec<(u32, String)>;
+}
+
+/// Keys 5 and 6 of a calculation node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compiled {
+    pub tokens: Vec<u8>,
+    pub compiled: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompileError {
+    /// Character offset in the source.
+    pub at: usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (at character {})", self.message, self.at)
+    }
+}
+
+impl std::error::Error for CompileError {}
+
+type Res<T> = Result<T, CompileError>;
+
+fn err<T>(at: usize, message: impl Into<String>) -> Res<T> {
+    Err(CompileError {
+        at,
+        message: message.into(),
+    })
+}
+
+/// Compiles `src` for a calculation evaluated from occurrence `context`
+/// (0 for scripts and layouts: every field is then written `TO::Field`).
+pub fn compile(src: &str, context: u32, names: &dyn Resolve) -> Result<Compiled, CompileError> {
+    let toks = lex(src, context, names)?;
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        frames: Vec::new(),
+    };
+    p.skip();
+    let compiled = if p.pos < p.toks.len() {
+        let c = p.expr(0)?;
+        if p.pos < p.toks.len() {
+            return err(p.toks[p.pos].at, "unexpected token");
+        }
+        c
+    } else {
+        return err(0, "empty calculation");
+    };
+    let tokens = p.toks.iter().flat_map(|t| t.k5.iter().copied()).collect();
+    Ok(Compiled { tokens, compiled })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Kind {
+    /// Whitespace or comment: key 5 only.
+    Trivia,
+    /// Number literal: its compiled bytes.
+    Num(Vec<u8>),
+    Text,
+    Field {
+        to: u32,
+        field: u32,
+        qualified: bool,
+    },
+    /// `$local` / `$$global`.
+    Var,
+    Ident,
+    Punct(&'static str),
+}
+
+#[derive(Debug, Clone)]
+struct Tok {
+    kind: Kind,
+    /// Character offset.
+    at: usize,
+    text: String,
+    /// Key 5 bytes (set by the parser for identifiers).
+    k5: Vec<u8>,
+}
+
+/// `len` of a text run in a token: UTF-16 units, one byte below 0x80,
+/// else two bytes with the top bit set.
+fn run_len(s: &str, at: usize) -> Res<Vec<u8>> {
+    let n = s.encode_utf16().count();
+    match n {
+        0..=0x7F => Ok(vec![n as u8]),
+        0x80..=0x7FFF => Ok(vec![0x80 | (n >> 8) as u8, n as u8]),
+        _ => err(at, "text too long"),
+    }
+}
+
+/// `13 len text 00`, optionally after a trivia opcode.
+fn text_run(prefix: Option<u8>, s: &str, at: usize) -> Res<Vec<u8>> {
+    let mut out: Vec<u8> = prefix.into_iter().collect();
+    out.push(0x13);
+    out.extend(run_len(s, at)?);
+    out.extend(encode_text(s));
+    out.push(0);
+    Ok(out)
+}
+
+/// Field reference `16 flags 04 TO len 01 field 00 01` (flags 04 when written `TO::Field`).
+fn field_ref(op: u8, to: u32, field: u32, qualified: bool) -> Vec<u8> {
+    let t = to.saturating_sub(128) as u16;
+    let mut out = vec![op, if qualified { 4 } else { 0 }, 4, 3, 0xD0];
+    out.extend(t.to_be_bytes());
+    let f = path_elem(field);
+    out.push(1 + f.len() as u8);
+    out.push(1);
+    out.extend(f);
+    out.extend([0, 1]);
+    out
+}
+
+/// Number literal: `10 02 00 01 00 10`, u32 integer part, two u32 groups of
+/// nine decimals. Key 5 adds `00 20` (`00 40` when written with an exponent).
+fn number(lit: &str, at: usize) -> Res<(Vec<u8>, Vec<u8>)> {
+    let lower = lit.to_ascii_lowercase();
+    let (mant, exp) = match lower.split_once('e') {
+        Some((m, e)) => (m, Some(e.parse::<i32>().map_err(|_| bad_number(at))?)),
+        None => (lower.as_str(), None),
+    };
+    let (ip, fp) = mant.split_once('.').unwrap_or((mant, ""));
+    let mut digits: Vec<u8> = ip.bytes().chain(fp.bytes()).map(|b| b - b'0').collect();
+    // Position of the decimal point within `digits`.
+    let mut point = ip.len() as i64 + exp.unwrap_or(0) as i64;
+    if point < 0 {
+        let pad = (-point) as usize;
+        digits.splice(0..0, std::iter::repeat_n(0, pad));
+        point = 0;
+    }
+    let point = point as usize;
+    if digits.len() < point {
+        digits.resize(point, 0);
+    }
+    let (int, frac) = digits.split_at(point);
+    let int: u64 = int.iter().fold(0, |a, d| a.saturating_mul(10) + *d as u64);
+    // ponytail: literals of 1e9 and above use another layout that FileMaker
+    // would not paste; decode it if users need such literals.
+    if int >= 1_000_000_000 || frac.iter().skip(18).any(|d| *d != 0) {
+        return err(at, format!("number literal {lit} is out of range"));
+    }
+    let group = |r: std::ops::Range<usize>| {
+        r.fold(0u32, |a, i| {
+            a * 10 + frac.get(i).copied().unwrap_or(0) as u32
+        })
+    };
+    let mut c = vec![0x10, 2, 0, 1, 0, 0x10];
+    c.extend((int as u32).to_be_bytes());
+    c.extend(group(0..9).to_be_bytes());
+    c.extend(group(9..18).to_be_bytes());
+    let mut k5 = c.clone();
+    k5.extend([0, if exp.is_some() { 0x40 } else { 0x20 }]);
+    Ok((c, k5))
+}
+
+fn bad_number(at: usize) -> CompileError {
+    CompileError {
+        at,
+        message: "bad number".into(),
+    }
+}
+
+const PUNCT: &[(&str, u8)] = &[
+    ("<>", 0x45),
+    ("<=", 0x42),
+    (">=", 0x47),
+    (";", 0x03),
+    ("(", 0x04),
+    (")", 0x05),
+    ("[", 0x06),
+    ("]", 0x07),
+    ("¶", 0x24),
+    ("+", 0x25),
+    ("-", 0x26),
+    ("*", 0x27),
+    ("/", 0x28),
+    ("^", 0x29),
+    ("<", 0x41),
+    ("≤", 0x43),
+    ("=", 0x44),
+    ("≠", 0x46),
+    ("≥", 0x48),
+    (">", 0x49),
+    ("&", 0x50),
+];
+
+/// Characters that end a name.
+fn stop(c: char) -> bool {
+    c.is_whitespace() || "\"()[];+-*/^&=<>≠≤≥¶:".contains(c)
+}
+
+fn starts_ci(src: &[char], at: usize, pat: &str) -> Option<usize> {
+    let mut i = at;
+    for p in pat.chars() {
+        let c = *src.get(i)?;
+        if c != p && !c.to_lowercase().eq(p.to_lowercase()) {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
+}
+
+fn lex(src: &str, context: u32, names: &dyn Resolve) -> Res<Vec<Tok>> {
+    let s: Vec<char> = src.chars().collect();
+    // Field names, longest first: `TO::Field` everywhere, `Field` in context.
+    let mut fields: Vec<(String, u32, u32, bool)> = Vec::new();
+    for (to, tname) in names.occurrences() {
+        for (f, fname) in names.fields(to) {
+            fields.push((format!("{tname}::{fname}"), to, f, true));
+            if to == context {
+                fields.push((fname, to, f, false));
+            }
+        }
+    }
+    fields.sort_by_key(|f| std::cmp::Reverse(f.0.chars().count()));
+    let mut out = Vec::new();
+    let mut i = 0;
+    let text = |a: usize, b: usize| s[a..b].iter().collect::<String>();
+    while i < s.len() {
+        let at = i;
+        let c = s[i];
+        let next = s.get(i + 1).copied();
+        // Trivia.
+        if c.is_whitespace() {
+            while i < s.len() && s[i].is_whitespace() {
+                i += 1;
+            }
+            let t = text(at, i);
+            out.push(Tok {
+                kind: Kind::Trivia,
+                at,
+                k5: text_run(Some(0x0C), &t, at)?,
+                text: t,
+            });
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            let end = (i + 2..s.len().saturating_sub(1))
+                .find(|&j| s[j] == '*' && s[j + 1] == '/')
+                .ok_or_else(|| CompileError {
+                    at,
+                    message: "unterminated comment".into(),
+                })?;
+            let inner = text(i + 2, end);
+            i = end + 2;
+            out.push(Tok {
+                kind: Kind::Trivia,
+                at,
+                k5: text_run(Some(0x0D), &inner, at)?,
+                text: text(at, i),
+            });
+            continue;
+        }
+        if c == '/' && next == Some('/') {
+            let mut j = i + 2;
+            while j < s.len() && s[j] != '\r' && s[j] != '\n' {
+                j += 1;
+            }
+            // The line break belongs to the comment.
+            if j < s.len() {
+                j += if s[j] == '\r' && s.get(j + 1) == Some(&'\n') {
+                    2
+                } else {
+                    1
+                };
+            }
+            let rest = text(i + 2, j);
+            i = j;
+            out.push(Tok {
+                kind: Kind::Trivia,
+                at,
+                k5: text_run(Some(0x0E), &rest, at)?,
+                text: text(at, i),
+            });
+            continue;
+        }
+        // Text literal.
+        if c == '"' {
+            let mut v = String::new();
+            i += 1;
+            loop {
+                let Some(&ch) = s.get(i) else {
+                    return err(at, "unterminated text");
+                };
+                i += 1;
+                match ch {
+                    '"' => break,
+                    '\\' => match s.get(i) {
+                        Some('"') | Some('\\') => {
+                            v.push(s[i]);
+                            i += 1;
+                        }
+                        Some('¶') => {
+                            v.push('¶');
+                            i += 1;
+                        }
+                        _ => v.push('\\'),
+                    },
+                    '¶' => v.push('\r'),
+                    _ => v.push(ch),
+                }
+            }
+            out.push(Tok {
+                kind: Kind::Text,
+                at,
+                k5: text_run(None, &v, at)?,
+                text: v,
+            });
+            continue;
+        }
+        // Number.
+        if c.is_ascii_digit() || c == '.' && next.is_some_and(|d| d.is_ascii_digit()) {
+            while i < s.len() && (s[i].is_ascii_digit() || s[i] == '.') {
+                i += 1;
+            }
+            if i < s.len() && (s[i] == 'e' || s[i] == 'E') {
+                let mut j = i + 1;
+                if j < s.len() && (s[j] == '+' || s[j] == '-') {
+                    j += 1;
+                }
+                if j < s.len() && s[j].is_ascii_digit() {
+                    i = j;
+                    while i < s.len() && s[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+            }
+            let lit = text(at, i);
+            if lit.matches('.').count() > 1 {
+                return err(at, "bad number");
+            }
+            let (c6, k5) = number(&lit, at)?;
+            out.push(Tok {
+                kind: Kind::Num(c6),
+                at,
+                k5,
+                text: lit,
+            });
+            continue;
+        }
+        // Field names (they may hold spaces and operator characters).
+        let field = fields.iter().find_map(|(name, to, f, q)| {
+            let end = starts_ci(&s, i, name)?;
+            let boundary = s.get(end).is_none_or(|c| stop(*c)) || name.ends_with(stop);
+            boundary.then_some((end, *to, *f, *q))
+        });
+        if let Some((end, to, f, q)) = field {
+            i = end;
+            out.push(Tok {
+                kind: Kind::Field {
+                    to,
+                    field: f,
+                    qualified: q,
+                },
+                at,
+                k5: field_ref(0x16, to, f, q),
+                text: text(at, end),
+            });
+            continue;
+        }
+        // Operators and punctuation.
+        if let Some((p, b)) = PUNCT.iter().find(|(p, _)| starts_ci(&s, i, p).is_some()) {
+            i += p.chars().count();
+            out.push(Tok {
+                kind: Kind::Punct(p),
+                at,
+                k5: vec![*b],
+                text: p.to_string(),
+            });
+            continue;
+        }
+        // Words: function names, keywords, Let variables, $variables.
+        while i < s.len() && !stop(s[i]) {
+            i += 1;
+        }
+        if i == at {
+            return err(at, format!("unexpected character {c:?}"));
+        }
+        let w = text(at, i);
+        if w.starts_with('$') {
+            let mut k5 = vec![0x1A];
+            k5.extend(run_len(&w, at)?);
+            k5.extend(encode_text(&w));
+            out.push(Tok {
+                kind: Kind::Var,
+                at,
+                k5,
+                text: w,
+            });
+        } else {
+            out.push(Tok {
+                kind: Kind::Ident,
+                at,
+                k5: Vec::new(),
+                text: w,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Function token classes.
+#[derive(Clone, Copy)]
+enum Func {
+    One(u8),
+    Two(u8, u8),
+    External(&'static [u8; 4], u16),
+}
+
+impl Func {
+    fn bytes(self) -> Vec<u8> {
+        match self {
+            Func::One(t) => vec![t],
+            Func::Two(p, x) => vec![p, x],
+            Func::External(lib, i) => {
+                let mut b = vec![0x1D, 0, 0, 0x15];
+                b.extend(lib);
+                b.extend(i.to_be_bytes());
+                b
+            }
+        }
+    }
+}
+
+/// Token of a function name. A few names are both a function and a
+/// constant (Extend, Lower: style and LookupNext constants): `call` picks.
+fn lookup_func(name: &str, call: bool) -> Option<Func> {
+    let eq = |n: &str| n.eq_ignore_ascii_case(name);
+    let mut ones = FUNCTIONS
+        .iter()
+        .filter(|(_, n)| eq(n))
+        .map(|(t, _)| Func::One(*t));
+    let first = ones.next();
+    if let Some(f) = first {
+        return Some(match ones.next() {
+            Some(c) if !call => c,
+            _ => f,
+        });
+    }
+    if let Some((p, x, _)) = FUNCTIONS2.iter().find(|(_, _, n)| eq(n)) {
+        return Some(Func::Two(*p, *x));
+    }
+    EXTERNAL
+        .iter()
+        .find(|(_, _, n)| eq(n))
+        .map(|(l, i, _)| Func::External(l, *i))
+}
+
+/// Functions written with a u16 argument count and their arguments in
+/// reverse order (those with optional or repeated arguments): Factorial,
+/// Substitute, the aggregates, TextFont, the Text…Remove functions, Lookup,
+/// LookupNext, every `F9 xx` and external (`1D`) function.
+fn variadic(f: Func) -> bool {
+    match f {
+        Func::One(t) => matches!(
+            t,
+            0x3B | 0x63 | 0x7F..=0x85 | 0x87 | 0xA0..=0xA2 | 0xA8 | 0xA9 | 0xBA | 0xE0 | 0xE1
+        ),
+        Func::Two(p, _) => p == 0xF9,
+        Func::External(..) => true,
+    }
+}
+
+/// Functions that take a field itself (all its values or repetitions):
+/// a field argument is written with op 0x17 in the compiled form.
+fn takes_field(f: Func) -> bool {
+    matches!(f, Func::One(0x7F..=0x8B | 0xA0 | 0xA1 | 0xE0 | 0xE1))
+}
+
+/// Names that may be written without parentheses.
+fn constant(f: Func) -> bool {
+    match f {
+        Func::One(t) => matches!(t, 0x31 | 0x97 | 0xAA..=0xC8),
+        Func::Two(p, _) => p == 0xFA,
+        Func::External(_, i) => matches!(i, 0x01 | 0x13),
+    }
+}
+
+/// One compiled argument; `field` is the 0x17 form of a bare field,
+/// `list` the items of a `[ … ]` list.
+struct Arg {
+    code: Vec<u8>,
+    field: Option<Vec<u8>>,
+    list: Option<Vec<Vec<u8>>>,
+}
+
+/// Variables of one Let or While: bindings so far, named ones with their slot.
+struct Frame {
+    count: u16,
+    names: Vec<(String, u16)>,
+}
+
+struct Parser {
+    toks: Vec<Tok>,
+    pos: usize,
+    frames: Vec<Frame>,
+}
+
+fn u16b(n: usize) -> [u8; 2] {
+    (n as u16).to_be_bytes()
+}
+
+impl Parser {
+    fn skip(&mut self) {
+        while self.pos < self.toks.len() && self.toks[self.pos].kind == Kind::Trivia {
+            self.pos += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<&Tok> {
+        self.toks.get(self.pos)
+    }
+
+    fn at(&self) -> usize {
+        self.peek()
+            .map_or_else(|| self.toks.last().map_or(0, |t| t.at), |t| t.at)
+    }
+
+    fn bump(&mut self) -> usize {
+        let i = self.pos;
+        self.pos += 1;
+        self.skip();
+        i
+    }
+
+    fn is_punct(&self, p: &str) -> bool {
+        matches!(self.peek(), Some(Tok { kind: Kind::Punct(q), .. }) if *q == p)
+    }
+
+    fn expect(&mut self, p: &str) -> Res<()> {
+        if self.is_punct(p) {
+            self.bump();
+            Ok(())
+        } else {
+            err(self.at(), format!("expected {p:?}"))
+        }
+    }
+
+    fn keyword(&self) -> Option<(&'static str, u8)> {
+        let t = self.peek()?;
+        if t.kind != Kind::Ident {
+            return None;
+        }
+        [("and", 0x1F), ("or", 0x20), ("xor", 0x21), ("not", 0x1E)]
+            .into_iter()
+            .find(|(k, _)| t.text.eq_ignore_ascii_case(k))
+    }
+
+    /// Binary operator at the cursor: (compiled byte, level).
+    fn binop(&self) -> Option<(u8, u8)> {
+        if let Some((k, b)) = self.keyword() {
+            return match k {
+                "and" => Some((b, 2)),
+                "or" | "xor" => Some((b, 1)),
+                _ => None,
+            };
+        }
+        let Some(Tok {
+            kind: Kind::Punct(p),
+            k5,
+            ..
+        }) = self.peek()
+        else {
+            return None;
+        };
+        let level = match *p {
+            "=" | "<>" | "≠" | "<" | "<=" | "≤" | ">" | ">=" | "≥" => 3,
+            "&" => 4,
+            "+" | "-" => 5,
+            "*" | "/" => 6,
+            "^" => 7,
+            _ => return None,
+        };
+        Some((k5[0], level))
+    }
+
+    /// Precedence climbing; all binary operators are left-associative.
+    fn expr(&mut self, min: u8) -> Res<Vec<u8>> {
+        let mut lhs = self.unary()?;
+        while let Some((op, level)) = self.binop().filter(|(_, l)| *l >= min) {
+            let i = self.bump();
+            if let Some((_, b)) = [("and", 0x1F), ("or", 0x20), ("xor", 0x21)]
+                .into_iter()
+                .find(|(k, _)| self.toks[i].text.eq_ignore_ascii_case(k))
+            {
+                self.toks[i].k5 = vec![b];
+            }
+            let rhs = self.expr(level + 1)?;
+            lhs = [vec![op], lhs, rhs].concat();
+        }
+        Ok(lhs)
+    }
+
+    /// Prefix operators bind tighter than `^`.
+    fn unary(&mut self) -> Res<Vec<u8>> {
+        let op = if self.is_punct("-") {
+            Some(0x2C)
+        } else if self.is_punct("+") {
+            Some(0x68)
+        } else if self.keyword().is_some_and(|k| k.0 == "not") {
+            let i = self.pos;
+            self.toks[i].k5 = vec![0x1E];
+            Some(0x1E)
+        } else {
+            None
+        };
+        match op {
+            Some(op) => {
+                self.bump();
+                Ok([vec![op], self.unary()?].concat())
+            }
+            None => self.primary(),
+        }
+    }
+
+    fn primary(&mut self) -> Res<Vec<u8>> {
+        let at = self.at();
+        let Some(t) = self.peek().cloned() else {
+            return err(at, "unexpected end of calculation");
+        };
+        match &t.kind {
+            Kind::Num(c) => {
+                self.bump();
+                Ok(c.clone())
+            }
+            Kind::Text => {
+                self.bump();
+                Ok(t.k5.clone())
+            }
+            Kind::Punct("¶") => {
+                self.bump();
+                Ok(vec![0x24])
+            }
+            Kind::Punct("(") => {
+                self.bump();
+                let e = self.expr(0)?;
+                self.expect(")")?;
+                Ok(e)
+            }
+            Kind::Var => {
+                self.bump();
+                match self.repetition()? {
+                    Some(r) => Ok([vec![0xE4], r, t.k5].concat()),
+                    None => Ok(t.k5),
+                }
+            }
+            // A Let variable may shadow a field name.
+            Kind::Field {
+                qualified: false, ..
+            } if self.slot_of(&t.text).is_some() => {
+                let i = self.pos;
+                self.toks[i].kind = Kind::Ident;
+                self.ident()
+            }
+            Kind::Field {
+                to,
+                field,
+                qualified,
+            } => {
+                self.bump();
+                match self.repetition()? {
+                    // `Field[n]` compiles as GetRepetition ( Field ; n ).
+                    Some(r) => {
+                        Ok([vec![0x89], field_ref(0x17, *to, *field, *qualified), r].concat())
+                    }
+                    None => Ok(t.k5),
+                }
+            }
+            Kind::Ident => self.ident(),
+            _ => err(at, format!("unexpected {:?}", t.text)),
+        }
+    }
+
+    /// `[ expr ]` after a variable or field.
+    fn repetition(&mut self) -> Res<Option<Vec<u8>>> {
+        if !self.is_punct("[") {
+            return Ok(None);
+        }
+        self.bump();
+        let r = self.expr(0)?;
+        self.expect("]")?;
+        Ok(Some(r))
+    }
+
+    fn slot_of(&self, name: &str) -> Option<u16> {
+        self.frames.iter().rev().find_map(|f| {
+            f.names
+                .iter()
+                .rev()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, s)| *s)
+        })
+    }
+
+    fn ident(&mut self) -> Res<Vec<u8>> {
+        let i = self.pos;
+        let at = self.toks[i].at;
+        let name = self.toks[i].text.clone();
+        if name.eq_ignore_ascii_case("true") || name.eq_ignore_ascii_case("false") {
+            let b = if name.eq_ignore_ascii_case("true") {
+                0x22
+            } else {
+                0x23
+            };
+            self.toks[i].k5 = vec![b];
+            self.bump();
+            return Ok(vec![b]);
+        }
+        if let Some(slot) = self.slot_of(&name) {
+            self.toks[i].k5 = let_name(&name, at)?;
+            self.bump();
+            return Ok([vec![0x18], slot.to_be_bytes().to_vec()].concat());
+        }
+        self.bump();
+        let Some(f) = lookup_func(&name, self.is_punct("(")) else {
+            return err(at, format!("unknown name {name:?}"));
+        };
+        self.toks[i].k5 = f.bytes();
+        match f {
+            Func::One(0x9B) => {
+                self.expect("(")?;
+                let j = self.pos;
+                let flag = self
+                    .peek()
+                    .filter(|t| t.kind == Kind::Ident)
+                    .and_then(|t| {
+                        GET_FLAGS
+                            .iter()
+                            .find(|(_, n)| n.eq_ignore_ascii_case(&t.text))
+                    })
+                    .map(|(b, _)| *b);
+                let Some(flag) = flag else {
+                    return err(self.at(), "unknown Get flag");
+                };
+                self.toks[j].k5 = vec![0x9C, flag];
+                self.bump();
+                self.expect(")")?;
+                Ok(vec![0x9B, flag])
+            }
+            Func::One(0xDF) => self.let_(),
+            Func::Two(0xF8, 0) => self.while_(),
+            _ if !self.is_punct("(") => {
+                if constant(f) {
+                    Ok(f.bytes())
+                } else {
+                    err(at, format!("{name} needs parameters"))
+                }
+            }
+            _ => {
+                let args = self.args()?;
+                Ok(emit_call(f, args))
+            }
+        }
+    }
+
+    /// `( a ; b ; … )`; an argument may be a `[ … ]` list.
+    fn args(&mut self) -> Res<Vec<Arg>> {
+        self.expect("(")?;
+        let mut out = Vec::new();
+        if self.is_punct(")") {
+            self.bump();
+            return Ok(out);
+        }
+        loop {
+            if self.is_punct("[") {
+                self.bump();
+                let mut items = Vec::new();
+                loop {
+                    items.push(self.expr(0)?);
+                    if self.is_punct(";") {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect("]")?;
+                let mut code = vec![0x19];
+                code.extend(u16b(items.len()));
+                code.extend(items.iter().rev().flatten());
+                out.push(Arg {
+                    code,
+                    field: None,
+                    list: Some(items),
+                });
+            } else {
+                let start = self.pos;
+                let code = self.expr(0)?;
+                let single = self.toks[start..self.pos]
+                    .iter()
+                    .filter(|t| t.kind != Kind::Trivia)
+                    .count()
+                    == 1;
+                let field = match &self.toks[start].kind {
+                    Kind::Field {
+                        to,
+                        field,
+                        qualified,
+                    } if single => Some(field_ref(0x17, *to, *field, *qualified)),
+                    _ => None,
+                };
+                out.push(Arg {
+                    code,
+                    field,
+                    list: None,
+                });
+            }
+            if self.is_punct(";") {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(")")?;
+        Ok(out)
+    }
+
+    /// One binding `name = value` of a Let or While; returns its compiled form.
+    fn binding(&mut self) -> Res<Vec<u8>> {
+        let at = self.at();
+        let Some(t) = self.peek().cloned() else {
+            return err(at, "expected a variable");
+        };
+        let frame = self.frames.len() - 1;
+        let slot: u16 = self.frames.iter().map(|f| f.count).sum();
+        match t.kind {
+            Kind::Var => {
+                self.bump();
+                let rep = self.repetition()?;
+                self.expect("=")?;
+                let value = self.expr(0)?;
+                self.frames[frame].count += 1;
+                let rep = match rep {
+                    Some(r) => r,
+                    None => number("1", at)?.0,
+                };
+                Ok([vec![0xE3], value, rep, t.k5].concat())
+            }
+            // A Let variable may shadow a field name.
+            Kind::Ident
+            | Kind::Field {
+                qualified: false, ..
+            } => {
+                let i = self.pos;
+                self.toks[i].kind = Kind::Ident;
+                self.toks[i].k5 = let_name(&t.text, at)?;
+                self.bump();
+                self.expect("=")?;
+                let value = self.expr(0)?;
+                let f = &mut self.frames[frame];
+                f.count += 1;
+                let old = f
+                    .names
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(&t.text))
+                    .map(|(_, s)| *s);
+                Ok(match old {
+                    // Reassignment: value, repetition 1, target slot.
+                    Some(s) => [
+                        vec![0xE3],
+                        value,
+                        number("1", at)?.0,
+                        vec![0x18],
+                        s.to_be_bytes().to_vec(),
+                    ]
+                    .concat(),
+                    None => {
+                        f.names.push((t.text.clone(), slot));
+                        value
+                    }
+                })
+            }
+            _ => err(at, "expected a variable"),
+        }
+    }
+
+    /// A single binding or a `[ … ]` list: u16 count, then the bindings.
+    fn bindings(&mut self) -> Res<Vec<u8>> {
+        let mut items = Vec::new();
+        if self.is_punct("[") {
+            self.bump();
+            loop {
+                items.push(self.binding()?);
+                if self.is_punct(";") {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.expect("]")?;
+        } else {
+            items.push(self.binding()?);
+        }
+        Ok([u16b(items.len()).to_vec(), items.concat()].concat())
+    }
+
+    fn let_(&mut self) -> Res<Vec<u8>> {
+        self.expect("(")?;
+        self.frames.push(Frame {
+            count: 0,
+            names: Vec::new(),
+        });
+        let b = self.bindings()?;
+        self.expect(";")?;
+        let body = self.expr(0)?;
+        self.expect(")")?;
+        self.frames.pop();
+        Ok([vec![0xDF], b, body].concat())
+    }
+
+    fn while_(&mut self) -> Res<Vec<u8>> {
+        self.expect("(")?;
+        self.frames.push(Frame {
+            count: 0,
+            names: Vec::new(),
+        });
+        let init = self.bindings()?;
+        self.expect(";")?;
+        let cond = self.expr(0)?;
+        self.expect(";")?;
+        let lp = self.bindings()?;
+        self.expect(";")?;
+        let result = self.expr(0)?;
+        self.expect(")")?;
+        self.frames.pop();
+        Ok([vec![0xF8, 0], init, cond, lp, result].concat())
+    }
+}
+
+/// Key 5 of a Let variable name: `0B len name 00 00`.
+fn let_name(name: &str, at: usize) -> Res<Vec<u8>> {
+    let mut v = vec![0x0B];
+    v.extend(run_len(name, at)?);
+    v.extend(encode_text(name));
+    v.extend([0, 0]);
+    Ok(v)
+}
+
+fn emit_call(f: Func, args: Vec<Arg>) -> Vec<u8> {
+    // Evaluate: count, 00 00, then the expression and the trigger fields in
+    // order (a list of fields is spread).
+    if let Func::One(0xDC) = f {
+        let codes: Vec<Vec<u8>> = args
+            .into_iter()
+            .flat_map(|a| a.list.unwrap_or_else(|| vec![a.code]))
+            .collect();
+        return [
+            vec![0xDC],
+            u16b(codes.len()).to_vec(),
+            vec![0, 0],
+            codes.concat(),
+        ]
+        .concat();
+    }
+    let fields = takes_field(f);
+    let n = args.len();
+    let mut codes: Vec<Vec<u8>> = args
+        .into_iter()
+        .map(|a| match a.field {
+            Some(x) if fields => x,
+            _ => a.code,
+        })
+        .collect();
+    match f {
+        // Case: number of test/result pairs; a default result gets the test 1.
+        Func::One(0x4C) => {
+            if n % 2 == 1 {
+                let d = codes.pop().unwrap_or_default();
+                codes.push(number("1", 0).map(|x| x.0).unwrap_or_default());
+                codes.push(d);
+            }
+            [vec![0x4C], u16b(codes.len() / 2).to_vec(), codes.concat()].concat()
+        }
+        // If without an else result: 00 in its place.
+        Func::One(0x4B) if n == 2 => [vec![0x4B], codes.concat(), vec![0]].concat(),
+        // Choose: number of results, arguments in order.
+        Func::One(0x4D) => [
+            vec![0x4D],
+            u16b(n.saturating_sub(1)).to_vec(),
+            codes.concat(),
+        ]
+        .concat(),
+        Func::One(0xDD) => [vec![0xDD, 0, 0], codes.concat()].concat(),
+        // SetPrecision, SetRecursion: arguments in reverse order, no count.
+        Func::One(0x3D | 0x40) => {
+            codes.reverse();
+            [f.bytes(), codes.concat()].concat()
+        }
+        Func::External(..) => {
+            let mut b = f.bytes();
+            b[1..3].copy_from_slice(&u16b(n));
+            codes.reverse();
+            [b, codes.concat()].concat()
+        }
+        _ if variadic(f) => {
+            codes.reverse();
+            [f.bytes(), u16b(n).to_vec(), codes.concat()].concat()
+        }
+        _ => [f.bytes(), codes.concat()].concat(),
+    }
+}

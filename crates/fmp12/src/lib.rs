@@ -5,6 +5,7 @@
 //! a hierarchical key/value store addressed by paths. See `docs/FORMAT.md`.
 
 pub mod calc;
+mod calc_compile;
 mod calc_tables;
 pub mod chunk;
 pub mod graph;

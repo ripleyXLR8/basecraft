@@ -162,8 +162,13 @@ function Set-FmClip([string]$fmt, [string]$xml) {
 # Pastes the steps of an fmxmlsnippet file into a new script of the
 # frontmost file (Scripts > Script Workspace, New Script, Ctrl+V, Ctrl+S).
 function Add-FmScriptSteps([string]$snippet) {
-  Click-Fm 408 40; Start-Sleep 1; Click-Fm 480 63; Start-Sleep 3
-  $sw = Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' } | Select -First 1
+  for ($try = 0; $try -lt 4 -and -not $sw; $try++) {
+    $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+    [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
+    Click-Fm 408 40; Start-Sleep 1; Click-Fm 480 63; Start-Sleep 3
+    $sw = Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' } | Select -First 1
+    if (-not $sw) { [System.Windows.Forms.SendKeys]::SendWait("{ESC}{ESC}"); Start-Sleep 1 }
+  }
   $h = [IntPtr]$sw.Current.NativeWindowHandle
   $r = New-Object W32+RECT; [void][W32]::GetWindowRect($h, [ref]$r)
   [W32]::Front($h); [W32]::Click($r.L + 56, $r.T + 75); Start-Sleep 2   # New Script
@@ -172,6 +177,11 @@ function Add-FmScriptSteps([string]$snippet) {
   [System.Windows.Forms.SendKeys]::SendWait("^v"); Start-Sleep 3
   [System.Windows.Forms.SendKeys]::SendWait("^s"); Start-Sleep 2
   $sw.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close(); Start-Sleep 2
+  # A long paste may still be running at Ctrl+S: FileMaker then asks on close.
+  for ($i = 0; $i -lt 60 -and (Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' }); $i++) {
+    if (Find-Fm "Enregistrer tout" "Button") { Invoke-Fm "Enregistrer tout" }
+    Start-Sleep 1
+  }
 }
 
 # Closes FileMaker through its main window and waits for it to exit, so the

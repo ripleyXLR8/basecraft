@@ -6,6 +6,8 @@
 
 pub mod chunk;
 pub mod graph;
+pub mod layouts;
+pub mod pb;
 pub mod schema;
 pub mod scripts;
 pub mod scsu;

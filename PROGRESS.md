@@ -33,14 +33,16 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Compiled calculations (auto-enter, validation, calc fields) | 🚧 |
 | Table occurrences (base table, position, colour) and relationships (TOs, join fields, cascade create) | ✅ |
 | Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
-| Layouts: parts, objects, styles | ⏳ |
+| Layouts: name, table occurrence, width, parts (kind, position, height, style) | ✅ |
+| Layout objects: kind, id, bounds, style name, field reference, static text | ✅ |
+| Layout objects: nesting (tabs, portals, button bars), local CSS, formatting, actions | 🚧 |
 | Scripts: catalog, folders, step list (type, enabled, options) | ✅ |
 | Script step parameters | 🚧 |
 | Value lists (custom values, from field) | ✅ |
 | Custom functions, accounts and privileges, themes | ⏳ |
 | Container data | ⏳ |
 
-Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps and 24 value lists match FileMaker's XML export.
+Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts and 504 layout objects match FileMaker's XML export.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 

@@ -344,3 +344,93 @@ fn value_lists_match_xml() {
     }
     eprintln!("{checked} value lists checked against XML");
 }
+
+#[test]
+fn layouts_match_xml() {
+    let (mut layouts_checked, mut objects_checked) = (0, 0);
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let layouts = fmp12::layouts::layouts(&file).unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        let cat = doc
+            .descendants()
+            .find(|n| n.has_tag_name("LayoutCatalog"))
+            .unwrap();
+        for x in cat.descendants().filter(|n| n.has_tag_name("Layout")) {
+            let id: u32 = x.attribute("id").unwrap().parse().unwrap();
+            let l = layouts.iter().find(|l| l.id == id).expect("layout");
+            assert_eq!(l.name, x.attribute("name").unwrap());
+            if x.attribute("isFolder").is_some() {
+                continue;
+            }
+            assert_eq!(
+                l.width.to_string(),
+                x.attribute("width").unwrap(),
+                "{}",
+                l.name
+            );
+            let to = x
+                .children()
+                .find(|n| n.has_tag_name("TableOccurrenceReference"))
+                .unwrap();
+            assert_eq!(
+                l.table_occurrence.to_string(),
+                to.attribute("id").unwrap(),
+                "{}",
+                l.name
+            );
+            let parts: Vec<_> = x
+                .descendants()
+                .filter(|n| n.has_tag_name("Definition"))
+                .collect();
+            assert_eq!(l.parts.len(), parts.len(), "{}", l.name);
+            for (p, xp) in l.parts.iter().zip(&parts) {
+                assert_eq!(
+                    p.kind.to_string(),
+                    xp.attribute("kind").unwrap(),
+                    "{}",
+                    l.name
+                );
+                assert_eq!(
+                    p.height.to_string(),
+                    xp.attribute("size").unwrap(),
+                    "{}",
+                    l.name
+                );
+                assert_eq!(
+                    p.top.to_string(),
+                    xp.attribute("absolute").unwrap(),
+                    "{}",
+                    l.name
+                );
+            }
+            for xo in x.descendants().filter(|n| n.has_tag_name("LayoutObject")) {
+                let oid: u64 = xo.attribute("id").unwrap().parse().unwrap();
+                let o = l
+                    .objects
+                    .iter()
+                    .find(|o| o.id == oid)
+                    .unwrap_or_else(|| panic!("{} object {oid}", l.name));
+                assert_eq!(
+                    o.kind.to_string(),
+                    xo.attribute("kind").unwrap(),
+                    "{} object {oid}",
+                    l.name
+                );
+                let b = xo.children().find(|n| n.has_tag_name("Bounds")).unwrap();
+                let a = |k: &str| b.attribute(k).unwrap().parse::<f64>().unwrap();
+                assert_eq!(
+                    (o.bounds.top, o.bounds.left, o.bounds.bottom, o.bounds.right),
+                    (a("top"), a("left"), a("bottom"), a("right")),
+                    "{} object {oid}",
+                    l.name
+                );
+                // ponytail: XML <Options> remaps some bits of `o.options`; mapping not decoded yet.
+                objects_checked += 1;
+            }
+            layouts_checked += 1;
+        }
+    }
+    eprintln!("{layouts_checked} layouts, {objects_checked} layout objects checked against XML");
+}

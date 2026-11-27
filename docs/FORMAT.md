@@ -173,3 +173,54 @@ FileMaker export XML. All 214 template fields match the export (`tests/oracle.rs
 | 24–25 | — | maximum repetitions, u16 BE |
 
 Bytes 2, 12–13 and 16–23 changed nothing visible in the XML.
+
+## 6. Long values
+
+A value longer than ~1000 bytes is moved from key *K* of a node into the
+sub-path `[node].[K]`, as keys 1…n (key 0 = total length as u32 BE, or
+formatting for text). Short values stay inline. Readers must accept both.
+
+## 7. Relationship graph ✅
+
+* Table-occurrence reference: `03 D0 hi lo`, id = 128 + hi:lo. FileMaker's
+  XML shows `0x104000 | id`.
+* `[3].[17].[5].[TO]` key 2: `02 01 00 | len 02 path-int(base table) |
+  f32 left, top, width, height (BE) | u32 collapsed height | u32 | RGBA`.
+* `[3].[251].[5].[R]` key 2: `04 TOref(left) 04 TOref(right) | sort spec… |
+  flags`. The last byte holds the flags: 0x10 cascade-create right, 0x20 cascade-create left.
+  `[R].[3]` keys 1…n = join predicates `op | len 01 field | len 01 field`
+  (op 0 = `=`).
+
+## 8. Scripts ✅
+
+`[17].[5].[S]`: key 16 = name, key 240 = options (u64: 8 script, 9 folder,
+2 separator), key 4 = step list made of 28-byte records:
+`02 01 index 00 | BE BE | … | u16 step id @20 | u16 | u32 options @24`.
+The trailing zeros of the last record are trimmed.
+Step parameters live in `[S].[5].[n]`, e.g. a calculation in `.[128].[5]`.
+
+## 9. Value lists ✅
+
+`[33].[5].[V]`: key 16 = name, key 3 = custom values (CR-separated),
+key 2 = definition: byte 0 = source (0 custom, 1 field), then for a field:
+`flags | 04 TOref | len 01 field | …`.
+
+## 10. Layouts ✅ (partial)
+
+Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
+
+* `[4].[5].[L]` key 2 = header (2 TO in XML form, 5 style, 7 local CSS, 8 width);
+* `[4].[5].[L].[3].[P]` key 2 = part (1 kind, 4 top, 5 height, 6 break field, 10 style);
+* key 7 (or long value `[7]`) = object list: repeated field 2 = object
+  (1 kind, 2 id, 3 options, 4 bounds {1 top, 2 left, 3 bottom, 4 right},
+  5 style {1 CSS properties, 2 style name, 4 display name}, 7 text options,
+  8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);
+* `[4].[5].[L].[5].[obj]` key 1 = static text, `.[3]` = button label calculation.
+
+## 11. Calculations 🔍
+
+Stored next to their owner as keys 4 (context TO ref), 5 (token stream that
+keeps the source text, including whitespace) and 6 (compiled form).
+Known tokens: `03` `;`, `04` `(`, `05` `)`, `0C` whitespace (followed by a
+text literal), `13 len text 00` text literal, `16 … ` field reference,
+`9B` Get, `9C xx` Get flag, `4C` Case, `4E` IsEmpty, `1E` not, `50` `&`.

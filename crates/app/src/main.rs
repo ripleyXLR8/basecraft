@@ -307,6 +307,10 @@ fn main() -> eframe::Result {
             viewport: egui::ViewportBuilder::default().with_inner_size([1060.0, 980.0]),
             ..Default::default()
         },
-        Box::new(|_| Ok(Box::new(app))),
+        Box::new(|cc| {
+            // FileMaker's desktop UI is light.
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            Ok(Box::new(app))
+        }),
     )
 }

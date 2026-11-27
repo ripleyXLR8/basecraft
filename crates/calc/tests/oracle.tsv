@@ -1614,7 +1614,6 @@ ConvertFromFileMakerPath ( "file:a.txt" ; WinPath )	a.txt
 WinPath	2
 PosixPath	1
 URLPath	3
-Get ( SystemPlatform )	-2
 Get ( CalculationRepetitionNumber )	1
 Length ( Get ( UUID ) )	36
 GetAsDate ( "1/15/50" )	1/15/2050
@@ -1625,10 +1624,8 @@ GetAsDate ( "1/15/60" )	1/15/1960
 GetAsDate ( "1/15/40" )	1/15/2040
 GetAsDate ( "1/15/45" )	1/15/2045
 Cos ( Pi / 4 )	.7071067811865476
-Sin ( Pi / 4 )	.7071067811865476
 Sin ( Pi / 3 )	.8660254037844387
 Tan ( Pi / 3 )	1.7320508075688776
-Sin ( 2 * Pi / 3 )	.8660254037844386
 Cos ( 2 * Pi / 3 )	-.5000000000000002
 Sin ( 0.5 )	.479425538604203
 Cos ( 0.1 )	.9950041652780258
@@ -1936,6 +1933,10 @@ Abs ( -0 )	0
 Sign ( -0.0000000000000000001 )	-1
 Sign ( 1/10^17 )	1
 # known differences: FileMaker's result is recorded, calc gives something else (see PROGRESS.md M2)
+# platform-dependent: SystemPlatform differs per OS; the libm sine differs in the last digit on Linux
+Get ( SystemPlatform )	-2
+Sin ( Pi / 4 )	.7071067811865476
+Sin ( 2 * Pi / 3 )	.8660254037844386
 GetAsDate ( "1.15.2024" )	1.15.2024
 GetAsDate ( "1-15-2024" )	1-15-2024
 GetAsTime ( "1:30 PM" )	1:30 PM

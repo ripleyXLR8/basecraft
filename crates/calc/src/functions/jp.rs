@@ -7,10 +7,10 @@ use crate::num;
 use crate::value::{Value, civil, day_number};
 use bigdecimal::{Signed, Zero};
 
-/// Half-width katakana and punctuation (U+FF61..U+FF9F) and their
-/// full-width forms, position for position.
-const HALF: &str = "｡｢｣､･ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝﾞﾟ";
-const FULL: &str = "。「」、・ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン゛゜";
+/// Half-width katakana (U+FF65..U+FF9F) and their full-width forms,
+/// position for position. FileMaker leaves the punctuation 。「」、 alone.
+const HALF: &str = "･ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝﾞﾟ";
+const FULL: &str = "・ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン゛゜";
 /// Kana that take a voiced mark (ガ = カ + 1); the ハ row also takes the
 /// semi-voiced mark (パ = ハ + 2).
 const VOICED: &str = "カキクケコサシスセソタチツテトハヒフヘホ";
@@ -136,23 +136,25 @@ pub fn kanji_numeral(_: &mut Evaluator, a: &[Value]) -> R {
 
 /// NumToJText ( number ; separator ; characterType ).
 /// separator: 0 none, 1 commas every three digits, 2 万/億 units, 3 also
-/// 十/百/千 within each four-digit group. characterType: 0 half-width
-/// digits, 1 full-width, 2 kanji, 3 traditional kanji.
-// ponytail: the documented examples are images; we write units after
-// every non-zero digit (一千, not 千), drop empty groups (1億5), truncate
-// fractions and prefix a minus sign. Check against FileMaker.
+/// 十/百/千 within each four-digit group (千2百3十4: no 1 before a unit,
+/// except in traditional kanji, 壱阡). characterType: 0 half-width digits,
+/// 1 full-width, 2 kanji, 3 traditional kanji (壱弐参四伍...).
+/// Empty four-digit groups are dropped (一億五); fractions are kept with
+/// separators 0 and 1 (一.五) and dropped with 2 and 3.
 pub fn num_to_j_text(_: &mut Evaluator, a: &[Value]) -> R {
-    let n = a[0].num_or_zero();
+    let n = num::shown(&a[0].num_or_zero());
     let opt = |i: usize| -> Result<i64, EvalError> {
         let v = if a[i].is_empty() { 0 } else { int(a, i)? };
         Ok(if (0..=3).contains(&v) { v } else { 0 })
     };
     let (sep, ty) = (opt(1)?, opt(2)?);
     let whole = num::trunc(&n, 0).abs();
-    let digits = num::format(&whole);
-    let traditional = ['〇', '壱', '弐', '参', '四', '五', '六', '七', '八', '九'];
+    let digits = num::plain(&if sep <= 1 { n.abs() } else { whole.clone() });
+    let traditional = ['〇', '壱', '弐', '参', '四', '伍', '六', '七', '八', '九'];
     let d = |c: char| -> char {
-        let v = c as usize - '0' as usize;
+        let Some(v) = c.to_digit(10).map(|v| v as usize) else {
+            return c;
+        };
         match ty {
             1 => char::from_u32('０' as u32 + v as u32).unwrap(),
             2 => KANJI_DIGITS[v],
@@ -161,7 +163,7 @@ pub fn num_to_j_text(_: &mut Evaluator, a: &[Value]) -> R {
         }
     };
     let small = if ty == 3 {
-        ["", "拾", "百", "千"]
+        ["", "拾", "陌", "阡"]
     } else {
         ["", "十", "百", "千"]
     };
@@ -172,7 +174,7 @@ pub fn num_to_j_text(_: &mut Evaluator, a: &[Value]) -> R {
     };
     let body: String = match sep {
         1 => {
-            let comma = if ty == 0 { ',' } else { '，' };
+            let comma = if ty == 1 { '，' } else { ',' };
             let c: Vec<char> = digits.chars().collect();
             let mut out = String::new();
             for (i, &ch) in c.iter().enumerate() {
@@ -199,9 +201,12 @@ pub fn num_to_j_text(_: &mut Evaluator, a: &[Value]) -> R {
                         out.extend(g.iter().map(|&x| d(x)));
                     } else {
                         for (i, &x) in g.iter().enumerate() {
+                            let unit = small[g.len() - 1 - i];
                             if x != '0' {
-                                out.push(d(x));
-                                out.push_str(small[g.len() - 1 - i]);
+                                if x != '1' || unit.is_empty() || ty == 3 {
+                                    out.push(d(x));
+                                }
+                                out.push_str(unit);
                             }
                         }
                     }
@@ -212,11 +217,7 @@ pub fn num_to_j_text(_: &mut Evaluator, a: &[Value]) -> R {
         }
         _ => digits.chars().map(d).collect(),
     };
-    let minus = if n.is_negative() && !whole.is_zero() {
-        if ty == 0 { "-" } else { "－" }
-    } else {
-        ""
-    };
+    let minus = if n.is_negative() { "-" } else { "" };
     Ok(Value::Text(format!("{minus}{body}")))
 }
 
@@ -232,8 +233,7 @@ const ERAS: [(i64, i64, i64, &str, &str, &str); 5] = [
 /// YearName ( date ; format ): 0 long (平成20), 1 short ((平)20), 2 letter
 /// (H20). The first year of an era is 元 in the kanji forms. Dates before
 /// Meiji give the Western year: 西暦1850, (西)1850, 1850 CE.
-// ponytail: the documented forms are images; spacing, the 年 suffix and the
-// full-width letters of format 2 are guesses to check against FileMaker.
+/// (All forms checked against FileMaker; other formats act as 0.)
 pub fn year_name(_: &mut Evaluator, a: &[Value]) -> R {
     let format = if a[1].is_empty() { 0 } else { int(a, 1)? };
     let format = if (0..=2).contains(&format) { format } else { 0 };
@@ -265,8 +265,7 @@ pub fn year_name(_: &mut Evaluator, a: &[Value]) -> R {
     })
 }
 
-/// MonthNameJ: 1月 ... 12月.
-// ponytail: half-width digits assumed; the documented example is an image.
+/// MonthNameJ: 1月 ... 12月 (half-width digits, as in FileMaker).
 pub fn month_name_j(_: &mut Evaluator, a: &[Value]) -> R {
     super::datetime::on_date(a, "MonthNameJ", |d| {
         Value::Text(format!("{}月", civil(d).1))
@@ -280,7 +279,7 @@ mod tests {
     #[test]
     fn width_tables_align() {
         assert_eq!(HALF.chars().count(), FULL.chars().count());
-        assert_eq!(to_hankaku("ガッコウ・パン"), "ｶﾞｯｺｳ･ﾊﾟﾝ");
-        assert_eq!(to_zenkaku("ｶﾞｯｺｳ･ﾊﾟﾝｳﾞ"), "ガッコウ・パンヴ");
+        assert_eq!(to_hankaku("ガッコウ・パン。"), "ｶﾞｯｺｳ･ﾊﾟﾝ。");
+        assert_eq!(to_zenkaku("ｶﾞｯｺｳ･ﾊﾟﾝｳﾞ｡"), "ガッコウ・パンヴ｡");
     }
 }

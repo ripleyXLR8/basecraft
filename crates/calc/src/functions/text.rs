@@ -41,47 +41,76 @@ pub fn middle(_: &mut Evaluator, a: &[Value]) -> R {
     t(&s[start..start + n])
 }
 
+/// Characters of text; bytes of a container.
 pub fn length(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(Value::int(txt(a, 0).chars().count() as i64))
+    Ok(Value::int(match &a[0] {
+        Value::Container(c) => c.data.len(),
+        v => v.to_text().chars().count(),
+    } as i64))
 }
 
-/// 0-based start indexes of every (overlapping) case-insensitive match.
-fn matches(hay: &[char], needle: &[char]) -> Vec<usize> {
-    if needle.is_empty() || needle.len() > hay.len() {
-        return vec![];
-    }
-    let hay: Vec<char> = hay.iter().map(|&c| fold(c)).collect();
-    let needle: Vec<char> = needle.iter().map(|&c| fold(c)).collect();
-    (0..=hay.len() - needle.len())
-        .filter(|&i| hay[i..i + needle.len()] == needle[..])
-        .collect()
+fn folded(s: &[char]) -> Vec<char> {
+    s.iter().map(|&c| fold(c)).collect()
 }
 
+fn match_at(hay: &[char], needle: &[char], i: usize) -> bool {
+    hay.get(i..i + needle.len()) == Some(needle)
+}
+
+/// Position: case-insensitive, occurrences never overlap (Position (
+/// "aaaa" ; "aa" ; 1 ; 2 ) = 3). A negative occurrence searches backward
+/// from `start`.
 pub fn position(_: &mut Evaluator, a: &[Value]) -> R {
-    let (s, needle) = (chars(a, 0), chars(a, 1));
+    let (s, needle) = (folded(&chars(a, 0)), folded(&chars(a, 1)));
     let (start, occ) = (int(a, 2)?, int(a, 3)?);
-    let m = matches(&s, &needle);
-    let found = if occ > 0 {
-        let from = (start.max(1) - 1) as usize;
-        m.iter()
-            .filter(|&&i| i >= from)
-            .nth(occ.unsigned_abs() as usize - 1)
-    } else if occ < 0 {
-        let from = start.min(s.len() as i64) - 1;
-        m.iter()
-            .rev()
-            .filter(|&&i| i as i64 <= from)
-            .nth(occ.unsigned_abs() as usize - 1)
+    if needle.is_empty() || s.is_empty() || occ == 0 {
+        return Ok(Value::int(0));
+    }
+    let mut left = occ.unsigned_abs();
+    if occ > 0 {
+        let mut i = (start.max(1) - 1) as usize;
+        while i + needle.len() <= s.len() {
+            if match_at(&s, &needle, i) {
+                left -= 1;
+                if left == 0 {
+                    return Ok(Value::int(i as i64 + 1));
+                }
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
     } else {
-        None
-    };
-    Ok(Value::int(found.map_or(0, |&i| i as i64 + 1)))
+        let mut i = start.min(s.len() as i64) - 1;
+        while i >= 0 {
+            if match_at(&s, &needle, i as usize) {
+                left -= 1;
+                if left == 0 {
+                    return Ok(Value::int(i + 1));
+                }
+                i -= needle.len() as i64;
+            } else {
+                i -= 1;
+            }
+        }
+    }
+    Ok(Value::int(0))
 }
 
+/// Non-overlapping, case-insensitive: PatternCount ( "aaaa" ; "aa" ) = 2.
 pub fn pattern_count(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(Value::int(matches(&chars(a, 0), &chars(a, 1)).len() as i64))
+    let (s, needle) = (folded(&chars(a, 0)), folded(&chars(a, 1)));
+    let (mut n, mut i) = (0, 0);
+    while !needle.is_empty() && i + needle.len() <= s.len() {
+        if match_at(&s, &needle, i) {
+            n += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    Ok(Value::int(n))
 }
-
 /// Substitute ( text ; search ; replace ) or with `[search ; replace]` lists,
 /// applied one after another. Case-sensitive.
 pub fn substitute(ev: &mut Evaluator, a: &[Expr]) -> R {
@@ -114,30 +143,56 @@ pub fn substitute(ev: &mut Evaluator, a: &[Expr]) -> R {
     Ok(Value::Text(s))
 }
 
-pub fn trim(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(Value::text(txt(a, 0).trim_matches(' ')))
+/// Characters Trim removes: spaces of every width (no-break, en/em,
+/// ideographic, zero-width), not tabs or line breaks.
+fn trim_space(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '\u{a0}' | '\u{2000}'..='\u{200b}' | '\u{202f}' | '\u{205f}' | '\u{3000}'
+    )
 }
 
-/// Roman-text behaviour only: trims the ends and collapses runs of spaces.
-// ponytail: trimType's Japanese/Roman boundary rules are not modelled.
+pub fn trim(_: &mut Evaluator, a: &[Value]) -> R {
+    Ok(Value::text(txt(a, 0).trim_matches(trim_space)))
+}
+
+/// Japanese (non-Roman) characters for TrimAll: CJK, kana (half-width
+/// too), CJK punctuation and full-width forms.
+fn japanese(c: char) -> bool {
+    c >= '\u{2E80}'
+}
+
+/// TrimAll: trims both ends and collapses runs of spaces to one (with
+/// `trimSpaces` 1, full-width spaces count and become half-width). Between
+/// two Roman characters the space stays; `trimType` 3 removes every space,
+/// 0 and 1 the ones next to a Japanese character, and 1 puts one between
+/// Japanese and Roman text; 2 changes nothing more.
 pub fn trim_all(_: &mut Evaluator, a: &[Value]) -> R {
     let full_width = int(a, 1)? != 0;
+    let kind = int(a, 2)?;
     let is_space = |c: char| c == ' ' || (full_width && c == '\u{3000}');
-    let s = txt(a, 0);
-    let mut out = String::new();
+    let mut out: Vec<char> = Vec::new();
     let mut pending = false;
-    for c in s.chars() {
+    for c in txt(a, 0).chars() {
         if is_space(c) {
             pending = !out.is_empty();
-        } else {
-            if pending {
-                out.push(' ');
-                pending = false;
-            }
-            out.push(c);
+            continue;
         }
+        let space = match out.last() {
+            None => false,
+            Some(&p) => match (japanese(p), japanese(c), kind) {
+                (_, _, 3) | (true, true, _) => false,
+                (false, false, _) | (_, _, 2) => pending,
+                _ => kind == 1,
+            },
+        };
+        if space {
+            out.push(' ');
+        }
+        pending = false;
+        out.push(c);
     }
-    Ok(Value::Text(out))
+    t(&out)
 }
 
 fn map_chars(a: &[Value], f: impl FnMut(char) -> char) -> R {
@@ -155,19 +210,23 @@ pub fn upper(_: &mut Evaluator, a: &[Value]) -> R {
     map_chars(a, |c| single(c, c.to_uppercase()))
 }
 
+/// İ lowers to "i" plus a combining dot; FileMaker keeps the "i".
 pub fn lower(_: &mut Evaluator, a: &[Value]) -> R {
-    map_chars(a, |c| single(c, c.to_lowercase()))
+    map_chars(a, |c| c.to_lowercase().next().unwrap_or(c))
 }
 
+/// Proper: a letter is capitalized unless it follows a letter, a digit, a
+/// period, an apostrophe or a no-break space ("o'neil" -> "O'neil",
+/// "foo_bar" -> "Foo_Bar").
 pub fn proper(_: &mut Evaluator, a: &[Value]) -> R {
-    let mut prev_alnum = false;
+    let mut inside = false;
     map_chars(a, |c| {
-        let out = if prev_alnum {
-            single(c, c.to_lowercase())
+        let out = if inside {
+            c.to_lowercase().next().unwrap_or(c)
         } else {
             single(c, c.to_uppercase())
         };
-        prev_alnum = c.is_alphanumeric();
+        inside = c.is_alphanumeric() || matches!(c, '.' | '\'' | '’' | '\u{a0}');
         out
     })
 }
@@ -193,12 +252,15 @@ pub fn exact(_: &mut Evaluator, a: &[Value]) -> R {
     Ok(Value::bool(txt(a, 0) == txt(a, 1)))
 }
 
+/// Quote: `"` becomes `\"`, a pilcrow `\¶` and a carriage return `¶`; a
+/// backslash is doubled only before one of those or at the end.
 pub fn quote(_: &mut Evaluator, a: &[Value]) -> R {
+    let s = chars(a, 0);
     let mut out = String::from("\"");
-    for c in txt(a, 0).chars() {
+    for (i, &c) in s.iter().enumerate() {
         match c {
             '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
+            '\\' if matches!(s.get(i + 1), None | Some('¶' | '"' | '\r')) => out.push_str("\\\\"),
             '¶' => out.push_str("\\¶"),
             '\r' => out.push('¶'),
             c => out.push(c),
@@ -223,23 +285,27 @@ pub fn serial_increment(_: &mut Evaluator, a: &[Value]) -> R {
         .parse::<i128>()
         .unwrap_or(0)
         .saturating_add(by as i128);
-    let width = digits.len();
-    Ok(Value::Text(format!(
-        "{}{n:0width$}{}",
-        &s[..begin],
-        &s[end..]
-    )))
+    // The zero padding goes in front of the sign: "abc005" - 10 = "abc0-5".
+    let n = n.to_string();
+    let pad = "0".repeat(digits.len().saturating_sub(n.len()));
+    Ok(Value::Text(format!("{}{pad}{n}{}", &s[..begin], &s[end..])))
 }
 
 // ---- value lists ----------------------------------------------------------------
 
-/// Values are separated by carriage returns; one trailing CR is ignored.
+/// Line breaks that separate values: CR, LF (so CR LF makes an empty
+/// value between them) and the Unicode line and paragraph separators.
+fn value_sep(c: char) -> bool {
+    matches!(c, '\r' | '\n' | '\u{2028}' | '\u{2029}')
+}
+
+/// Values are separated by line breaks; one trailing break is ignored.
 pub fn split_values(s: &str) -> Vec<&str> {
     if s.is_empty() {
         return vec![];
     }
-    let s = s.strip_suffix('\r').unwrap_or(s);
-    s.split('\r').collect()
+    let s = s.strip_suffix(value_sep).unwrap_or(s);
+    s.split(value_sep).collect()
 }
 
 /// Each value followed by a CR, as LeftValues & co. return them.
@@ -288,6 +354,7 @@ pub fn middle_values(_: &mut Evaluator, a: &[Value]) -> R {
     join_values(v[start..start + n].iter().copied())
 }
 
+/// Case-insensitive, accent-sensitive ("é" is not "e").
 pub fn filter_values(_: &mut Evaluator, a: &[Value]) -> R {
     let (s, f) = (txt(a, 0), txt(a, 1));
     let keep: Vec<String> = split_values(&f).iter().map(|v| v.to_lowercase()).collect();
@@ -298,41 +365,110 @@ pub fn filter_values(_: &mut Evaluator, a: &[Value]) -> R {
     )
 }
 
-/// Sort/compare key for SortValues and UniqueValues.
-fn typed(s: &str, datatype: i64) -> Value {
+/// Sort/compare key for SortValues and UniqueValues; `None` when the value
+/// is not of the type.
+fn typed_key(s: &str, datatype: i64) -> Option<Value> {
     use crate::value::{parse_date, parse_time, parse_timestamp};
-    let v = match datatype {
+    match datatype.abs() {
         2 => crate::value::text_to_num(s).map(Value::Number),
         3 => parse_date(s).map(Value::Date),
         4 => parse_time(s).map(Value::Time),
         5 => parse_timestamp(s).map(Value::Timestamp),
-        _ => None,
-    };
-    v.unwrap_or_else(|| Value::text(s))
+        _ => Some(Value::text(s)),
+    }
 }
 
+fn typed(s: &str, datatype: i64) -> Value {
+    typed_key(s, datatype).unwrap_or_else(|| Value::text(s))
+}
+
+/// Base letter of common accented Latin letters, for collation.
+fn base_letter(c: char) -> char {
+    const FROM: &str = "àáâãäåçèéêëìíîïñòóôõöøùúûüýÿ";
+    const TO: &str = "aaaaaaceeeeiiiinoooooouuuuyy";
+    let l = fold(c);
+    FROM.chars()
+        .position(|x| x == l)
+        .and_then(|i| TO.chars().nth(i))
+        .unwrap_or(l)
+}
+
+/// Case- and accent-insensitive key ("Straße" = "STRASSE").
+pub(crate) fn base_key(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| match base_letter(c) {
+            'ß' => vec!['s', 's'],
+            b => vec![b],
+        })
+        .collect()
+}
+
+/// Text order: case- and accent-insensitive first, then accents
+/// (e < é < f).
+pub(crate) fn collate(x: &str, y: &str) -> std::cmp::Ordering {
+    base_key(x)
+        .cmp(&base_key(y))
+        .then_with(|| x.to_lowercase().cmp(&y.to_lowercase()))
+}
+
+fn compare_keys(x: &Value, y: &Value) -> std::cmp::Ordering {
+    match (x, y) {
+        (Value::Text(a), Value::Text(b)) => collate(a, b),
+        _ => compare(x, y),
+    }
+}
+
+/// 1 text, 2 number, 3 date, 4 time, 5 timestamp, negative for descending;
+/// anything else is ascending text.
 fn datatype(a: &[Value]) -> Result<i64, EvalError> {
-    Ok(if a.len() > 1 && !a[1].is_empty() {
+    let dt = if a.len() > 1 && !a[1].is_empty() {
         int(a, 1)?
     } else {
         1
-    })
+    };
+    Ok(if (1..=5).contains(&dt.abs()) { dt } else { 1 })
 }
 
-// ponytail: the locale parameter is ignored; text sorts case-insensitively
-// by code point, not by a locale collation.
+/// SortValues: a negative type sorts descending. Values that are not of a
+/// number/date/time type keep their order, after the others ascending and
+/// before them descending.
+// ponytail: the locale parameter is ignored; text uses a simple Latin
+// collation (case- and accent-insensitive first).
 pub fn sort_values(_: &mut Evaluator, a: &[Value]) -> R {
+    use std::cmp::Ordering::{Equal, Greater, Less};
     let s = txt(a, 0);
     let dt = datatype(a)?;
-    let mut v = split_values(&s);
-    if dt == 6 {
-        v.sort();
-    } else {
-        v.sort_by(|x, y| compare(&typed(x, dt), &typed(y, dt)));
-    }
-    join_values(v)
+    let mut v: Vec<(&str, Option<Value>)> = split_values(&s)
+        .into_iter()
+        .map(|x| (x, typed_key(x, dt)))
+        .collect();
+    let desc = dt < 0;
+    v.sort_by(|(_, x), (_, y)| match (x, y) {
+        (Some(x), Some(y)) => {
+            let o = compare_keys(x, y);
+            if desc { o.reverse() } else { o }
+        }
+        (Some(_), None) => {
+            if desc {
+                Greater
+            } else {
+                Less
+            }
+        }
+        (None, Some(_)) => {
+            if desc {
+                Less
+            } else {
+                Greater
+            }
+        }
+        (None, None) => Equal,
+    });
+    join_values(v.into_iter().map(|(x, _)| x))
 }
 
+/// Text values are equal when they differ only in case or accents
+/// ("é", "e" and "E" are one value).
 pub fn unique_values(_: &mut Evaluator, a: &[Value]) -> R {
     let s = txt(a, 0);
     let dt = datatype(a)?;
@@ -340,12 +476,9 @@ pub fn unique_values(_: &mut Evaluator, a: &[Value]) -> R {
     let mut out = vec![];
     for v in split_values(&s) {
         let k = typed(v, dt);
-        let dup = seen.iter().any(|x| {
-            if dt == 6 {
-                x.to_text() == v
-            } else {
-                compare(x, &k).is_eq()
-            }
+        let dup = seen.iter().any(|x| match (x, &k) {
+            (Value::Text(p), Value::Text(q)) => base_key(p) == base_key(q),
+            _ => compare(x, &k).is_eq(),
         });
         if !dup {
             seen.push(k);
@@ -357,15 +490,32 @@ pub fn unique_values(_: &mut Evaluator, a: &[Value]) -> R {
 
 // ---- words ------------------------------------------------------------------
 
-/// (start, end) char ranges of words. Letters and digits form words; `.`,
-/// `'` and `’` join two word characters, `,` joins two digits.
+/// Script of a word character, for breaking Japanese text into words:
+/// kanji, hiragana and katakana runs are separate words.
+fn script(c: char) -> u8 {
+    match c as u32 {
+        0x3040..=0x309F => 1,
+        0x30A0..=0x30FF | 0xFF66..=0xFF9F => 2,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF => 3,
+        _ => 0,
+    }
+}
+
+/// (start, end) char ranges of words. Letters and digits form words (`_`
+/// and `-` separate them); `'` and `’` join two letters, `.` two letters
+/// or two digits, `,` `:` `/` two digits ("1:30", "1/2/2003", "10.5.3").
 fn words(s: &[char]) -> Vec<(usize, usize)> {
-    let w = |i: usize| s.get(i).is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    let w = |i: usize| s.get(i).is_some_and(|c| c.is_alphanumeric());
+    let digit = |i: usize| s.get(i).is_some_and(|c| c.is_numeric());
+    let letter = |i: usize| s.get(i).is_some_and(|c| c.is_alphabetic());
     let joins = |i: usize| {
-        let (p, n) = (i.checked_sub(1).and_then(|p| s.get(p)), s.get(i + 1));
+        if i == 0 {
+            return false;
+        }
         match s[i] {
-            '.' | '\'' | '’' => i > 0 && w(i - 1) && w(i + 1),
-            ',' => p.is_some_and(|c| c.is_ascii_digit()) && n.is_some_and(|c| c.is_ascii_digit()),
+            '\'' | '’' => w(i - 1) && w(i + 1),
+            '.' => (letter(i - 1) && letter(i + 1)) || (digit(i - 1) && digit(i + 1)),
+            ',' | ':' | '/' => digit(i - 1) && digit(i + 1),
             _ => false,
         }
     };
@@ -377,7 +527,8 @@ fn words(s: &[char]) -> Vec<(usize, usize)> {
             continue;
         }
         let start = i;
-        while i < s.len() && (w(i) || joins(i)) {
+        i += 1;
+        while i < s.len() && (w(i) || joins(i)) && script(s[i]) == script(s[i - 1]) {
             i += 1;
         }
         out.push((start, i));
@@ -457,6 +608,53 @@ pub fn plain_lazy(ev: &mut Evaluator, a: &[Expr]) -> R {
     Ok(Value::Text(ev.eval(&a[0])?.to_text()))
 }
 
+/// HTML 4 names of U+00A0..U+00FF, which GetAsCSS uses (é -> &eacute;).
+const LATIN1_ENTITIES: [&str; 96] = [
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf",
+    "laquo", "not", "shy", "reg", "macr", "deg", "plusmn", "sup2", "sup3", "acute", "micro",
+    "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest",
+    "Agrave", "Aacute", "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute",
+    "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml", "ETH", "Ntilde", "Ograve", "Oacute",
+    "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute",
+    "THORN", "szlig", "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil",
+    "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth", "ntilde",
+    "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc",
+    "uuml", "yacute", "thorn", "yuml",
+];
+
+/// HTML 4 names of common characters above U+00FF.
+const SPECIAL_ENTITIES: [(char, &str); 25] = [
+    ('Œ', "OElig"),
+    ('œ', "oelig"),
+    ('Š', "Scaron"),
+    ('š', "scaron"),
+    ('Ÿ', "Yuml"),
+    ('ƒ', "fnof"),
+    ('ˆ', "circ"),
+    ('˜', "tilde"),
+    ('–', "ndash"),
+    ('—', "mdash"),
+    ('‘', "lsquo"),
+    ('’', "rsquo"),
+    ('‚', "sbquo"),
+    ('“', "ldquo"),
+    ('”', "rdquo"),
+    ('„', "bdquo"),
+    ('†', "dagger"),
+    ('‡', "Dagger"),
+    ('•', "bull"),
+    ('…', "hellip"),
+    ('‰', "permil"),
+    ('‹', "lsaquo"),
+    ('›', "rsaquo"),
+    ('€', "euro"),
+    ('™', "trade"),
+];
+
+/// Escapes markup characters, CR as `<br/>`, other control characters and
+/// non-ASCII characters as `&#N;`, or by HTML 4 name when there is one
+/// (é -> &eacute;, € -> &euro;).
+// ponytail: Greek and math entity names (&alpha;...) are not listed.
 fn html_escape(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
@@ -465,24 +663,38 @@ fn html_escape(s: &str) -> String {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
-            '\r' => out.push_str("<br>"),
-            c => out.push(c),
+            '\r' => out.push_str("<br/>"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("&#{};", c as u32)),
+            '\u{a0}'..='\u{ff}' => {
+                out.push('&');
+                out.push_str(LATIN1_ENTITIES[c as usize - 0xA0]);
+                out.push(';');
+            }
+            c if (c as u32) < 0x80 => out.push(c),
+            c => match SPECIAL_ENTITIES.iter().find(|(x, _)| *x == c) {
+                Some((_, name)) => out.push_str(&format!("&{name};")),
+                None => out.push_str(&format!("&#{};", c as u32)),
+            },
         }
     }
     out
 }
 
 /// GetAsCSS: styled runs become `<span style="...">`; text without styles
-/// (all we keep) is just HTML-escaped, carriage returns as `<br>`.
-// ponytail: unstyled output, escaping and line breaks are undocumented;
-// check against FileMaker once styled text exists.
+/// (all we keep) is one span with an empty style.
 pub fn get_as_css(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(Value::Text(html_escape(&txt(a, 0))))
+    let s = txt(a, 0);
+    if s.is_empty() {
+        return Ok(Value::empty());
+    }
+    Ok(Value::Text(format!(
+        "<span style=\"\" >{}</span>",
+        html_escape(&s)
+    )))
 }
 
 /// GetAsSVG: a `<stylelist>` of runs and a `<data>` block of spans. Without
 /// style runs the whole text is one run with an empty style.
-// ponytail: same caveat as GetAsCSS.
 pub fn get_as_svg(_: &mut Evaluator, a: &[Value]) -> R {
     let s = txt(a, 0);
     if s.is_empty() {
@@ -490,7 +702,7 @@ pub fn get_as_svg(_: &mut Evaluator, a: &[Value]) -> R {
     }
     let n = s.chars().count();
     Ok(Value::Text(format!(
-        "<stylelist>\r<style#0>\"\", Begin: 1, End: {n}</style>\r</stylelist>\r<data>\r<span style=\"0\">{}</span>\r</data>",
+        "<stylelist>\r<style#0>\"\", begin: 1, end: {n}</style> \r</stylelist>\r<data>\r<span style=\"0\">{}</span>\r</data>",
         html_escape(&s)
     )))
 }

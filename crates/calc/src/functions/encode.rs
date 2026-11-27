@@ -1,10 +1,11 @@
 //! Character codes, URL/Base64/hex encodings, digests and text encodings.
 
 use super::{int, txt};
-use crate::error::EvalError;
+use crate::error::{EvalError, code};
 use crate::eval::{Evaluator, R};
 use crate::num;
 use crate::value::{Container, Value};
+use bigdecimal::Signed;
 use bigdecimal::num_bigint::BigInt;
 use sha2::Digest;
 
@@ -16,40 +17,48 @@ pub(crate) fn bytes(v: &Value) -> Vec<u8> {
     }
 }
 
-/// Char ( 9800097 ) = "ab": five decimal digits per character, first
-/// character in the lowest digits.
+/// Char ( 9800097 ) = "ab": five decimal digits per UTF-16 code unit,
+/// first unit in the lowest digits (an emoji takes two).
+// ponytail: a lone surrogate becomes U+FFFD; FileMaker keeps it.
 pub fn char(_: &mut Evaluator, a: &[Value]) -> R {
-    let n = num::trunc(&a[0].num_or_zero(), 0);
-    let digits = n.into_bigint_and_exponent().0.magnitude().to_string();
-    let mut out = String::new();
+    let n = num::trunc(&num::shown(&a[0].num_or_zero()), 0);
+    if n.is_negative() {
+        return Ok(Value::empty());
+    }
+    let digits = n.with_scale(0).into_bigint_and_exponent().0.to_string();
+    let mut units = Vec::new();
     let mut end = digits.len();
     while end > 0 {
         let start = end.saturating_sub(5);
         let code: u32 = digits[start..end].parse().unwrap_or(0);
-        if let Some(c) = char::from_u32(code).filter(|_| code != 0) {
-            out.push(c);
+        if code != 0 && code <= 0xFFFF {
+            units.push(code as u16);
         }
         end = start;
     }
-    Ok(Value::Text(out))
+    Ok(Value::Text(String::from_utf16_lossy(&units)))
 }
 
+/// UTF-16 code units, five decimal digits each, first in the lowest digits:
+/// Code ( "😀" ) = 5683255357.
 pub fn code(_: &mut Evaluator, a: &[Value]) -> R {
     let s = txt(a, 0);
     if s.is_empty() {
         return Ok(Value::empty());
     }
-    let total = s
-        .chars()
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let total = units
+        .iter()
         .rev()
-        .fold(BigInt::from(0u8), |acc, c| acc * 100_000u32 + c as u32);
+        .fold(BigInt::from(0u8), |acc, &c| acc * 100_000u32 + c as u32);
     Ok(Value::num(num::Num::from(total)))
 }
 
+/// Percent-encodes UTF-8 bytes except letters, digits and `-_.!~*'():`.
 pub fn url_encode(_: &mut Evaluator, a: &[Value]) -> R {
     let mut out = String::new();
     for b in txt(a, 0).bytes() {
-        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'():".contains(&b) {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -78,13 +87,13 @@ pub(crate) fn b64(data: &[u8]) -> String {
     out
 }
 
+/// Lines of `width` characters, each ended by CRLF (FileMaker ends the last
+/// line too).
 fn wrap(s: &str, width: usize) -> String {
-    let lines: Vec<&str> = s
-        .as_bytes()
+    s.as_bytes()
         .chunks(width)
-        .map(|c| std::str::from_utf8(c).unwrap())
-        .collect();
-    lines.join("\r\n")
+        .map(|c| format!("{}\r\n", std::str::from_utf8(c).unwrap()))
+        .collect()
 }
 
 /// OpenPGP CRC-24 (RFC 4880).
@@ -115,24 +124,38 @@ pub fn base64_encode_rfc(_: &mut Evaluator, a: &[Value]) -> R {
         2045 => wrap(&s, 76),
         4880 => {
             let crc = crc24(&data).to_be_bytes();
-            format!("{}\r\n={}", wrap(&s, 76), b64(&crc[1..]))
+            format!("{}={}\r\n", wrap(&s, 76), b64(&crc[1..]))
         }
         _ => s, // 3548, 4648 and unknown values: no line breaks
     }))
 }
 
+/// A container when a file name is given, else UTF-8 text.
 fn decoded(data: Vec<u8>, name: Option<String>) -> Value {
-    match name {
+    match name.filter(|n| !n.is_empty()) {
         Some(name) => Value::Container(Container { name, data }),
         None => Value::Text(String::from_utf8_lossy(&data).into_owned()),
     }
 }
 
+fn bad_encoding(what: &str) -> EvalError {
+    EvalError::new(code::BAD_ENCODING, format!("{what}: malformed input"))
+}
+
+/// Decoding stops at the first `=`; other characters outside the alphabet
+/// are skipped. Without padding the characters must come in fours.
 pub fn base64_decode(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(decoded(
-        b64_decode(&txt(a, 0)),
-        a.get(1).map(Value::to_text),
-    ))
+    let s = txt(a, 0);
+    let (body, padded) = match s.split_once('=') {
+        Some((b, _)) => (b, true),
+        None => (s.as_str(), false),
+    };
+    let n = body.bytes().filter(|c| B64.contains(c)).count();
+    if !padded && n % 4 != 0 {
+        return Err(bad_encoding("Base64Decode"));
+    }
+    let body: String = body.chars().filter(|c| *c != '-' && *c != '_').collect();
+    Ok(decoded(b64_decode(&body), a.get(1).map(Value::to_text)))
 }
 
 /// Standard or URL-safe Base64; other characters (line breaks, padding)
@@ -166,8 +189,15 @@ pub fn hex_encode(_: &mut Evaluator, a: &[Value]) -> R {
     ))
 }
 
+/// White space is skipped; any other non-hex character or an odd number of
+/// digits is an error.
 pub fn hex_decode(_: &mut Evaluator, a: &[Value]) -> R {
-    Ok(decoded(hex_bytes(&txt(a, 0)), a.get(1).map(Value::to_text)))
+    let s = txt(a, 0);
+    let digits = s.chars().filter(|c| !c.is_whitespace());
+    if digits.clone().any(|c| !c.is_ascii_hexdigit()) || digits.count() % 2 != 0 {
+        return Err(bad_encoding("HexDecode"));
+    }
+    Ok(decoded(hex_bytes(&s), a.get(1).map(Value::to_text)))
 }
 
 pub(crate) fn hex_bytes(s: &str) -> Vec<u8> {
@@ -197,15 +227,16 @@ fn digest(alg: &str, data: &[u8]) -> Option<(Vec<u8>, usize)> {
     })
 }
 
+/// Digests are containers named "digest.data".
 fn bin(data: Vec<u8>) -> R {
     Ok(Value::Container(Container {
-        name: String::new(),
+        name: "digest.data".into(),
         data,
     }))
 }
 
 fn bad_alg(alg: &str) -> EvalError {
-    EvalError::generic(format!("unsupported algorithm {alg}"))
+    EvalError::new(code::BAD_OPTION, format!("unsupported algorithm {alg}"))
 }
 
 pub fn crypt_digest(_: &mut Evaluator, a: &[Value]) -> R {
@@ -213,11 +244,14 @@ pub fn crypt_digest(_: &mut Evaluator, a: &[Value]) -> R {
     bin(digest(&alg, &bytes(&a[0])).ok_or_else(|| bad_alg(&alg))?.0)
 }
 
-/// HMAC (RFC 2104).
+/// HMAC (RFC 2104). With an empty key FileMaker returns the data as is.
 pub fn crypt_auth_code(_: &mut Evaluator, a: &[Value]) -> R {
     let alg = txt(a, 1);
     let (data, mut key) = (bytes(&a[0]), bytes(&a[2]));
     let (_, block) = digest(&alg, b"").ok_or_else(|| bad_alg(&alg))?;
+    if key.is_empty() {
+        return bin(data);
+    }
     if key.len() > block {
         key = digest(&alg, &key).unwrap().0;
     }
@@ -227,21 +261,43 @@ pub fn crypt_auth_code(_: &mut Evaluator, a: &[Value]) -> R {
     bin(digest(&alg, &[pad(0x5C), inner].concat()).unwrap().0)
 }
 
-fn utf8(enc: &str) -> Result<(), EvalError> {
-    // ponytail: UTF-8 only; other encodings need a codec table.
-    match enc.to_ascii_lowercase().replace('-', "").as_str() {
-        "utf8" => Ok(()),
-        _ => Err(EvalError::generic(format!("unsupported encoding {enc}"))),
+#[derive(Clone, Copy, PartialEq)]
+enum Codec {
+    Utf8,
+    Latin1,
+    Cp1252,
+}
+
+/// windows-1252 bytes 0x80..0x9F.
+const CP1252: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
+
+// ponytail: UTF-8, ISO-8859-1 and windows-1252 only; Shift_JIS, UTF-16 &
+// co. need codec tables.
+fn codec(enc: &str) -> Result<Codec, EvalError> {
+    match enc.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
+        "utf8" => Ok(Codec::Utf8),
+        "iso88591" | "latin1" => Ok(Codec::Latin1),
+        "windows1252" | "cp1252" => Ok(Codec::Cp1252),
+        _ => Err(EvalError::new(
+            code::BAD_OPTION,
+            format!("unsupported encoding {enc}"),
+        )),
     }
 }
 
+/// TextEncode: line endings 2 = CR, 3 = LF, 4 = CR LF, others unchanged
+/// (CR, FileMaker's own). The container is named after the encoding.
 pub fn text_encode(_: &mut Evaluator, a: &[Value]) -> R {
-    utf8(&txt(a, 1))?;
+    let enc = txt(a, 1);
+    let codec = codec(&enc)?;
     let s = txt(a, 0);
     let eol = match int(a, 2)? {
         2 => Some("\r"),
-        3 => Some("\r\n"),
-        4 => Some("\n"),
+        3 => Some("\n"),
+        4 => Some("\r\n"),
         _ => None,
     };
     let s = match eol {
@@ -251,15 +307,40 @@ pub fn text_encode(_: &mut Evaluator, a: &[Value]) -> R {
             .replace('\n', eol),
         None => s,
     };
+    let data = match codec {
+        Codec::Utf8 => s.into_bytes(),
+        Codec::Latin1 | Codec::Cp1252 => s
+            .chars()
+            .map(|c| match c as u32 {
+                u @ 0..=0x7F | u @ 0xA0..=0xFF => u as u8,
+                u @ 0x80..=0x9F if codec == Codec::Latin1 => u as u8,
+                _ => CP1252
+                    .iter()
+                    .position(|&x| x == c)
+                    .map_or(b'?', |i| 0x80 + i as u8),
+            })
+            .collect(),
+    };
     Ok(Value::Container(Container {
-        name: "Untitled.txt".into(),
-        data: s.into_bytes(),
+        name: format!("{enc}.txt"),
+        data,
     }))
 }
 
+/// TextDecode: line endings become CR.
 pub fn text_decode(_: &mut Evaluator, a: &[Value]) -> R {
-    utf8(&txt(a, 1))?;
-    Ok(Value::Text(
-        String::from_utf8_lossy(&bytes(&a[0])).into_owned(),
-    ))
+    let codec = codec(&txt(a, 1))?;
+    let data = bytes(&a[0]);
+    let s: String = match codec {
+        Codec::Utf8 => String::from_utf8_lossy(&data).into_owned(),
+        Codec::Latin1 => data.iter().map(|&b| b as char).collect(),
+        Codec::Cp1252 => data
+            .iter()
+            .map(|&b| match b {
+                0x80..=0x9F => CP1252[b as usize - 0x80],
+                b => b as char,
+            })
+            .collect(),
+    };
+    Ok(Value::Text(s.replace("\r\n", "\r").replace('\n', "\r")))
 }

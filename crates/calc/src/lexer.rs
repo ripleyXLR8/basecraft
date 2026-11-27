@@ -116,6 +116,20 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                     i += 1;
                 }
             }
+            // Exponent: 1e3, 1.5E-2, 1.0E+20.
+            if matches!(s.get(i), Some('e' | 'E')) {
+                let d = if matches!(s.get(i + 1), Some('+' | '-')) {
+                    2
+                } else {
+                    1
+                };
+                if s.get(i + d).is_some_and(|c| c.is_ascii_digit()) {
+                    i += d;
+                    while i < s.len() && s[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+            }
             let text: String = s[start..i].iter().collect();
             Tok::Num(num::parse(&format!("0{text}")).unwrap())
         } else if c == '$' && next == Some('{') {
@@ -131,13 +145,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             if s.get(i) == Some(&'$') {
                 i += 1;
             }
-            let name_start = i;
             while i < s.len() && ident_char(s[i]) {
                 i += 1;
             }
-            if i == name_start {
-                return err(start, code::NAME_MISSING, "variable name is missing");
-            }
+            // A bare "$" is a variable with no name: always empty.
             Tok::Var(s[start..i].iter().collect())
         } else if ident_start(c) {
             while i < s.len() && ident_char(s[i]) {

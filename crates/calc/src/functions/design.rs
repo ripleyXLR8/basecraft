@@ -420,7 +420,7 @@ pub fn get_fields_on_layout(ev: &mut Evaluator, a: &[Value]) -> R {
     let mut root = Map::new();
     root.insert("fields".into(), J::Object(fields));
     root.insert("layout_name".into(), J::String(l.name.clone()));
-    Ok(Value::Text(super::json::compact(&J::Object(root))))
+    Ok(Value::Text(super::json::spaced(&J::Object(root))))
 }
 
 // ---- relationships -----------------------------------------------------------
@@ -437,12 +437,10 @@ fn flip(op: &str) -> &str {
     }
 }
 
-/// One block per relationship of `tableName`: Source, Table, Options, then
-/// one line per criterion, the other occurrence first. Blocks are separated
-/// by an empty line.
-// ponytail: whether criteria keep the graph's left/right order and whether
-// an empty Options line keeps its label are not documented; we always put
-// the other occurrence first (flipping the operator) and keep "Options: ".
+/// One block per relationship of `tableName`: `Source:file`, `Table:other`,
+/// `Options:` (Delete, Create, Sorted of the other side), then one line per
+/// criterion, the other occurrence first. Blocks are separated by an empty
+/// line (checked against FileMaker on the Tasks template).
 pub fn relation_info(ev: &mut Evaluator, a: &[Value]) -> R {
     let s = schema(ev, &txt(a, 0))?;
     let me = txt(a, 1);
@@ -478,9 +476,9 @@ pub fn relation_info(ev: &mut Evaluator, a: &[Value]) -> R {
         .map(|(_, w)| *w)
         .collect();
         let mut b = vec![
-            format!("Source: {source}"),
-            format!("Table: {other}"),
-            format!("Options: {}", words.join(" ")),
+            format!("Source:{source}"),
+            format!("Table:{other}"),
+            format!("Options:{}", words.join(" ")),
         ];
         for (lf, op, rf) in &r.criteria {
             b.push(if mine_left {
@@ -526,34 +524,15 @@ fn ddl(s: &Schema, to: &str) -> Option<String> {
             (f, note.as_str())
         })
         .collect();
-    let mut keys = vec![];
-    if let Some(pk) = primary_key(&t.fields) {
-        keys.push(format!("PRIMARY KEY ({})", pk.name));
-    }
-    // A foreign key: an `=` criterion whose other side is the other
-    // table's primary key.
-    for r in &s.relationships {
-        for (lf, op, rf) in &r.criteria {
-            if op != "=" {
-                continue;
-            }
-            let sides = [(&r.left, lf, &r.right, rf), (&r.right, rf, &r.left, lf)];
-            for (mine, my_field, other, other_field) in sides {
-                if !mine.eq_ignore_ascii_case(&o.name) {
-                    continue;
-                }
-                let pk = s
-                    .occurrence_table(other)
-                    .and_then(|t| primary_key(&t.fields));
-                if pk.is_some_and(|pk| pk.name.eq_ignore_ascii_case(other_field)) {
-                    keys.push(format!(
-                        "FOREIGN KEY ({my_field}) REFERENCES {other}({other_field})"
-                    ));
-                }
-            }
-        }
-    }
-    let mut out = format!("CREATE TABLE \"{}\" (", o.name);
+    // FileMaker writes no FOREIGN KEY for the template's ForeignKey fields.
+    let keys: Vec<String> = primary_key(&t.fields)
+        .map(|pk| format!("PRIMARY KEY ({})", pk.name))
+        .into_iter()
+        .collect();
+    // One line per column, CR-separated, comments after the comma; a blank
+    // line after each table:
+    // CREATE TABLE "T" (\r"a" varchar(255), /*note*/\rPRIMARY KEY (a)\r);\r\r
+    let mut out = format!("CREATE TABLE \"{}\" (\r", o.name);
     let n = cols.len() + keys.len();
     let mut i = 0;
     for (f, note) in cols {
@@ -565,9 +544,13 @@ fn ddl(s: &Schema, to: &str) -> Option<String> {
         if !note.is_empty() {
             out.push_str(&format!(" /*{note}*/"));
         }
+        out.push('\r');
     }
-    out.push_str(&keys.join(","));
-    out.push_str(");");
+    for k in keys {
+        out.push_str(&k);
+        out.push('\r');
+    }
+    out.push_str(");\r\r");
     Some(out)
 }
 
@@ -593,6 +576,9 @@ pub fn get_table_ddl(ev: &mut Evaluator, a: &[Value]) -> R {
             None if ignore => {}
             None => return Ok(Value::text("?")),
         }
+    }
+    if out.is_empty() {
+        return Ok(Value::text("?"));
     }
     Ok(Value::Text(out))
 }

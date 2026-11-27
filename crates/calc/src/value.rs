@@ -2,7 +2,8 @@
 //!
 //! Dates are day numbers (1/1/0001 = 1); times are seconds (fractional and
 //! negative allowed); timestamps are seconds since 1/1/0001 00:00:00.
-//! Text formats follow an en_US file: `M/D/YYYY` and `H:MM:SS`.
+//! Text formats follow an en_US file: `M/D/YYYY`, times `H:MM:SS` and
+//! timestamps `M/D/YYYY h:MM[:SS] AM` (checked against FileMaker).
 
 use crate::num::{self, Num};
 use bigdecimal::{Signed, ToPrimitive, Zero};
@@ -107,9 +108,10 @@ impl Value {
             Value::Number(n) => n
                 .with_scale_round(0, bigdecimal::RoundingMode::Floor)
                 .to_i64(),
-            Value::Text(s) | Value::Json { text: s, .. } => {
-                parse_date(s).or_else(|| parse_timestamp(s).map(|t| ts_date(&t)))
-            }
+            Value::Text(s) | Value::Json { text: s, .. } => parse_date(s).or_else(|| {
+                let ts = s.trim().contains(' ').then(|| parse_timestamp(s));
+                ts.flatten().map(|t| ts_date(&t))
+            }),
             Value::Time(_) | Value::Container(_) => None,
         }
     }
@@ -120,31 +122,69 @@ impl Value {
             Value::Time(t) => Some(t.clone()),
             Value::Timestamp(t) => Some(ts_time(t)),
             Value::Number(n) => Some(n.clone()),
-            Value::Text(s) | Value::Json { text: s, .. } => {
-                parse_time(s).or_else(|| parse_timestamp(s).map(|t| ts_time(&t)))
-            }
-            Value::Date(_) | Value::Container(_) => None,
+            Value::Text(s) | Value::Json { text: s, .. } => parse_time(s).or_else(|| {
+                let ts = s.trim().contains(' ').then(|| parse_timestamp(s));
+                ts.flatten().map(|t| ts_time(&t))
+            }),
+            Value::Date(d) => Some(make_ts(*d, &num::int(0))),
+            Value::Container(_) => None,
         }
     }
 }
 
-/// FileMaker's text-to-number rule: keep the digits and the first decimal
-/// point, drop everything else; a minus sign before the first digit makes the
-/// number negative. GetAsNumber("abc12d3.4") = 123.4.
-// ponytail: no exponent ("1e3") support in text; add if real files need it.
+/// FileMaker's text-to-number rule: keep the digits (full-width ones too)
+/// and the first decimal point, drop everything else; a minus sign or an
+/// opening parenthesis before the first digit makes the number negative,
+/// and `e` after a digit starts an exponent. GetAsNumber("abc12d3.4") =
+/// 123.4, GetAsNumber("(5)") = -5, GetAsNumber("1e3") = 1000.
 pub fn text_to_num(s: &str) -> Option<Num> {
+    sci_text(s).or_else(|| gather_digits(s))
+}
+
+/// `1e3`, `-1.5E-2`, `.e3`: a number with one exponent and nothing else.
+/// Otherwise an `e` is just another non-digit ("1e3e4" -> 134).
+fn sci_text(s: &str) -> Option<Num> {
+    let s = s.trim();
+    let (m, e) = s.split_once(['e', 'E'])?;
+    let e = e.strip_prefix('+').unwrap_or(e);
+    let e_digits = e.strip_prefix('-').unwrap_or(e);
+    let m_body = m.strip_prefix(['-', '+']).unwrap_or(m);
+    let m_ok = !m_body.is_empty()
+        && m_body.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && m_body.matches('.').count() <= 1;
+    if !m_ok || e_digits.is_empty() || !e_digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut mb = format!("0{m_body}");
+    if mb.ends_with('.') {
+        mb.push('0');
+    }
+    num::parse(&format!(
+        "{}{mb}e{e}",
+        if m.starts_with('-') { "-" } else { "" }
+    ))
+}
+
+fn gather_digits(s: &str) -> Option<Num> {
+    let s: Vec<char> = s
+        .chars()
+        .map(|c| match c {
+            '０'..='９' => char::from(b'0' + (c as u32 - '０' as u32) as u8),
+            c => c,
+        })
+        .collect();
     let mut out = String::new();
     let mut seen_digit = false;
     let mut seen_point = false;
     let mut neg = false;
-    for c in s.chars() {
+    for c in s {
         if c.is_ascii_digit() {
             seen_digit = true;
             out.push(c);
         } else if c == '.' && !seen_point {
             seen_point = true;
             out.push('.');
-        } else if c == '-' && !seen_digit {
+        } else if (c == '-' || c == '(') && !seen_digit {
             neg = true;
         }
     }
@@ -154,7 +194,6 @@ pub fn text_to_num(s: &str) -> Option<Num> {
     let n = num::parse(&format!("0{out}"))?;
     Some(if neg { -n } else { n })
 }
-
 // ---- calendar ---------------------------------------------------------
 
 /// Day number (1/1/0001 = 1) of a proleptic Gregorian date. Months outside
@@ -202,26 +241,54 @@ pub fn format_date(day: i64) -> String {
     format!("{m}/{d}/{y:04}")
 }
 
+/// Fraction of a second as FileMaker shows it: at most 6 digits, truncated.
+fn frac_text(frac: &Num) -> String {
+    let f = num::trunc(frac, 6);
+    if f.is_zero() {
+        String::new()
+    } else {
+        // "0.25" -> ".25"
+        num::plain(&f)[1..].to_string()
+    }
+}
+
+/// `H:MM:SS[.ffffff]`, hours unbounded, as FileMaker shows a time.
 pub fn format_time(t: &Num) -> String {
+    let t = num::shown(t);
     let neg = t.is_negative();
     let a = t.abs();
     let whole = num::floor(&a);
-    let frac = num::fix(&a - &whole);
     let s = whole.to_i128().unwrap_or(0);
-    let mut out = format!(
-        "{}{}:{:02}:{:02}",
+    format!(
+        "{}{}:{:02}:{:02}{}",
         if neg { "-" } else { "" },
         s / 3600,
         (s / 60) % 60,
-        s % 60
-    );
-    if !frac.is_zero() {
-        // "0.25" -> ".25"
-        out.push_str(&num::format(&frac)[1..]);
-    }
-    out
+        s % 60,
+        frac_text(&(&a - &whole))
+    )
 }
 
+/// Time of day in the 12-hour form of an en_US file, as timestamps show it:
+/// `h:MM AM`, with `:SS[.ffffff]` only when there are seconds.
+pub fn format_time12(t: &Num) -> String {
+    let t = num::shown(t);
+    let whole = num::floor(&t);
+    let s = whole.to_i64().unwrap_or(0);
+    let (h, m, sec) = (s / 3600, (s / 60) % 60, s % 60);
+    let frac = frac_text(&(&t - &whole));
+    let (h12, suffix) = match h {
+        0 => (12, "AM"),
+        1..=11 => (h, "AM"),
+        12 => (12, "PM"),
+        _ => (h - 12, "PM"),
+    };
+    if sec == 0 && frac.is_empty() {
+        format!("{h12}:{m:02} {suffix}")
+    } else {
+        format!("{h12}:{m:02}:{sec:02}{frac} {suffix}")
+    }
+}
 const DAY: i64 = 86400;
 
 pub fn ts_date(t: &Num) -> i64 {
@@ -240,34 +307,29 @@ pub fn make_ts(day: i64, time: &Num) -> Num {
 }
 
 pub fn format_timestamp(t: &Num) -> String {
-    format!("{} {}", format_date(ts_date(t)), format_time(&ts_time(t)))
+    format!("{} {}", format_date(ts_date(t)), format_time12(&ts_time(t)))
 }
 
-/// Parses `M/D/YYYY` (any of `/ - .` as separator) or `YYYY-MM-DD`.
-// ponytail: en_US order only; the file's locale should drive this later.
+/// Parses `M/D/YYYY` with `/`, `-` or `.` as separator. Years of one or two
+/// digits fall in the 100 years ending 30 years after the current one
+/// (24 -> 2024, 68 -> 1968 in 2026); three or four digits are literal.
 pub fn parse_date(s: &str) -> Option<i64> {
     let s = s.trim();
-    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit() || "/-. ".contains(c)) {
+    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit() || "/-.".contains(c)) {
         return None;
     }
-    let g: Vec<&str> = s
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|p| !p.is_empty())
-        .collect();
-    if g.len() != 3 || g.iter().any(|p| p.len() > 4) {
+    let g: Vec<&str> = s.split(['/', '-', '.']).collect();
+    if g.len() != 3 || g.iter().any(|p| p.is_empty() || p.len() > 4) {
         return None;
     }
-    let (ys, ms, ds) = if g[0].len() == 4 {
-        (g[0], g[1], g[2])
+    let (m, d, y): (i64, i64, i64) = (g[0].parse().ok()?, g[1].parse().ok()?, g[2].parse().ok()?);
+    let y = if g[2].len() <= 2 {
+        // In 2026 FileMaker reads 56 as 2056 and 57 as 1957.
+        let pivot = current_year() + 30;
+        let y = pivot / 100 * 100 + y;
+        if y > pivot { y - 100 } else { y }
     } else {
-        (g[2], g[0], g[1])
-    };
-    let (y, m, d): (i64, i64, i64) = (ys.parse().ok()?, ms.parse().ok()?, ds.parse().ok()?);
-    // ponytail: two-digit years map to 1930..2029; FileMaker uses a rolling window.
-    let y = match (ys.len() <= 2, y < 30) {
-        (true, true) => 2000 + y,
-        (true, false) => 1900 + y,
-        _ => y,
+        y
     };
     if !(1..=12).contains(&m) || d < 1 || !(MIN_YEAR..=MAX_YEAR).contains(&y) {
         return None;
@@ -276,7 +338,19 @@ pub fn parse_date(s: &str) -> Option<i64> {
     (civil(day).1 == m).then_some(day)
 }
 
-/// Parses `H:MM`, `H:MM:SS`, `H:MM:SS.fff`, optionally followed by AM/PM.
+fn current_year() -> i64 {
+    // The wasm32-unknown-unknown target has no clock.
+    if cfg!(target_arch = "wasm32") {
+        return 2026;
+    }
+    crate::functions::builtin_get("CurrentDate")
+        .and_then(|v| v.to_date())
+        .map_or(2026, |d| civil(d).0)
+}
+
+/// Parses a time: `H:MM`, `H:MM:SS[.fff]` (minutes and seconds may exceed
+/// 59), optionally followed by AM/PM; `H AM`; a bare integer is hours and a
+/// bare decimal seconds (FileMaker: "13" -> 13:00:00, "1.25" -> 1.25 s).
 pub fn parse_time(s: &str) -> Option<Num> {
     let mut s = s.trim().to_ascii_uppercase();
     let mut pm = None;
@@ -291,38 +365,59 @@ pub fn parse_time(s: &str) -> Option<Num> {
         Some(b) => (true, b),
         None => (false, s.as_str()),
     };
+    let digits = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit());
     let parts: Vec<&str> = body.split(':').collect();
-    if parts.len() < 2 || parts.len() > 3 {
-        return None;
-    }
-    let ok = |p: &str, frac: bool| {
-        !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || (frac && c == '.'))
-    };
-    if !ok(parts[0], false) || !ok(parts[1], false) || (parts.len() == 3 && !ok(parts[2], true)) {
-        return None;
-    }
-    let mut h: i64 = parts[0].parse().ok()?;
-    let m: i64 = parts[1].parse().ok()?;
-    let sec = if parts.len() == 3 {
-        num::parse(parts[2])?
-    } else {
-        num::int(0)
-    };
-    if let Some(pm) = pm {
-        if !(1..=12).contains(&h) {
+    let t = if parts.len() == 1 {
+        let p = parts[0];
+        if digits(p) {
+            num::int(p.parse::<i64>().ok()? * 3600)
+        } else if pm.is_none() && p.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            num::parse(&format!("0{p}"))?
+        } else {
             return None;
         }
-        h = h % 12 + if pm { 12 } else { 0 };
-    }
-    let t = num::fix(num::int(h * 3600 + m * 60) + sec);
+    } else {
+        if parts.len() > 3 || !digits(parts[0]) || !digits(parts[1]) {
+            return None;
+        }
+        let sec = match parts.get(2) {
+            Some(p) if p.chars().all(|c| c.is_ascii_digit() || c == '.') && !p.is_empty() => {
+                num::parse(&format!("0{p}"))?
+            }
+            Some(_) => return None,
+            None => num::int(0),
+        };
+        let (h, m): (i64, i64) = (parts[0].parse().ok()?, parts[1].parse().ok()?);
+        num::fix(num::int(h * 3600 + m * 60) + sec)
+    };
+    let t = match pm {
+        None => t,
+        Some(pm) => {
+            let h = num::floor_div(&t, &num::int(3600))?.to_i64()?;
+            if !(0..=12).contains(&h) || neg {
+                return None;
+            }
+            let base = if h == 12 { -43200 } else { 0 } + if pm { 43200 } else { 0 };
+            num::fix(t + num::int(base))
+        }
+    };
     Some(if neg { -t } else { t })
 }
 
+/// `date time`, a date alone (midnight) or a time alone (on 1/1/0001); the
+/// time of day must be under 24 hours.
 pub fn parse_timestamp(s: &str) -> Option<Num> {
-    let (d, t) = s.trim().split_once(' ')?;
-    Some(make_ts(parse_date(d)?, &parse_time(t)?))
+    let s = s.trim();
+    let (d, t) = match s.split_once(' ') {
+        Some((d, t)) => (parse_date(d)?, parse_time(t)?),
+        None => match parse_date(s) {
+            Some(d) => (d, num::int(0)),
+            None if s.contains(':') => (1, parse_time(s)?),
+            None => return None,
+        },
+    };
+    (!t.is_negative() && t < num::int(DAY)).then(|| make_ts(d, &t))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,7 +439,8 @@ mod tests {
     #[test]
     fn parsing() {
         assert_eq!(parse_date("1/15/2024"), Some(day_number(2024, 1, 15)));
-        assert_eq!(parse_date("2024-01-15"), Some(day_number(2024, 1, 15)));
+        assert_eq!(parse_date("2024-01-15"), None);
+        assert_eq!(parse_date("1-15-2024"), Some(day_number(2024, 1, 15)));
         assert_eq!(parse_date("2/30/2024"), None);
         assert_eq!(parse_date("abc"), None);
         assert_eq!(parse_time("1:30 PM"), num::parse("48600"));
@@ -357,5 +453,9 @@ mod tests {
         assert_eq!(text_to_num("-5"), num::parse("-5"));
         assert_eq!(text_to_num("abc"), None);
         assert_eq!(text_to_num(".5"), num::parse("0.5"));
+        assert_eq!(text_to_num("1e3"), num::parse("1000"));
+        assert_eq!(text_to_num("1e3e4"), num::parse("134"));
+        assert_eq!(text_to_num("(5)"), num::parse("-5"));
+        assert_eq!(text_to_num("１２"), num::parse("12"));
     }
 }

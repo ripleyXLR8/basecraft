@@ -298,7 +298,7 @@ fn design_lists() {
         ("ValueListNames ( \"\" )", "Yes/No List"),
         ("ValueListIDs ( \"\" )", "1"),
         ("ValueListItems ( \"\" ; \"yes/no list\" )", "Yes\rNo"),
-        ("ValueListItems ( \"\" ; \"nope\" )", "?"),
+        ("ValueListItems ( \"\" ; \"nope\" )", ""),
         (
             "BaseTableComment ( \"\" ; \"Customers\" )",
             "People we sell to",
@@ -326,7 +326,7 @@ fn design_fields() {
             "FieldType ( \"\" ; \"Statement\" )",
             "External(Secure) Container Unindexed 1",
         ),
-        ("FieldType ( \"\" ; \"Nope\" )", "?"),
+        ("FieldType ( \"\" ; \"Nope\" )", ""),
         (
             "FieldComment ( \"\" ; \"Customers::PrimaryKey\" )",
             "Unique identifier",
@@ -366,7 +366,7 @@ fn design_layouts() {
             "FieldNames ( \"\" ; \"Invoices\" )",
             "PrimaryKey\rCustomerID\rTotal\rNotes",
         ),
-        ("FieldNames ( \"\" ; \"Nope\" )", "?"),
+        ("FieldNames ( \"\" ; \"Nope\" )", ""),
         // Documented FieldBounds / FieldStyle examples
         (
             "FieldBounds ( \"\" ; \"Data Entry\" ; \"Name\" )",
@@ -388,7 +388,7 @@ fn design_layouts() {
             "FieldRepetitions ( \"\" ; \"Data Entry\" ; \"Name\" )",
             "1 horizontal",
         ),
-        ("FieldBounds ( \"\" ; \"Data Entry\" ; \"Notes\" )", "?"),
+        ("FieldBounds ( \"\" ; \"Data Entry\" ; \"Notes\" )", ""),
         (
             "LayoutObjectNames ( \"\" ; \"Data Entry\" )",
             "nameField\rinvoices\r<\rtotal\r>\rbtn",
@@ -396,11 +396,11 @@ fn design_layouts() {
         ("LayoutObjectNames ( \"\" ; \"\" )", ""),
         (
             "GetFieldsOnLayout ( \"Data Entry\" )",
-            "{\"fields\":{\"Customers::Current Balance\":{\"type\":\"number\"},\
-             \"Customers::Name\":{\"description\":\"Full name\",\"type\":\"string\"},\
-             \"Customers::Phone Number\":{\"type\":\"string\"},\
-             \"Invoices::Total\":{\"description\":\"Invoice total\",\"type\":\"number\"}},\
-             \"layout_name\":\"Data Entry\"}",
+            "{\"fields\" : {\"Customers::Current Balance\" : {\"type\" : \"number\"},\
+             \"Customers::Name\" : {\"description\" : \"Full name\",\"type\" : \"string\"},\
+             \"Customers::Phone Number\" : {\"type\" : \"string\"},\
+             \"Invoices::Total\" : {\"description\" : \"Invoice total\",\"type\" : \"number\"}},\
+             \"layout_name\" : \"Data Entry\"}",
         ),
     ]);
 }
@@ -410,21 +410,21 @@ fn relationships_and_ddl() {
     check(&[
         (
             "RelationInfo ( \"\" ; \"Customers\" )",
-            "Source: Contacts\rTable: Invoices\rOptions: Create Sorted\rInvoices::CustomerID = Customers::PrimaryKey",
+            "Source:Contacts\rTable:Invoices\rOptions:Create Sorted\rInvoices::CustomerID = Customers::PrimaryKey",
         ),
         (
             "RelationInfo ( \"\" ; \"Invoices\" )",
-            "Source: Contacts\rTable: Customers\rOptions: \rCustomers::PrimaryKey = Invoices::CustomerID",
+            "Source:Contacts\rTable:Customers\rOptions:\rCustomers::PrimaryKey = Invoices::CustomerID",
         ),
-        ("RelationInfo ( \"\" ; \"Nope\" )", "?"),
+        ("RelationInfo ( \"\" ; \"Nope\" )", ""),
         // Only annotated fields when any field has an annotation, as in the
         // documented Topics example.
         (
             "GetTableDDL ( \"[\\\"Invoices\\\"]\" ; False )",
-            "CREATE TABLE \"Invoices\" (\"PrimaryKey\" varchar(255), /*Unique ID*/\
-             \"CustomerID\" varchar(255), /*Customer of the invoice*/\
-             \"Total\" int, /*Invoice total*/\
-             PRIMARY KEY (PrimaryKey),FOREIGN KEY (CustomerID) REFERENCES Customers(PrimaryKey));",
+            "CREATE TABLE \"Invoices\" (\r\"PrimaryKey\" varchar(255), /*Unique ID*/\r\
+             \"CustomerID\" varchar(255), /*Customer of the invoice*/\r\
+             \"Total\" int, /*Invoice total*/\r\
+             PRIMARY KEY (PrimaryKey)\r);\r\r",
         ),
         (
             "GetTableDDL ( \"[\\\"Invoices\\\", \\\"Nope\\\"]\" ; False )",
@@ -436,7 +436,7 @@ fn relationships_and_ddl() {
         ),
         (
             "Left ( GetTableDDL ( \"[\\\"Customers\\\"]\" ; True ) ; 74 )",
-            "CREATE TABLE \"Customers\" (\"PrimaryKey\" varchar(255), /*Unique identifier*/",
+            "CREATE TABLE \"Customers\" (\r\"PrimaryKey\" varchar(255), /*Unique identifier*",
         ),
     ]);
 }
@@ -596,7 +596,7 @@ fn json_parse_and_values() {
         ),
         (
             "JSONValueExists ( \"{\\\"a\\\":{\\\"k\\\":2.0}}\" ; \"a\" ; 2 )",
-            "1",
+            "0",
         ),
         ("JSONValueCount ( \"[1,1,2]\" ; \"\" ; 1 )", "2"),
         ("JSONAnyValuesExist ( \"[1,2]\" ; \"\" ; \"[5,2]\" )", "1"),
@@ -620,7 +620,7 @@ fn json_parse_and_values() {
 #[test]
 fn japanese() {
     check(&[
-        ("KanaHankaku ( \"ガッコウ、パン\" )", "ｶﾞｯｺｳ､ﾊﾟﾝ"),
+        ("KanaHankaku ( \"ガッコウ、パン\" )", "ｶﾞｯｺｳ、ﾊﾟﾝ"),
         ("KanaZenkaku ( \"ｶﾞｯｺｳ ﾊﾟﾝ abc\" )", "ガッコウ パン abc"),
         ("Hiragana ( \"ｶﾀｶﾅ\" )", "かたかな"),
         ("Hiragana ( \"カタカナ\" )", "かたかな"),
@@ -635,7 +635,7 @@ fn japanese() {
             "一億二千三百四十五万六千七百八十九",
         ),
         ("NumToJText ( 123456789 ; 0 ; 1 )", "１２３４５６７８９"),
-        ("NumToJText ( 1200 ; 3 ; 3 )", "壱千弐百"),
+        ("NumToJText ( 1200 ; 3 ; 3 )", "壱阡弐陌"),
         ("NumToJText ( 100000005 ; 2 ; 0 )", "1億5"),
         ("NumToJText ( 0 ; 3 ; 2 )", "〇"),
         ("NumToJText ( 12 ; 9 ; \"\" )", "12"),
@@ -654,11 +654,11 @@ fn styled_text_as_markup() {
     check(&[
         (
             "GetAsCSS ( \"a<b¶c & \\\"d\\\"\" )",
-            "a&lt;b<br>c &amp; &quot;d&quot;",
+            "<span style=\"\" >a&lt;b<br/>c &amp; &quot;d&quot;</span>",
         ),
         (
             "GetAsSVG ( \"Frank\" )",
-            "<stylelist>\r<style#0>\"\", Begin: 1, End: 5</style>\r</stylelist>\r<data>\r<span style=\"0\">Frank</span>\r</data>",
+            "<stylelist>\r<style#0>\"\", begin: 1, end: 5</style> \r</stylelist>\r<data>\r<span style=\"0\">Frank</span>\r</data>",
         ),
         ("GetAsSVG ( \"\" )", ""),
     ]);
@@ -683,7 +683,7 @@ fn encryption() {
         ),
         (
             "CryptDecrypt ( CryptEncrypt ( TextEncode ( \"f\" ; \"utf-8\" ; 1 ) ; \"k\" ) ; \"k\" )",
-            "Untitled.txt",
+            "utf-8.txt",
         ),
         (
             "CryptEncryptBase64 ( \"a\" ; \"k\" ) = CryptEncryptBase64 ( \"a\" ; \"k\" )",
@@ -769,7 +769,7 @@ fn containers_and_paths() {
         ),
         (
             "GetContainerAttribute ( TextEncode ( \"abc\" ; \"utf-8\" ; 1 ) ; \"MD5\" )",
-            "900150983cd24fb0d6963f7d28e17f72",
+            "900150983CD24FB0D6963F7D28E17F72",
         ),
         (
             "GetWidth ( HexDecode ( \"474946383961\" & \"0A000500\" ; \"a.gif\" ) )",
@@ -805,11 +805,11 @@ fn containers_and_paths() {
         ("ConvertFromFileMakerPath ( \"C:/x\" ; WinPath )", ""),
         (
             "ConvertToFileMakerPath ( \"C:\\Temp\\x.txt\" ; WinPath )",
-            "filewin:/C:/Temp/x.txt",
+            "file:/C:/Temp/x.txt",
         ),
         (
             "ConvertToFileMakerPath ( \"\\\\\\\\srv\\share\\x\" ; WinPath )",
-            "filewin://srv/share/x",
+            "file://srv/share/x",
         ),
         (
             "ConvertToFileMakerPath ( \"/Volumes/Data/x.txt\" ; PosixPath )",
@@ -840,19 +840,20 @@ impl Context for Gps {
 #[test]
 fn platform_functions() {
     check(&[
-        ("Location ( 10 )", "?"),
+        ("Location ( 10 )", ""),
         ("EvaluationError ( GetSensor ( \"battery\" ) )", "3"),
         (
             "EvaluationError ( GetEmbedding ( \"a\" ; \"m\" ; \"t\" ) )",
             "3",
         ),
-        ("EvaluationError ( Furigana ( \"漢字\" ) )", "3"),
+        ("EvaluationError ( Furigana ( \"漢字\" ) )", "0"),
     ]);
     let mut host = Gps(MemoryContext::default());
     assert_eq!(eval_text("Location ( 10 )", &mut host), "48.85,2.35 ±10");
-    assert_eq!(eval_text("LocationValues ( 10 )", &mut host), "?");
-    // The defaults of the design and record methods say "not available".
-    assert_eq!(eval_text("TableNames ( \"\" )", &mut host), "?");
+    assert_eq!(eval_text("LocationValues ( 10 )", &mut host), "");
+    // Without a schema the design functions answer empty text (FileMaker
+    // does so for a file that is not open); records say "not available".
+    assert_eq!(eval_text("TableNames ( \"\" )", &mut host), "");
     assert_eq!(
         eval_text("EvaluationError ( GetNthRecord ( x ; 1 ) )", &mut host),
         "3"

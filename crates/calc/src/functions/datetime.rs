@@ -1,32 +1,36 @@
 //! Date, time and timestamp functions, plus the built-in `Get()` clock flags.
 
 use super::{int, number};
-use crate::error::EvalError;
+use crate::error::{EvalError, code};
 use crate::eval::{Evaluator, R};
 use crate::num::{self, Num};
 use crate::value::{self, Value, civil, day_number, day_of_week as dow, make_ts, valid_day};
-use bigdecimal::{Signed, ToPrimitive};
 
-fn bad(what: &str) -> EvalError {
-    EvalError::generic(format!("{what}: invalid date or time"))
+fn bad_date(what: &str) -> EvalError {
+    EvalError::new(code::DATE_INVALID, format!("{what}: invalid date"))
 }
 
-/// Date argument: empty stays empty (None), invalid is an error.
+fn bad_time(what: &str) -> EvalError {
+    EvalError::new(code::TIME_INVALID, format!("{what}: invalid time"))
+}
+
+/// Date argument: empty (or a time, which has no date) stays empty (None),
+/// invalid is error 500.
 fn date_arg(v: &Value, what: &str) -> Result<Option<i64>, EvalError> {
-    if v.is_empty() {
+    if v.is_empty() || matches!(v, Value::Time(_)) {
         return Ok(None);
     }
     v.to_date()
         .filter(|d| valid_day(*d))
         .map(Some)
-        .ok_or_else(|| bad(what))
+        .ok_or_else(|| bad_date(what))
 }
 
 fn time_arg(v: &Value, what: &str) -> Result<Option<Num>, EvalError> {
     if v.is_empty() {
         return Ok(None);
     }
-    v.to_time().map(Some).ok_or_else(|| bad(what))
+    v.to_time().map(Some).ok_or_else(|| bad_time(what))
 }
 
 pub(crate) fn on_date(a: &[Value], what: &str, f: impl FnOnce(i64) -> Value) -> R {
@@ -38,29 +42,41 @@ fn on_time(a: &[Value], what: &str, f: impl FnOnce(Num) -> Value) -> R {
 }
 
 pub fn date(_: &mut Evaluator, a: &[Value]) -> R {
+    if a[0].is_empty() || a[2].is_empty() {
+        return Err(bad_date("Date"));
+    }
     let (y, m, d) = (int(a, 2)?, int(a, 0)?, int(a, 1)?);
     if y.abs() > 100_000 || m.abs() > 1_000_000 || d.abs() > 100_000_000 {
-        return Err(bad("Date"));
+        return Err(bad_date("Date"));
     }
     let d = day_number(y, m, d);
     if valid_day(d) {
         Ok(Value::Date(d))
     } else {
-        Err(bad("Date"))
+        Err(bad_date("Date"))
     }
 }
 
 pub fn time(_: &mut Evaluator, a: &[Value]) -> R {
-    let t = number(a, 0) * num::int(3600) + number(a, 1) * num::int(60) + number(a, 2);
-    Ok(Value::Time(num::fix(t)))
+    let h = num::mul(&number(a, 0), &num::int(3600));
+    let m = num::mul(&number(a, 1), &num::int(60));
+    Ok(Value::Time(num::add(&num::add(&h, &m), &number(a, 2))))
 }
 
 pub fn timestamp(_: &mut Evaluator, a: &[Value]) -> R {
-    let d = date_arg(&a[0], "Timestamp")?.ok_or_else(|| bad("Timestamp"))?;
-    let t = time_arg(&a[1], "Timestamp")?.unwrap_or_default();
-    Ok(Value::Timestamp(make_ts(d, &t)))
+    if a[1].is_empty() && a[0].is_empty() {
+        return Ok(Value::empty());
+    }
+    let d = date_arg(&a[0], "Timestamp")?.ok_or_else(|| bad_date("Timestamp"))?;
+    let Some(t) = time_arg(&a[1], "Timestamp")? else {
+        return Ok(Value::empty());
+    };
+    let ts = make_ts(d, &t);
+    if !valid_day(value::ts_date(&ts)) {
+        return Err(bad_date("Timestamp"));
+    }
+    Ok(Value::Timestamp(ts))
 }
-
 pub fn year(_: &mut Evaluator, a: &[Value]) -> R {
     on_date(a, "Year", |d| Value::int(civil(d).0))
 }
@@ -141,12 +157,9 @@ pub fn week_of_year(_: &mut Evaluator, a: &[Value]) -> R {
 }
 
 /// Week 1 is the first week with at least four days in the new year; weeks
-/// start on `startingDay` (1 = Sunday).
+/// start on `startingDay` (1 = Sunday; FileMaker clamps it to 1..7).
 pub fn week_of_year_fiscal(_: &mut Evaluator, a: &[Value]) -> R {
-    let start = int(a, 1)?;
-    if !(1..=7).contains(&start) {
-        return Err(bad("WeekOfYearFiscal"));
-    }
+    let start = int(a, 1)?.clamp(1, 7);
     on_date(a, "WeekOfYearFiscal", |d| {
         let week_start = d - (dow(d) - start).rem_euclid(7);
         let mid = week_start + 3;
@@ -154,33 +167,27 @@ pub fn week_of_year_fiscal(_: &mut Evaluator, a: &[Value]) -> R {
     })
 }
 
-/// (sign, hours, minutes, seconds-with-fraction) of a duration.
-fn hms(t: &Num) -> (i64, Num, i64, Num) {
-    let sign = if t.is_negative() { -1 } else { 1 };
-    let a = t.abs();
-    let whole = num::floor(&a);
-    let s = whole.to_i64().unwrap_or(0);
-    (
-        sign,
-        num::int(s / 3600),
-        (s / 60) % 60,
-        num::fix(&a - num::int(s / 60 * 60)),
-    )
+/// (hours, minutes, seconds) of a duration, each truncated toward zero
+/// (Minute ( -5400 ) = -30); seconds keep 6 decimals.
+fn hms(t: &Num) -> (Num, Num, Num) {
+    let t = num::shown(t);
+    let h = num::trunc(&num::div(&t, &num::int(3600), 30).unwrap_or_default(), 0);
+    let rest = &t - &h * num::int(3600);
+    let m = num::trunc(&num::div(&rest, &num::int(60), 30).unwrap_or_default(), 0);
+    let s = num::trunc(&(rest - &m * num::int(60)), 6);
+    (h, m, s)
 }
 
 pub fn hour(_: &mut Evaluator, a: &[Value]) -> R {
-    on_time(a, "Hour", |t| {
-        let (sign, h, ..) = hms(&t);
-        Value::num(h * num::int(sign))
-    })
+    on_time(a, "Hour", |t| Value::num(hms(&t).0))
 }
 
 pub fn minute(_: &mut Evaluator, a: &[Value]) -> R {
-    on_time(a, "Minute", |t| Value::int(hms(&t).2))
+    on_time(a, "Minute", |t| Value::num(hms(&t).1))
 }
 
 pub fn seconds(_: &mut Evaluator, a: &[Value]) -> R {
-    on_time(a, "Seconds", |t| Value::num(hms(&t).3))
+    on_time(a, "Seconds", |t| Value::num(hms(&t).2))
 }
 
 pub fn get_as_date(_: &mut Evaluator, a: &[Value]) -> R {
@@ -197,13 +204,13 @@ pub fn get_as_timestamp(_: &mut Evaluator, a: &[Value]) -> R {
         _ if v.is_empty() => return Ok(Value::empty()),
         Value::Timestamp(t) | Value::Number(t) | Value::Time(t) => Some(t.clone()),
         Value::Date(d) => Some(make_ts(*d, &num::int(0))),
-        Value::Text(s) | Value::Json { text: s, .. } => value::parse_timestamp(s)
-            .or_else(|| value::parse_date(s).map(|d| make_ts(d, &num::int(0)))),
+        Value::Text(s) | Value::Json { text: s, .. } => value::parse_timestamp(s),
         Value::Container(_) => None,
     };
-    t.map(Value::Timestamp).ok_or_else(|| bad("GetAsTimestamp"))
+    t.filter(|t| valid_day(value::ts_date(t)))
+        .map(Value::Timestamp)
+        .ok_or_else(|| bad_date("GetAsTimestamp"))
 }
-
 // ---- Get() flags that need no database -----------------------------------------
 
 fn now_utc_micros() -> i128 {

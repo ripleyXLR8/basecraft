@@ -24,8 +24,7 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
     let e = p.expr(1)?;
     match p.peek() {
         Tok::Eof => Ok(e),
-        Tok::Sym(")") => p.fail(code::UNBALANCED_PAREN, "unbalanced parenthesis"),
-        _ => p.fail(code::OPERATOR_MISSING, "operator missing"),
+        _ => p.fail(code::OPERATOR_EXPECTED, "an operator is expected here"),
     }
 }
 
@@ -208,7 +207,15 @@ impl Parser {
                     self.i -= 1;
                     return self.fail(code::OPERAND_EXPECTED, "operand expected");
                 }
+                // Pi, Random and Self take no parentheses: Pi ( ) is 1212.
+                if !quoted && is_bare_function(&name) {
+                    return Ok(Expr::Call { name, args: vec![] });
+                }
                 if !quoted && self.peek() == &Tok::Sym("(") {
+                    if !crate::functions::exists(&name) {
+                        self.i -= 1;
+                        return self.fail(code::OPERATOR_MISSING, "function not found");
+                    }
                     self.next();
                     let args = self.items(")")?;
                     return Ok(Expr::Call { name, args });
@@ -224,9 +231,6 @@ impl Parser {
                         name: field,
                         rep: self.repetition()?,
                     });
-                }
-                if !quoted && is_bare_function(&name) {
-                    return Ok(Expr::Call { name, args: vec![] });
                 }
                 Ok(Expr::Field {
                     table: None,
@@ -301,7 +305,7 @@ mod tests {
         assert_eq!(parse("-2^2").unwrap().to_string(), "-2 ^ 2");
         assert_eq!(parse("a & b = c").unwrap().to_string(), "a & b = c");
         assert!(parse("1,2").is_err());
-        assert_eq!(parse("f(1,2)").unwrap().to_string(), "f ( 1 ; 2 )");
+        assert_eq!(parse("left(1,2)").unwrap().to_string(), "left ( 1 ; 2 )");
     }
 
     #[test]
@@ -310,10 +314,11 @@ mod tests {
         assert_eq!(e("1 +").code, code::OPERAND_EXPECTED);
         assert_eq!(e("1 +").pos, 3);
         assert_eq!(e("(1 + 2").code, code::UNBALANCED_PAREN);
-        assert_eq!(e("1 + 2)").code, code::UNBALANCED_PAREN);
+        assert_eq!(e("1 + 2)").code, code::OPERATOR_EXPECTED);
+        assert_eq!(e("NoSuchFunction ( 1 )").code, code::OPERATOR_MISSING);
         assert_eq!(e("\"abc").code, code::UNTERMINATED_TEXT);
         assert_eq!(e("1 /* x").code, code::UNTERMINATED_COMMENT);
-        assert_eq!(e("1 2").code, code::OPERATOR_MISSING);
+        assert_eq!(e("1 2").code, code::OPERATOR_EXPECTED);
         assert_eq!(e("1 2").pos, 2);
         assert_eq!(e("").code, code::OPERAND_EXPECTED);
         assert_eq!(e("If(1;)").pos, 5);

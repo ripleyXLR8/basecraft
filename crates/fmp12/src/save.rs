@@ -333,12 +333,12 @@ fn table_counter(file: &File, table: u32) -> Result<u32, Error> {
 type NodeKeys = Vec<(u32, Vec<u8>)>;
 
 /// Integer path of an entry, `None` if an element is not an integer.
-fn ipath(e: &Entry) -> Option<Vec<u32>> {
+pub(crate) fn ipath(e: &Entry) -> Option<Vec<u32>> {
     e.path.iter().map(|p| crate::path_int(p)).collect()
 }
 
 /// (key, value) of a Kv entry; `00 k` (key k, empty value) included.
-fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
+pub(crate) fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
     match crate::chunk::parse(&e.item).ok()?.first()? {
         crate::Chunk::Kv { key, data } => Some((*key, data.to_vec())),
         crate::Chunk::Data([k]) if e.item.first() == Some(&0) => Some((*k as u32, Vec::new())),
@@ -346,12 +346,12 @@ fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
     }
 }
 
-fn spelled(p: &[u32]) -> Vec<Vec<u8>> {
+pub(crate) fn spelled(p: &[u32]) -> Vec<Vec<u8>> {
     p.iter().map(|x| path_elem(*x)).collect()
 }
 
 /// A Kv entry, `00 k` for an empty value as FileMaker writes it.
-fn kv_entry(path: &[u32], key: u32, data: Vec<u8>) -> Entry {
+pub(crate) fn kv_entry(path: &[u32], key: u32, data: Vec<u8>) -> Entry {
     if data.is_empty() && key < 0x100 {
         return Entry {
             path: spelled(path),
@@ -361,7 +361,7 @@ fn kv_entry(path: &[u32], key: u32, data: Vec<u8>) -> Entry {
     kv(spelled(path), key, data)
 }
 
-fn marker(path: &[u32]) -> Entry {
+pub(crate) fn marker(path: &[u32]) -> Entry {
     Entry {
         path: spelled(path),
         item: vec![0x80],
@@ -379,7 +379,7 @@ pub fn text_literal_tokens(s: &str) -> Vec<u8> {
 }
 
 /// A random version-4 UUID for a new object (keys 216/217).
-fn fresh_uuid(seed: u64) -> Vec<u8> {
+pub(crate) fn fresh_uuid(seed: u64) -> Vec<u8> {
     use std::hash::{BuildHasher, Hasher};
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

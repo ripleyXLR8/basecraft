@@ -14,6 +14,7 @@ pub mod pb;
 pub mod save;
 pub mod schema;
 pub mod scripts;
+pub mod scripts_save;
 pub mod scsu;
 pub mod security;
 pub mod theme;

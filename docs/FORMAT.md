@@ -48,7 +48,7 @@ them, but a writer must keep them consistent.
 Each payload is a stream of opcodes. Each sector rebuilds its *path* (a stack
 of byte strings) from an empty stack. Chunks are:
 *Push* / *Pop* (path), *Data* (anonymous), *Kv* (integer key → value),
-*KvLong* (bytes key → value) and *Segment* (part *n* of a long value).
+and *KvLong* (bytes key → value). Opcodes 07/0F, which fmptools reads as "segments", are plain Kv chunks with a 2-byte length. Values over ~64 KB are stored in a sub-path as keys 1…n.
 
 If `op & 0xC0 == 0xC0`, the chunk is decoded as `op & 0x3F` and followed by a Pop.
 
@@ -58,13 +58,13 @@ If `op & 0xC0 == 0xC0`, the chunk is decoded as `op & 0x3F` and followed by a Po
 | 01 | Kv | key u8, 1 byte value |
 | 02–05 | Kv | key u8, 2×(op−1) bytes |
 | 06 | Kv | key u8, len u8, value |
-| 07 | Segment | index u8, len u16, value |
+| 07 | Kv | key u8, len u16, value (long form of 06) |
 | 08 | Data | 2 bytes |
 | 09 | Kv | key path-int(2), 1 byte |
 | 0A–0D | Kv | key path-int(2), 2×(op−9) bytes |
 | 0E FF | Data | 6 bytes (FF included) |
 | 0E | Kv | key path-int(2), len u8, value |
-| 0F | Segment | index path-int(2), len u16, value |
+| 0F | Kv | key path-int(2), len u16, value (long form of 0E) |
 | 10 | Data | 3 bytes |
 | 11–15 | Data | 3 + (op==11) + 2×(op−11) bytes |
 | 16 | KvLong | key 3 bytes, len u8, value |

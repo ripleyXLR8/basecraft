@@ -7,6 +7,7 @@
 pub mod chunk;
 pub mod graph;
 pub mod schema;
+pub mod scripts;
 pub mod scsu;
 
 pub use chunk::{Chunk, path_int};

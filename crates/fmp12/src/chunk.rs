@@ -9,8 +9,6 @@ use crate::Error;
 pub enum Chunk<'a> {
     /// Anonymous data at the current path.
     Data(&'a [u8]),
-    /// Part `index` of a value split over several chunks.
-    Segment { index: u32, data: &'a [u8] },
     /// Integer key → value.
     Kv { key: u32, data: &'a [u8] },
     /// Byte-string key → value.
@@ -90,11 +88,12 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Chunk<'_>>, Error> {
                     data: c.take(n)?,
                 }
             }
+            // Long forms of 0x06 / 0x0E: 2-byte length.
             0x07 => {
-                let index = c.byte()? as u32;
+                let key = c.byte()? as u32;
                 let n = be(c.take(2)?) as usize;
-                Chunk::Segment {
-                    index,
+                Chunk::Kv {
+                    key,
                     data: c.take(n)?,
                 }
             }
@@ -117,10 +116,10 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Chunk<'_>>, Error> {
                 }
             }
             0x0F => {
-                let index = path_int(c.take(2)?).unwrap();
+                let key = path_int(c.take(2)?).unwrap();
                 let n = be(c.take(2)?) as usize;
-                Chunk::Segment {
-                    index,
+                Chunk::Kv {
+                    key,
                     data: c.take(n)?,
                 }
             }
@@ -227,8 +226,8 @@ mod tests {
                     key: 16,
                     data: &[0xAA]
                 },
-                Chunk::Segment {
-                    index: 1,
+                Chunk::Kv {
+                    key: 1,
                     data: &[9, 9]
                 },
                 Chunk::Pop,

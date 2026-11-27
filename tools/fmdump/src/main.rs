@@ -56,7 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let p = path(p);
             match c {
                 Chunk::Data(d) => println!("[{p}] data {}", show(d)),
-                Chunk::Segment { index, data } => println!("[{p}] seg#{index} {}", show(data)),
                 Chunk::Kv { key, data } => println!("[{p}] {key} = {}", show(data)),
                 Chunk::KvLong { key, data } => println!("[{p}] <{}> = {}", show(key), show(data)),
                 Chunk::Push(_) | Chunk::Pop => {}
@@ -67,9 +66,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let h = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
             match c {
                 Chunk::Data(d) => println!("{p}	data		{}	{}", h(d), f.offset_of(d)),
-                Chunk::Segment { index, data } => {
-                    println!("{p}	seg	{index}	{}	{}", h(data), f.offset_of(data))
-                }
                 Chunk::Kv { key, data } => {
                     println!("{p}	kv	{key}	{}	{}", h(data), f.offset_of(data))
                 }

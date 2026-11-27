@@ -232,3 +232,56 @@ fn graph_matches_xml() {
     }
     eprintln!("{checked} graph objects checked against XML");
 }
+
+#[test]
+fn scripts_match_xml() {
+    let (mut scripts_checked, mut steps_checked) = (0, 0);
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let scripts = fmp12::scripts::scripts(&file).unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        let cat = doc
+            .descendants()
+            .find(|n| n.has_tag_name("ScriptCatalog"))
+            .unwrap();
+        for x in cat.children().filter(|n| n.has_tag_name("Script")) {
+            let id: u32 = x.attribute("id").unwrap().parse().unwrap();
+            let s = scripts.iter().find(|s| s.id == id).expect("script");
+            assert_eq!(s.name, x.attribute("name").unwrap());
+            let opts = x.children().find(|n| n.has_tag_name("Options")).unwrap();
+            assert_eq!(s.options.to_string(), opts.text().unwrap(), "{}", s.name);
+            scripts_checked += 1;
+        }
+        for x in doc
+            .descendants()
+            .filter(|n| n.has_tag_name("StepsForScripts"))
+            .flat_map(|n| n.children())
+        {
+            let Some(r) = x.children().find(|n| n.has_tag_name("ScriptReference")) else {
+                continue;
+            };
+            let id: u32 = r.attribute("id").unwrap().parse().unwrap();
+            let s = scripts.iter().find(|s| s.id == id).unwrap();
+            let steps: Vec<_> = x.descendants().filter(|n| n.has_tag_name("Step")).collect();
+            assert_eq!(s.steps.len(), steps.len(), "{}", s.name);
+            for (st, xs) in s.steps.iter().zip(&steps) {
+                assert_eq!(st.id.to_string(), xs.attribute("id").unwrap(), "{}", s.name);
+                assert_eq!(
+                    st.enabled.to_string(),
+                    xs.attribute("enable").unwrap().to_lowercase()
+                );
+                let o = xs.children().find(|n| n.has_tag_name("Options")).unwrap();
+                assert_eq!(
+                    st.options.to_string(),
+                    o.text().unwrap(),
+                    "{} step {}",
+                    s.name,
+                    st.id
+                );
+                steps_checked += 1;
+            }
+        }
+    }
+    eprintln!("{scripts_checked} scripts, {steps_checked} steps checked against XML");
+}

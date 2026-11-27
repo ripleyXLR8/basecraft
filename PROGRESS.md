@@ -34,11 +34,12 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Table occurrences (base table, position, colour) and relationships (TOs, join fields, cascade create) | ✅ |
 | Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
 | Layouts: parts, objects, styles | ⏳ |
-| Scripts and script steps | ⏳ |
+| Scripts: catalog, folders, step list (type, enabled, options) | ✅ |
+| Script step parameters | 🚧 |
 | Value lists, custom functions, accounts and privileges | ⏳ |
 | Container data | ⏳ |
 
-Oracle: all 214 template fields and 32 graph objects match FileMaker's XML export.
+Oracle: all 214 template fields and 32 graph objects, 30 scripts and 85 script steps match FileMaker's XML export.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 

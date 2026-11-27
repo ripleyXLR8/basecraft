@@ -217,7 +217,6 @@ fn name_part(rel: &[u32], c: &Chunk) -> Option<(bool, String)> {
     match (rel, c) {
         ([], Chunk::Kv { key: 16, data }) => Some((true, text(data))),
         ([16], Chunk::Kv { key, data }) if *key >= 1 => Some((*key == 1, text(data))),
-        ([16], Chunk::Segment { index, data }) if *index >= 1 => Some((*index == 1, text(data))),
         _ => None,
     }
 }
@@ -284,9 +283,7 @@ pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
             ([pt, 5, r], Chunk::Kv { key, data }) if *pt == t => {
                 out.entry(*r).or_default().insert(*key, text(data));
             }
-            ([pt, 5, r, f], Chunk::Kv { key, data } | Chunk::Segment { index: key, data })
-                if *pt == t && *key >= 1 =>
-            {
+            ([pt, 5, r, f], Chunk::Kv { key, data }) if *pt == t && *key >= 1 => {
                 let e = out.entry(*r).or_default().entry(*f).or_default();
                 if *key == 1 {
                     e.clear();

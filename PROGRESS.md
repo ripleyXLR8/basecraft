@@ -1,6 +1,6 @@
 # Progress
 
-**Estimated progress to 1.0: ~43 %**, weighted by milestone (see the README table).
+**Estimated progress to 1.0: ~50 %**, weighted by milestone (see the README table).
 
 Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 
@@ -185,3 +185,12 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
 | Run scripts from the CLI and MCP (`run-script`, `run_script`, `list_scripts`), dialogs answered automatically | ✅ |
 | MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |
+
+### Scripts in the GUI
+
+| Feature | State |
+|---------|-------|
+| Scripts menu runs the file's scripts | ✅ |
+| Buttons run their action (single step or Perform Script) | ✅ |
+| Custom dialogs (shown after the script; default button used) | 🚧 |
+| Script triggers, Script Workspace editor, debugger | ⏳ |

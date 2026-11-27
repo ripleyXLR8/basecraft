@@ -469,6 +469,7 @@ dependencies = [
  "engine",
  "fmp12",
  "rfd",
+ "script",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

@@ -371,7 +371,7 @@ Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
 
 * `[4].[5].[L]` key 2 = header (2 TO in XML form, 5 style, 7 local CSS, 8 width), key 11 = theme (`01 n`);
 * `[4].[5].[L].[3].[P]` key 2 = part (1 kind, 4 top, 5 height, 6 break field, 10 style);
-* key 7 (or long value `[7]`) = object list: repeated field 2 = object
+* key 7 (or long value `[7]`) = object list, **front to back** (the first object is on top): repeated field 2 = object
   (1 kind, 2 id, 3 options, 4 bounds {1 top, 2 left, 3 bottom, 4 right},
   5 style {1 local rules, 2 style name, 3 theme object type, 4 display name} (§12), 7 text options,
   8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);

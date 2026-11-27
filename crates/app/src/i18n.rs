@@ -60,6 +60,8 @@ pub fn tr(key: &'static str) -> &'static str {
         "Cancel" => "Annuler",
         "Unsaved changes" => "Modifications non enregistrées",
         "Save" => "Enregistrer",
+        "No scripts" => "Aucun script",
+        "Script error" => "Erreur de script",
         "Show Omitted Only" => "Afficher enreg. ignorés uniq.",
         "Omit Record" => "Ignorer l'enregistrement",
         "Request" => "Requête",

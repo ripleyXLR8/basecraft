@@ -73,6 +73,14 @@ struct App {
     editing: Option<(u32, usize)>,
     /// Validation failure waiting for the user: message and whether it may be overridden.
     alert: Option<(String, bool)>,
+    /// Script engine of the open file (keeps `$$globals` between runs).
+    engine: Option<script::Engine>,
+    /// Button action clicked this frame, run after drawing.
+    pending_step: Option<fmp12::scripts::Step>,
+    /// Script chosen in the Scripts menu, run after drawing.
+    pending_script: Option<u32>,
+    /// Custom dialogs shown by the last script (title, message).
+    messages: Vec<(String, String)>,
     /// Front panel chosen by the user, per tab control id.
     tabs: BTreeMap<u64, u64>,
 }
@@ -138,7 +146,9 @@ impl App {
                     .filter(|l| l.table_occurrence != 0)
                     .cloned()
                     .collect();
+                let engine = script::Engine::load(&file).ok();
                 *self = App {
+                    engine,
                     doc: Some(Doc {
                         name,
                         db,
@@ -244,6 +254,67 @@ impl App {
             .collect();
         self.alert = Some((msg.join("\n"), errs.iter().all(|e| e.can_override)));
         false
+    }
+
+    /// Runs a script (or a button step) with the window state of the app,
+    /// then copies the resulting layout, mode, found set and record back.
+    fn run_script_with(
+        &mut self,
+        f: impl FnOnce(&mut script::Engine, &mut AppHost) -> script::Outcome,
+    ) {
+        if !self.commit() {
+            return;
+        }
+        let (Some(t), Some(mut engine)) = (self.table(), self.engine.take()) else {
+            return;
+        };
+        let found = self.found(t).clone();
+        let pos = *self.current.get(&t).unwrap_or(&0);
+        let mode = self.mode();
+        let sorted = self.sorted.get(&t).copied().unwrap_or(false);
+        let Some(d) = self.doc.as_mut() else {
+            self.engine = Some(engine);
+            return;
+        };
+        let Some(layout_id) = d.layouts.get(self.layout).map(|l| l.id) else {
+            self.engine = Some(engine);
+            return;
+        };
+        let mut window = script::Window::new(&d.db, layout_id);
+        window.found = found;
+        window.current = pos;
+        window.sorted = sorted;
+        window.mode = match mode {
+            Mode::Find => script::Mode::Find,
+            Mode::Browse => script::Mode::Browse,
+        };
+        let mut host = AppHost {
+            db: &mut d.db,
+            window,
+            dialogs: Vec::new(),
+        };
+        let outcome = f(&mut engine, &mut host);
+        let AppHost {
+            window, dialogs, ..
+        } = host;
+        self.engine = Some(engine);
+        self.messages.extend(dialogs);
+        if let Some(i) = d.layouts.iter().position(|l| l.id == window.layout) {
+            self.layout = i;
+        }
+        self.mode = Some(match window.mode {
+            script::Mode::Find => Mode::Find,
+            _ => Mode::Browse,
+        });
+        if let Some(t2) = self.table() {
+            self.found.insert(t2, window.found);
+            self.current.insert(t2, window.current);
+            self.sorted.insert(t2, window.sorted);
+        }
+        self.dirty = true;
+        if outcome.last_error != 0 && outcome.halted {
+            self.error = Some(format!("{} {}", tr("Script error"), outcome.last_error));
+        }
     }
 
     /// Base table id of the current layout.
@@ -497,7 +568,29 @@ impl App {
                     ui.close();
                 }
             });
-            for m in ["Scripts", "Tools", "Window", "Help"] {
+            ui.menu_button(tr("Scripts"), |ui| {
+                let list: Vec<(u32, String)> = self
+                    .engine
+                    .as_ref()
+                    .map(|e| {
+                        e.scripts
+                            .iter()
+                            .filter(|s| !s.is_folder() && !s.steps.is_empty())
+                            .map(|s| (s.id, s.name.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if list.is_empty() {
+                    ui.label(tr("No scripts"));
+                }
+                for (id, name) in list {
+                    if ui.button(name).clicked() {
+                        self.pending_script = Some(id);
+                        ui.close();
+                    }
+                }
+            });
+            for m in ["Tools", "Window", "Help"] {
                 ui.menu_button(tr(m), |ui| {
                     ui.label(tr("Not implemented yet"));
                 });
@@ -776,7 +869,8 @@ impl App {
             })
         };
         let mut clicked_tab = None;
-        for (o, lk) in layout.objects.iter().zip(&looks) {
+        // The object list runs front to back: paint it in reverse.
+        for (o, lk) in layout.objects.iter().zip(&looks).rev() {
             let anc = ancestors(o);
             // Hidden behind another tab, or drawn by its portal.
             let hidden = anc.iter().any(|a| {
@@ -785,7 +879,8 @@ impl App {
                         .and_then(|tc| by_id.get(&tc))
                         .is_some_and(|&i| front(&layout.objects[i], &self.tabs) != Some(a.id))
             });
-            if hidden || anc.iter().any(|a| a.kind == 9) {
+            // Panels are drawn by their tab control; portal rows by their portal.
+            if hidden || o.kind == 12 || anc.iter().any(|a| a.kind == 9) {
                 continue;
             }
             let ab = layout.absolute(o);
@@ -912,6 +1007,16 @@ impl App {
                         }
                     }
                     _ => {
+                        if let Some(step) = o.button.as_ref().filter(|_| mode == Mode::Browse) {
+                            let id = ui.scope_id().with(("button", o.id));
+                            if ui
+                                .interact(r, id, egui::Sense::click())
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                self.pending_step = Some(step.clone());
+                            }
+                        }
                         if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 18)) {
                             let text = doc.db.eval_tokens(l, t, layout_to, rec).to_text();
                             lk.paint_box(&painter, r);
@@ -999,6 +1104,31 @@ fn owner_of(
     }
     let first = rec.and_then(|r| doc.db.related(layout_to, r, to).first().copied());
     Some((ft, first))
+}
+
+/// The app as a script host. Custom dialogs are answered with their
+/// default button and shown to the user after the script ends.
+struct AppHost<'a> {
+    db: &'a mut Database,
+    window: script::Window,
+    dialogs: Vec<(String, String)>,
+}
+
+impl script::Host for AppHost<'_> {
+    fn db(&mut self) -> &mut Database {
+        self.db
+    }
+    fn window(&mut self) -> &mut script::Window {
+        &mut self.window
+    }
+    fn dialog(&mut self, d: &script::Dialog) -> script::DialogAnswer {
+        // ponytail: egui cannot block mid-script; FileMaker would wait for a click.
+        self.dialogs.push((d.title.clone(), d.message.clone()));
+        script::DialogAnswer {
+            button: 1,
+            inputs: Vec::new(),
+        }
+    }
 }
 
 struct DrawCtx {
@@ -1196,6 +1326,24 @@ impl eframe::App for App {
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
         {
             self.save(&ctx, false);
+        }
+        if let Some(step) = self.pending_step.take() {
+            self.run_script_with(|e, h| e.run_step(h, &step));
+        }
+        if let Some(id) = self.pending_script.take() {
+            self.run_script_with(|e, h| e.perform(h, id, None));
+        }
+        if let Some((title, msg)) = self.messages.first().cloned() {
+            egui::Modal::new(egui::Id::NULL.with("script_dialog")).show(&ctx, |ui| {
+                ui.set_max_width(420.0);
+                if !title.is_empty() {
+                    ui.heading(title);
+                }
+                ui.label(msg);
+                if ui.button("OK").clicked() {
+                    self.messages.remove(0);
+                }
+            });
         }
         if let Some((msg, can_override)) = self.alert.clone() {
             egui::Modal::new(egui::Id::NULL.with("validation")).show(&ctx, |ui| {

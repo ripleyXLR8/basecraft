@@ -86,6 +86,32 @@ basecraft-cli session Contacts.fmp12
 
 Files written by the CLI open in FileMaker Pro 26.
 
+### Import, export and PDF
+
+```sh
+basecraft-cli export    Contacts.fmp12 Contacts -o out.csv --field "First Name" --field "Phone Numbers::Number" --sort "Last Name"
+basecraft-cli import    Contacts.fmp12 Contacts people.xlsx --names --mode update --match Email --add-remaining -o out.fmp12
+basecraft-cli print-pdf Contacts.fmp12 "Contact List" -o list.pdf --paper a4 --landscape --sort Initial
+```
+
+* `export` writes the found set (`--find`, `--omit`, `--sort`) as `csv`, `tab`, `mer`
+  (Merge), `xml` (FMPXMLRESULT), `xlsx` or `json`, chosen by `--format` or the `-o`
+  extension. Without `-o`, text formats are returned in `content`. `--field` picks
+  fields (`Occurrence::Field` for related fields; default: every field). `--formatted`
+  exports values in the file's display formats instead of as stored. As in FileMaker,
+  returns inside fields become vertical tabs, and repetitions and related records are
+  joined with the group separator (ASCII 29).
+* `import` reads `csv`, `tab`, `mer` or `xlsx`. `--names` takes field names from the
+  first row (columns map by name); `--map Field` (repeated) maps columns in order.
+  `--mode add` (default), `update` (records of the found set whose `--match` fields
+  equal the row's; `--add-remaining` adds the others) or `replace` (row *n* into
+  record *n* of the found set). Auto-enter applies unless `--no-auto-enter`;
+  validation failures are reported, and records failing a field that validates
+  "always" are skipped. Like `new`, it writes only with `-o` or `--in-place`.
+* `print-pdf` lays the layout out as Preview mode does (header and footer on every
+  page, body per record, sub-summaries for the sorted break fields, grand summaries,
+  summary fields) on `--paper letter|a4`, `--landscape`, `--margin` points.
+
 ### MCP server (Claude and other AI agents)
 
 `basecraft-cli mcp [file.fmp12]` is a [Model Context Protocol](https://modelcontextprotocol.io)
@@ -95,6 +121,7 @@ server on stdio. It exposes these tools:
 * `find_records`, `evaluate`;
 * `create_record`, `update_record`, `delete_record`;
 * `list_scripts`, `run_script`;
+* `export_records`, `import_records`, `print_pdf`;
 * `save_file`.
 
 Changes stay in memory until `save_file` is called.
@@ -122,6 +149,7 @@ locally in the page. To build it yourself: `cd crates/app && trunk serve`.
 crates/fmp12   .fmp12 (HBAM7) reader, later writer
 crates/app     the BaseCraft desktop application (egui)
 crates/cli     basecraft-cli: JSON command line for scripts and AI agents
+crates/print   Preview-mode pagination and PDF output
 tools/fmdump   command-line inspector for .fmp12 files
 tools/oracle   scripts that drive a real FileMaker Pro to produce test oracles
 docs/          format specification and reference lists

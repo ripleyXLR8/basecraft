@@ -344,7 +344,8 @@ mod tests {
 
     #[test]
     fn parses_each_format() {
-        let cases: [(Format, &[u8], Vec<Vec<&str>>); 4] = [
+        type Case = (Format, &'static [u8], Vec<Vec<&'static str>>);
+        let cases: [Case; 4] = [
             (
                 Format::Csv,
                 b"\"a\",\"b,c\"\r\n\"d \"\"q\"\"\",\"x\x0by\"\r\n",

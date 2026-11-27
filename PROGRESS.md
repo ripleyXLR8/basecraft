@@ -16,7 +16,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M5 | Script engine and Script Workspace | 🚧 |
 | M6 | Layout mode | ⏳ |
 | M7 | Write `.fmp12` files that FileMaker Pro opens | 🚧 |
-| M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | ⏳ |
+| M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | 🚧 |
 | M9 | Out of scope for now: Server hosting, WebDirect, ODBC, plug-ins, AI steps | — |
 
 ## M1 — Reading `.fmp12`
@@ -155,9 +155,32 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Portals in the GUI, sorted relationships, other join operators | ⏳ |
 | Design functions (TableNames, ValueListItems…), ExecuteSQL, GetNthRecord answered from the database | ✅ |
 | Auto-enter on new records (creation/modification stamps, serials, auto-enter calculations), written in the file's date/time formats; verified in FileMaker | ✅ |
-| Summary fields, validation enforcement | ⏳ |
+| Summary fields (Total, Average, Count, Min, Max, StDev, Fraction of Total, List) over a found set or break groups (`engine::summary`) | ✅ |
+| Validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
 | Stored calculations re-evaluated for new and edited records on save | ✅ |
+## M8 — Import/export, Preview and PDF
+
+| Feature | State |
+|---------|-------|
+| Export Records (`engine::export`): found set in sort order, chosen fields, related fields, formatted or as stored | ✅ |
+| Comma-separated text: every value quoted, CR LF between records, returns as VT (0x0B), repetitions and related records joined with GS (0x1D) | ✅ |
+| Tab-separated text (tabs in values become spaces), Merge (`.mer`, field-name row) | ✅ |
+| FMPXMLRESULT XML (ERRORCODE, PRODUCT, DATABASE, METADATA, RESULTSET; one DATA per related record) | ✅ |
+| Excel `.xlsx` (hand-written OOXML, numbers and Excel dates typed, header row) and JSON | ✅ |
+| Grouped export by sort fields (sub-summary rows), layout data formats, repeating fields, container data | ⏳ |
+| Import Records (`engine::import`): CSV, tab, Merge, `.xlsx`; mapping by name or order; add, update matching (match fields, add remaining), replace found set | ✅ |
+| Import: auto-enter on or off, validation reported, records failing always validation skipped | ✅ |
+| Import from XML, other files, folders; character sets other than UTF-8 | ⏳ |
+| Summary field definitions (field key 9) and sub-summary break fields (part field 6) decoded | ✅ (Total, Count seen in templates; other operation numbers inferred) |
+| Preview pagination (`crates/print`): header/footer per page, title header/footer on page 1, body per record, leading/trailing sub-summaries by sorted break field, grand summaries, letter/A4, landscape, margins | ✅ |
+| PDF output: hand-written PDF 1.4, Helvetica (WinAnsi), theme backgrounds, borders, text colours, sizes, bold, alignment, padding; fields, text with merge fields and `{{PageNumber}}`, button labels, portals | ✅ |
+| Part options (page break before/after, allow break across pages), sliding, layout number/date formats, images, Unicode fonts (non-Latin scripts) | ⏳ |
+| GUI Preview mode | ⏳ |
+| CLI `export`, `import`, `print-pdf`; MCP `export_records`, `import_records`, `print_pdf` | ✅ |
+| Builds for `wasm32-unknown-unknown` (`engine`, `print`) | ✅ |
+| Charts, security (accounts, privileges), Data Viewer | ⏳ |
+
 ## M4 — GUI (`crates/app`)
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |
 | Layout drawn at stored coordinates: parts, fields, text, buttons | ✅ |

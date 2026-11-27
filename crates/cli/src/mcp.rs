@@ -69,6 +69,47 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
             ),
         ),
         (
+            "export_records",
+            "Export the found set (find/omit/sort as in find_records) as csv, tab, mer (Merge), xml (FMPXMLRESULT), xlsx or json, with FileMaker's conventions (returns in fields as vertical tab, repetitions and related records joined with GS). `fields`: names or Occurrence::Field (default: every field). Without `path` the text is returned (xlsx needs a path).",
+            s(
+                json!({ "table": table, "path": { "type": "string" },
+                   "format": { "type": "string", "enum": ["csv", "tab", "mer", "xml", "xlsx", "json"] },
+                   "fields": { "type": "array", "items": { "type": "string" } },
+                   "formatted": { "type": "boolean", "description": "Values in the file's display formats instead of as stored" },
+                   "find": fields, "omit": fields,
+                   "sort": { "type": "array", "items": { "type": "string" }, "description": "Field or Field:desc" } }),
+                &["table"],
+            ),
+        ),
+        (
+            "import_records",
+            "Import a csv, tab, mer or xlsx file into a table: add records, update matching records of the found set (match_fields), or replace the found set's data. Columns map to the field names of the first row (field_names_row) or, with `map`, to the listed fields in order. Auto-enter applies unless auto_enter is false; validation errors are reported. Changes stay in memory until save_file.",
+            s(
+                json!({ "table": table, "path": { "type": "string" },
+                   "format": { "type": "string", "enum": ["csv", "tab", "mer", "xlsx"] },
+                   "field_names_row": { "type": "boolean" },
+                   "map": { "type": "array", "items": { "type": "string" }, "description": "Target field per column, in order (\"\" skips a column)" },
+                   "mode": { "type": "string", "enum": ["add", "update", "replace"] },
+                   "match_fields": { "type": "array", "items": { "type": "string" } },
+                   "add_remaining": { "type": "boolean" },
+                   "auto_enter": { "type": "boolean" },
+                   "find": fields, "omit": fields }),
+                &["table", "path"],
+            ),
+        ),
+        (
+            "print_pdf",
+            "Print a layout to PDF as Preview mode shows it: header and footer on each page, body per record, sub-summaries for the sorted break fields, grand summaries, summary fields computed. Find/omit/sort choose and order the records.",
+            s(
+                json!({ "layout": { "type": "string" }, "path": { "type": "string" },
+                   "paper": { "type": "string", "enum": ["letter", "a4"] },
+                   "landscape": { "type": "boolean" }, "margin": { "type": "number", "description": "Margins in points (default 36)" },
+                   "find": fields, "omit": fields,
+                   "sort": { "type": "array", "items": { "type": "string" } } }),
+                &["layout", "path"],
+            ),
+        ),
+        (
             "list_scripts",
             "List the file's FileMaker scripts with their steps.",
             s(json!({}), &[]),
@@ -120,23 +161,94 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
             .unwrap_or_default()
     };
     let mut args: Vec<String> = Vec::new();
+    let list = |k: &str| -> Vec<String> {
+        a.get(k)
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    let flag = |k: &str| a.get(k).and_then(Json::as_bool);
+    // --find / --omit / --sort, shared by the found-set tools.
+    let mut query = Vec::new();
+    for p in pairs("find") {
+        query.extend(["--find".into(), p]);
+    }
+    for p in pairs("omit") {
+        query.extend(["--omit".into(), p]);
+    }
+    for s in list("sort") {
+        query.extend(["--sort".into(), s]);
+    }
     let cmd = match name {
         "describe_database" => "info",
         "find_records" => {
             args.push(str_of("table").ok_or("table is required")?);
-            for p in pairs("find") {
-                args.extend(["--find".into(), p]);
-            }
-            for p in pairs("omit") {
-                args.extend(["--omit".into(), p]);
-            }
-            for s in a.get("sort").and_then(Json::as_array).into_iter().flatten() {
-                args.extend(["--sort".into(), s.as_str().unwrap_or_default().to_string()]);
-            }
+            args.extend(query);
             if let Some(l) = a.get("limit").and_then(Json::as_u64) {
                 args.extend(["--limit".into(), l.to_string()]);
             }
             "records"
+        }
+        "export_records" => {
+            args.push(str_of("table").ok_or("table is required")?);
+            args.extend(query);
+            if let Some(p) = str_of("path") {
+                args.extend(["-o".into(), p]);
+            }
+            if let Some(f) = str_of("format") {
+                args.extend(["--format".into(), f]);
+            }
+            for f in list("fields") {
+                args.extend(["--field".into(), f]);
+            }
+            if flag("formatted") == Some(true) {
+                args.push("--formatted".into());
+            }
+            "export"
+        }
+        "import_records" => {
+            args.push(str_of("table").ok_or("table is required")?);
+            args.push(str_of("path").ok_or("path is required")?);
+            args.extend(query);
+            if let Some(f) = str_of("format") {
+                args.extend(["--format".into(), f]);
+            }
+            if flag("field_names_row") == Some(true) {
+                args.push("--names".into());
+            }
+            for f in list("map") {
+                args.extend(["--map".into(), f]);
+            }
+            if let Some(m) = str_of("mode") {
+                args.extend(["--mode".into(), m]);
+            }
+            for f in list("match_fields") {
+                args.extend(["--match".into(), f]);
+            }
+            if flag("add_remaining") == Some(true) {
+                args.push("--add-remaining".into());
+            }
+            if flag("auto_enter") == Some(false) {
+                args.push("--no-auto-enter".into());
+            }
+            "import"
+        }
+        "print_pdf" => {
+            args.push(str_of("layout").ok_or("layout is required")?);
+            args.extend(["-o".into(), str_of("path").ok_or("path is required")?]);
+            args.extend(query);
+            if let Some(p) = str_of("paper") {
+                args.extend(["--paper".into(), p]);
+            }
+            if flag("landscape") == Some(true) {
+                args.push("--landscape".into());
+            }
+            if let Some(m) = a.get("margin").and_then(Json::as_f64) {
+                args.extend(["--margin".into(), m.to_string()]);
+            }
+            "print-pdf"
         }
         "evaluate" => {
             args.push(str_of("calculation").ok_or("calculation is required")?);

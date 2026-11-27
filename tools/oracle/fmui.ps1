@@ -116,6 +116,8 @@ function Set-FmCheck([string]$n, [bool]$on) {
 
 # Tools > Save a Copy as XML of the frontmost file, into $out (full path).
 function Export-FmXml([string]$out) {
+  # An existing file would raise a hidden "replace?" prompt.
+  Remove-Item $out -ErrorAction SilentlyContinue
   Click-Fm 455 40; Start-Sleep -Milliseconds 700; Click-Fm 560 163; Start-Sleep 2
   Set-FmCheck "Inclure les détails pour les outils d'analyse" $true
   Set-FmCheck "Enregistrer les données binaires de chaque objet de modèle sous son nœud" $true
@@ -144,4 +146,39 @@ function Test-FmOpen([string]$file) {
   if (-not $r) { $r = "TIMEOUT" }
   Stop-Fm
   $r
+}
+
+# Puts an fmxmlsnippet on the clipboard in FileMaker's format ("Mac-XMSS" =
+# script steps, "Mac-XMSC" = scripts…): u32 LE byte count, then UTF-8 XML.
+function Set-FmClip([string]$fmt, [string]$xml) {
+  $b = [Text.Encoding]::UTF8.GetBytes($xml)
+  $ms = New-Object System.IO.MemoryStream
+  $ms.Write([BitConverter]::GetBytes([int]$b.Length), 0, 4); $ms.Write($b, 0, $b.Length)
+  $do = New-Object System.Windows.Forms.DataObject
+  $do.SetData($fmt, $false, $ms)
+  [System.Windows.Forms.Clipboard]::SetDataObject($do, $true)
+}
+
+# Pastes the steps of an fmxmlsnippet file into a new script of the
+# frontmost file (Scripts > Script Workspace, New Script, Ctrl+V, Ctrl+S).
+function Add-FmScriptSteps([string]$snippet) {
+  Click-Fm 408 40; Start-Sleep 1; Click-Fm 480 63; Start-Sleep 3
+  $sw = Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' } | Select -First 1
+  $h = [IntPtr]$sw.Current.NativeWindowHandle
+  $r = New-Object W32+RECT; [void][W32]::GetWindowRect($h, [ref]$r)
+  [W32]::Front($h); [W32]::Click($r.L + 56, $r.T + 75); Start-Sleep 2   # New Script
+  Set-FmClip "Mac-XMSS" (Get-Content $snippet -Raw)
+  [W32]::Click($r.L + 600, $r.T + 160); Start-Sleep 1
+  [System.Windows.Forms.SendKeys]::SendWait("^v"); Start-Sleep 3
+  [System.Windows.Forms.SendKeys]::SendWait("^s"); Start-Sleep 2
+  $sw.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close(); Start-Sleep 2
+}
+
+# Closes FileMaker through its main window and waits for it to exit, so the
+# file is complete before it is read.
+function Close-Fm {
+  $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+  if ($m) { $m.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close() }
+  $p = Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue
+  if ($p -and -not $p.WaitForExit(30000)) { Stop-Fm }
 }

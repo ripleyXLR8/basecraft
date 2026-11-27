@@ -16,6 +16,15 @@ from files we authored ourselves.
   export) with 16-byte values in `<name>.raw` (`fmdump <file> raw`), which
   maps each XML catalog to its binary path.
 * `Test-FmOpen <file>` (in `fmui.ps1`): opens a file and reports `OPEN` or the text of the blocking dialog.
+* `Add-FmScriptSteps <snippet.xml>` (in `fmui.ps1`): pastes the steps of an
+  `fmxmlsnippet` into a new script of the open file through the clipboard
+  (`Set-FmClip`, format `Mac-XMSS` = u32 LE length + UTF-8 XML); `Close-Fm`
+  then quits and waits for the file to be complete.
+  `step_params.xml` is the 57-step script used to decode step parameters
+  (field and layout ids of the Tasks template).
+* `step_ids.py`: reverse oracle for the step catalogue. `mutate` rewrites
+  every step id of a copy with consecutive ids, `read` lists `id name` from
+  the XML exports (`docs/reference/script_steps.txt`).
 * `mutate.py`, `xmldiff.py`, `attrib_fields.py`: reverse oracle. Flip bits in copies, export XML, attribute the differences.
 * `token_sweep_analyze.py`: reads the XML of files whose calculation token bytes were overwritten (one way calc_tables.rs was built).
 * Index and leaf experiments are Rust examples of `fmp12`:

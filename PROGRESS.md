@@ -13,7 +13,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M2 | Calculation engine | 🚧 |
 | M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | 🚧 |
 | M4 | GUI: Browse / Find / List / Table views | 🚧 |
-| M5 | Script engine and Script Workspace | ⏳ |
+| M5 | Script engine and Script Workspace | 🚧 |
 | M6 | Layout mode | ⏳ |
 | M7 | Write `.fmp12` files that FileMaker Pro opens | 🚧 |
 | M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | ⏳ |
@@ -42,15 +42,17 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Layout objects: kind, id, bounds, style name, field reference, static text | ✅ |
 | Layout object nesting (tab controls, panels, portals, button bars): 501/504 match XML | ✅ |
 | Portal definition (table occurrence, rows) | ✅ |
-| Layout objects: formatting, button actions, object option bits | 🚧 |
-| Scripts: catalog, folders, step list (type, enabled, options) | ✅ |
-| Script step parameters | 🚧 |
+| Layout objects: button actions (single step or Perform Script with parameter) | ✅ |
+| Layout objects: formatting, object option bits | 🚧 |
+| Scripts: catalog, folders, step list (type, enabled, options), long step lists | ✅ |
+| Script step parameters: control flow, variables, fields, layouts, records, finds, sorts, dialogs (see M5) | ✅ |
+| Script step parameters: other steps (windows, import/export, files…) | ⏳ |
 | Value lists (custom values, from field) | ✅ |
 | Themes: compiled styles, named styles, local object styles, fonts (`theme.rs`) | ✅ |
 | Custom functions, accounts and privileges | ⏳ |
 | Container data | ⏳ |
 
-Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export.
+Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export. Step parameters: 203 steps (319 parameter values) and 108 button actions match, templates plus a 57-step script pasted into a copy of Tasks.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 
@@ -97,6 +99,32 @@ ApplicationArchitecture.
 | Location, sensors, Live Text, AI models, persistent data, layout-object attributes: `Context::host_function`, "not available" (error 3) by default | ✅ |
 | Custom functions, file-locale date/number formats | ⏳ |
 
+## M5 — Script engine (`crates/script`)
+
+Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.txt),
+222 step ids (1–247) named by FileMaker Pro 26's XML export (reverse oracle,
+`tools/oracle/step_ids.py`).
+
+| Feature | State |
+|---------|-------|
+| Step catalogue (id → name) | ✅ 222 steps |
+| Typed step parameters (`fmp12::scripts::StepParams`), raw tree for the rest | ✅ |
+| Control flow: If / Else If / Else / End If, Loop / Exit Loop If / End Loop, Halt Script | ✅ |
+| `$local` (per call) and `$$global` variables, repetitions | ✅ |
+| Perform Script with parameter, Exit Script with result, nested calls; `Get ( ScriptParameter / ScriptResult / ScriptName )` | ✅ |
+| `Get ( LastError )`, Set Error Capture (host shows errors when off), Allow User Abort | ✅ |
+| Set Field (current or first related record), Insert Text (field or variable), Commit, Revert Record | ✅ |
+| New / Duplicate / Delete Record, Delete All Records, Go to Record (first, last, previous, next with exit after last, by number) | ✅ |
+| Enter Browse / Find / Preview Mode, find requests built by Set Field in Find mode, Perform Find (stored requests, omit requests) | ✅ |
+| Show All Records, Show Omitted Only, Omit Record, Omit Multiple Records | ✅ |
+| Sort Records (stored keys, ascending, descending, custom value-list order), Unsort Records | ✅ |
+| Go to Layout (layout, original, by name, by number); one found set per window | ✅ |
+| Show Custom Dialog (title, message, 3 buttons, input field 1), Go to Field, Go to Object, Refresh/Freeze Window, Beep through the `Host` trait | ✅ |
+| Button actions (`Engine::run_step`) | ✅ |
+| Template scripts run in tests: Contacts and Tasks "Sort by Name", "Sort by Status", "Create Assignee Entry", "Cancel Add Assignee", "Go to Entry Field" | ✅ |
+| Windows (New/Close/Select Window), Go to Related Record, Go to Portal Row, Select All, finds on related fields | ⏳ |
+| Script triggers, script debugger, Script Workspace UI | ⏳ |
+| Builds for `wasm32-unknown-unknown` | ✅ |
 ## M7 — Writing `.fmp12`
 
 | Feature | State |

@@ -101,6 +101,18 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
                 out.push_str(&s);
                 i += 4 + n;
             }
+            // Variable ($local, $$global): 1A len name, no terminator.
+            0x1A => {
+                let len = get(i + 1).ok_or_else(|| err(i))? as usize;
+                let (s, n) = (len..=len * 3 + 3)
+                    .find_map(|n| {
+                        let s = text(b.get(i + 2..i + 2 + n)?);
+                        (s.encode_utf16().count() == len).then_some((s, n))
+                    })
+                    .ok_or_else(|| err(i))?;
+                out.push_str(&s);
+                i += 2 + n;
+            }
             // Number literal: 10 + 5 header bytes + 14-byte value block.
             0x10 => {
                 let v = b.get(i + 6..i + 20).ok_or_else(|| err(i))?;
@@ -197,6 +209,13 @@ mod tests {
             "16000403d0000402010100010c13017a00500c13017a0013017a000c13017a00500c13017a0016000403d000040201020001",
         );
         assert_eq!(decompile(&b, 132, &N).unwrap(), "F1 & \" \" & F2");
+    }
+
+    #[test]
+    fn variables() {
+        // $x & "y", from a Set Variable step
+        let b = hex("1a027e220c13017a00500c13017a0013012300");
+        assert_eq!(decompile(&b, 0, &N).unwrap(), "$x & \"y\"");
     }
 
     #[test]

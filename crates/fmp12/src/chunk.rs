@@ -77,10 +77,10 @@ pub fn parse_spans(payload: &[u8]) -> Result<Vec<(Chunk<'_>, &[u8])>, Error> {
         let pop_after = raw & 0xC0 == 0xC0;
         let op = if pop_after { raw & 0x3F } else { raw };
         let chunk = match op {
-            0x00 => match c.peek() {
-                None | Some(0) => break, // end of payload
-                Some(_) => Chunk::Data(c.take(1)?),
-            },
+            // `00 00` is key 0 with an empty value, unless only zero padding
+            // follows (the sector's free space, header offset 14, is zeroed).
+            0x00 if payload[at..].iter().all(|b| *b == 0) => break,
+            0x00 => Chunk::Data(c.take(1)?),
             0x01..=0x05 => {
                 let key = c.byte()? as u32;
                 let n = if op == 1 { 1 } else { 2 * (op as usize - 1) };
@@ -252,6 +252,15 @@ mod tests {
                 Chunk::Pop,
             ]
         );
+    }
+
+    #[test]
+    fn zero_key_inside_payload_is_not_the_end() {
+        // push 2, `00 00` (key 0, empty), kv key 1, then zero padding.
+        let p = [0x20, 2, 0x00, 0x00, 0x01, 1, 7, 0, 0, 0];
+        let c = parse(&p).unwrap();
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[2], Chunk::Kv { key: 1, data: &[7] });
     }
 
     #[test]

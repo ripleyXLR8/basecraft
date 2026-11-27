@@ -551,3 +551,285 @@ fn field_calculations_match_xml() {
     eprintln!("{ok}/{total} field calculations decompiled exactly");
     assert_eq!(ok, total);
 }
+
+/// Checks one step's decoded parameters against its XML `<Step>`.
+/// Returns the number of parameter values compared.
+fn check_step(
+    st: &fmp12::scripts::Step,
+    xs: roxmltree::Node,
+    names: &FileNames,
+    ctx: &str,
+) -> usize {
+    use fmp12::scripts::{LayoutDest, SortOrder, StepParams, Target};
+    let mut n = 0;
+    let p = &st.raw_params;
+    let xml_to = |n: roxmltree::Node| -> u32 {
+        n.descendants()
+            .find(|c| c.has_tag_name("TableOccurrenceReference"))
+            .and_then(|c| c.attribute("id"))
+            .and_then(|s| s.parse::<u32>().ok())
+            .map_or(0, |v| v & 0xFFF)
+    };
+    let id_of = |n: roxmltree::Node| -> u32 { n.attribute("id").unwrap().parse().unwrap() };
+    // Calculations by position.
+    for c in xs
+        .descendants()
+        .filter(|c| c.has_tag_name("Calculation") && c.attribute("position").is_some())
+    {
+        let pos: u32 = c.attribute("position").unwrap().parse().unwrap();
+        let want = c
+            .descendants()
+            .find(|t| t.has_tag_name("Text"))
+            .and_then(|t| t.text())
+            .unwrap_or("")
+            .replace("\r\n", "\n");
+        let got = p
+            .calc(pos)
+            .map(|k| k.text(names).unwrap().replace('\r', "\n"));
+        match got {
+            Some(g) => assert_eq!(g, want, "{ctx}: calc at {pos}"),
+            // FileMaker shows the default repetition when none is stored.
+            None => assert!(
+                want == "1" || want.is_empty(),
+                "{ctx}: missing calc at {pos} ({want})"
+            ),
+        }
+        n += 1;
+    }
+    // Option bits shown as booleans.
+    for b in xs.descendants().filter(|b| b.has_tag_name("Boolean")) {
+        let Some(bit) = b.attribute("id").and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let mut set = st.options & bit != 0;
+        if b.attribute("type") == Some("With dialog") {
+            set = !set;
+        }
+        assert_eq!(
+            set,
+            b.attribute("value") == Some("True"),
+            "{ctx}: {:?}",
+            b.attribute("type")
+        );
+        n += 1;
+    }
+    let param = |ty: &str| {
+        xs.descendants()
+            .find(|c| c.has_tag_name("Parameter") && c.attribute("type") == Some(ty))
+    };
+    match &st.params {
+        StepParams::Comment(t) => {
+            let c = param("Comment").unwrap().first_element_child().unwrap();
+            assert_eq!(
+                t.replace('\r', "\n"),
+                c.attribute("value").unwrap_or("").replace("\r\n", "\n"),
+                "{ctx}"
+            );
+            n += 1;
+        }
+        StepParams::SetVariable { name, .. } => {
+            let x = xs.descendants().find(|c| c.has_tag_name("Name")).unwrap();
+            assert_eq!(name, x.attribute("value").unwrap(), "{ctx}");
+            n += 1;
+        }
+        StepParams::SetField { field, .. } | StepParams::GoToField { field, .. } => {
+            if let Some(x) = param("FieldReference").and_then(|x| x.first_element_child()) {
+                let f = field.unwrap();
+                assert_eq!((f.to, f.field), (xml_to(x), id_of(x)), "{ctx}");
+                n += 1;
+            } else {
+                assert!(field.is_none(), "{ctx}");
+            }
+        }
+        StepParams::InsertText { target, text, .. } => {
+            let t = param("Text").unwrap().first_element_child().unwrap();
+            assert_eq!(text, t.attribute("value").unwrap_or(""), "{ctx}");
+            let x = param("Target").unwrap().first_element_child().unwrap();
+            match target {
+                Target::Variable(v) => assert_eq!(v, x.attribute("value").unwrap(), "{ctx}"),
+                Target::Field(f) => assert_eq!((f.to, f.field), (xml_to(x), id_of(x)), "{ctx}"),
+                Target::None => panic!("{ctx}: no target"),
+            }
+            n += 2;
+        }
+        StepParams::ShowCustomDialog { buttons, input, .. } => {
+            for (i, b) in buttons.iter().enumerate() {
+                let x = param(&format!("Button{}", i + 1)).unwrap();
+                let commit = x.descendants().find(|c| c.has_tag_name("Boolean")).unwrap();
+                assert_eq!(b.commit, commit.attribute("value") == Some("True"), "{ctx}");
+                let label = b.label.as_ref().map(|c| c.text(names).unwrap());
+                let want = x.attribute("value").map(|v| format!("\"{v}\""));
+                assert_eq!(label, want, "{ctx}: button {}", i + 1);
+                n += 2;
+            }
+            if let Some((f, _)) = input {
+                let x = param("Field1").unwrap();
+                let fr = x
+                    .descendants()
+                    .find(|c| c.has_tag_name("FieldReference"))
+                    .unwrap();
+                assert_eq!((f.to, f.field), (xml_to(fr), id_of(fr)), "{ctx}");
+                n += 1;
+            }
+        }
+        StepParams::GoToLayout { dest, .. } => {
+            let x = param("LayoutReferenceContainer")
+                .unwrap()
+                .first_element_child()
+                .unwrap();
+            assert_eq!(st.arg.to_string(), x.attribute("value").unwrap(), "{ctx}");
+            if let LayoutDest::Layout(id) = dest {
+                let r = x.first_element_child().unwrap();
+                assert_eq!(*id, id_of(r), "{ctx}");
+            }
+            n += 1;
+        }
+        StepParams::GoToRecord { .. } => {
+            let x = param("Records").unwrap().first_element_child().unwrap();
+            assert_eq!(st.arg.to_string(), x.attribute("value").unwrap(), "{ctx}");
+            n += 1;
+        }
+        StepParams::PerformScript { script, .. } => {
+            let r = xs
+                .descendants()
+                .find(|c| c.has_tag_name("ScriptReference"))
+                .unwrap();
+            assert_eq!(*script, Some(id_of(r)), "{ctx}");
+            n += 1;
+        }
+        StepParams::Sort { keys, .. } => {
+            let sorts: Vec<_> = xs
+                .descendants()
+                .filter(|c| c.has_tag_name("Sort"))
+                .collect();
+            assert_eq!(keys.len(), sorts.len(), "{ctx}");
+            for ((f, o), x) in keys.iter().zip(&sorts) {
+                let fr = x
+                    .descendants()
+                    .find(|c| c.has_tag_name("FieldReference"))
+                    .unwrap();
+                assert_eq!((f.to, f.field), (xml_to(fr), id_of(fr)), "{ctx}");
+                let ty = match o {
+                    SortOrder::Ascending => "Ascending",
+                    SortOrder::Descending => "Descending",
+                    SortOrder::Custom(v) => {
+                        let vl = x
+                            .descendants()
+                            .find(|c| c.has_tag_name("ValueListReference"))
+                            .unwrap();
+                        assert_eq!(*v, id_of(vl), "{ctx}");
+                        "Custom"
+                    }
+                };
+                assert_eq!(ty, x.attribute("type").unwrap(), "{ctx}");
+                n += 1;
+            }
+        }
+        StepParams::Find { requests, .. } => {
+            let xr: Vec<_> = xs
+                .descendants()
+                .filter(|c| c.has_tag_name("FindRequest"))
+                .collect();
+            assert_eq!(requests.len(), xr.len(), "{ctx}");
+            for (r, x) in requests.iter().zip(&xr) {
+                assert_eq!(r.omit, x.attribute("action") == Some("omit"), "{ctx}");
+                let crit: Vec<_> = x.children().filter(|c| c.is_element()).collect();
+                assert_eq!(r.criteria.len(), crit.len(), "{ctx}");
+                for ((f, text), c) in r.criteria.iter().zip(&crit) {
+                    let fr = c.first_element_child().unwrap();
+                    assert_eq!((f.to, f.field), (xml_to(fr), id_of(fr)), "{ctx}");
+                    assert_eq!(text, c.attribute("criteria").unwrap(), "{ctx}");
+                    n += 1;
+                }
+            }
+        }
+        _ => {}
+    }
+    n
+}
+
+#[test]
+fn step_parameters_match_xml() {
+    let (mut steps, mut values, mut buttons) = (0, 0, 0);
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let names = FileNames {
+            tables: schema::tables(&file).unwrap(),
+            tos: fmp12::graph::table_occurrences(&file).unwrap(),
+        };
+        let scripts = fmp12::scripts::scripts(&file).unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        for x in doc
+            .descendants()
+            .filter(|n| n.has_tag_name("StepsForScripts"))
+            .flat_map(|n| n.children())
+        {
+            let Some(r) = x.children().find(|n| n.has_tag_name("ScriptReference")) else {
+                continue;
+            };
+            let id: u32 = r.attribute("id").unwrap().parse().unwrap();
+            let s = scripts.iter().find(|s| s.id == id).unwrap();
+            let xsteps: Vec<_> = x.descendants().filter(|n| n.has_tag_name("Step")).collect();
+            for (i, (st, xs)) in s.steps.iter().zip(&xsteps).enumerate() {
+                assert_eq!(Some(xs.attribute("name").unwrap()), st.name(), "{}", s.name);
+                let ctx = format!("{} / {} step {i} ({})", xml.display(), s.name, st.id);
+                values += check_step(st, *xs, &names, &ctx);
+                steps += 1;
+            }
+        }
+        // Button actions.
+        let layouts = fmp12::layouts::layouts(&file).unwrap();
+        for xl in doc.descendants().filter(|n| n.has_tag_name("Layout")) {
+            let lid: u32 = xl.attribute("id").unwrap().parse().unwrap();
+            let Some(l) = layouts.iter().find(|l| l.id == lid) else {
+                continue;
+            };
+            for xo in xl.descendants().filter(|n| n.has_tag_name("LayoutObject")) {
+                let Some(action) = xo
+                    .children()
+                    .find(|c| c.has_tag_name("Button"))
+                    .and_then(|b| b.children().find(|c| c.has_tag_name("action")))
+                else {
+                    continue;
+                };
+                let oid: u64 = xo.attribute("id").unwrap().parse().unwrap();
+                let o = l.objects.iter().find(|o| o.id == oid).unwrap();
+                let ctx = format!("{} layout {} object {oid}", xml.display(), l.name);
+                let b = o.button.as_ref();
+                if let Some(xs) = action.children().find(|c| c.has_tag_name("Step")) {
+                    let b = b.unwrap_or_else(|| panic!("{ctx}: no action"));
+                    assert_eq!(b.id.to_string(), xs.attribute("id").unwrap(), "{ctx}");
+                    values += check_step(b, xs, &names, &ctx);
+                } else if let Some(r) = action
+                    .children()
+                    .find(|c| c.has_tag_name("ScriptReference"))
+                {
+                    let b = b.unwrap_or_else(|| panic!("{ctx}: no action"));
+                    let fmp12::scripts::StepParams::PerformScript { script, parameter } = &b.params
+                    else {
+                        panic!("{ctx}: {:?}", b.params)
+                    };
+                    assert_eq!(
+                        script.map(|s| s.to_string()).as_deref(),
+                        r.attribute("id"),
+                        "{ctx}"
+                    );
+                    let want = action
+                        .children()
+                        .find(|c| c.has_tag_name("Calculation"))
+                        .and_then(|c| c.descendants().find(|t| t.has_tag_name("Text")))
+                        .and_then(|t| t.text());
+                    let got = parameter.as_ref().map(|c| c.text(&names).unwrap());
+                    assert_eq!(got.as_deref(), want, "{ctx}");
+                } else {
+                    continue;
+                }
+                buttons += 1;
+            }
+        }
+    }
+    eprintln!(
+        "{steps} steps ({values} parameter values) and {buttons} button actions checked against XML"
+    );
+}

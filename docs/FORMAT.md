@@ -126,7 +126,7 @@ not 6 bytes of data.
 
 | Op | Chunk | Encoding after the op byte |
 |----|-------|----------------------------|
-| 00 | Data / end | 1 byte. `00 00` or end of buffer ends the payload |
+| 00 | Data / end | 1 byte: `00 k` is key k with an empty value (`00 00` = key 0, e.g. an omit find request). Only zero padding ends the payload: the sector header's free count (offset 14) gives the used length, and the rest is zeros |
 | 01 | Kv | key u8, 1 byte value |
 | 02–05 | Kv | key u8, 2×(op−1) bytes |
 | 06 | Kv | key u8, len u8, value |
@@ -272,11 +272,93 @@ formatting for text). Short values stay inline. Readers must accept both.
 ## 8. Scripts ✅
 
 `[17].[5].[S]`: key 16 = name, key 240 = options (u64: 8 script, 9 folder,
-2 separator), key 4 = step list made of 28-byte records:
-`02 01 index 00 | BE BE | … | u16 step id @20 | u16 | u32 options @24`.
+2 separator), key 4 = step list made of 28-byte records. A list longer than
+1000 bytes (36+ steps) moves to keys 1…n of `[S].[4]` (key 0 = length, §6).
 The trailing zeros of the last record are trimmed.
-Step parameters live in `[S].[5].[n]`, e.g. a calculation in `.[128].[5]`.
 
+### Step record
+
+| Bytes | Meaning |
+|------:|---------|
+| 0–3 | `02 01 n 00`: length-prefixed `01` + path integer *n*, the step's parameter node `[S].[5].[n]` |
+| 4–5 | uninitialised (`BE BE` in the templates, anything in new files) |
+| 6–19 | inline references (below); bytes between them are uninitialised |
+| 20–21 | step id, i16 BE; **negative = disabled** (`FF A3` = disabled Beep) |
+| 22–23 | u16: index (0-based) of the step closing the block for If, Else If, Else, Loop, Exit Loop If (End Loop: its Loop); destination kind for Go to Layout (1 original, 3 name by calculation, 4 number by calculation, 5 layout) and Go to Record/Request/Page (1 first, 2 last, 3 previous, 4 next, 5 by calculation) |
+| 24–27 | u32 options = XML `<Options>` |
+
+Inline references are length-prefixed: an object id is `01` + path
+integer (`02 01 0B` = 11), a table occurrence is `03 D0 hi lo` (§7). A
+layout (Go to Layout, New Window) or script (Perform Script) sits at byte
+6. A field (Set Field, Go to Field, Insert Text, Show Custom Dialog input 1)
+is TO at 6, field at 12, repetition u16 at 18:
+`04 03D00004 · 02 01 0B · · · 00 01` = Assignees::PrimaryKey.
+
+Option bits (XML shows them as `<Boolean id=…>`): `0x4000` the step holds a
+calculation; `0x80` "With dialog: Off"; `0x1000` select (Go to Field, Insert
+Text); `0x2000` exit after last (Go to Record); `0x100`/`0x200` skip
+validation / force commit (Commit), flush join results / external data
+(Refresh Window); `0x2_0000` On (Set Error Capture, Allow User Abort);
+`0x100_0000` pause (Enter Find/Browse Mode); `0x200_0000` restore (Enter
+Find Mode, Perform Find, Sort Records); `0x40` Perform Script from list.
+
+### Parameters `[S].[5].[n]`
+
+Parameter *p* (XML `position`) is node `[128 + p]`: text in key 1, a byte
+in key 3, a calculation in `.[5]` (keys 4 context `01 00`, 5 token stream,
+6 compiled; §11). Calculations in scripts have no TO context, so field
+references always show as `TO::Field`. Keys 216/217 of the node are the
+step's UUID and source UUID.
+
+| Step (id) | Storage |
+|-----------|---------|
+| # comment (89) | `[128]` k1 text |
+| Set Variable (141) | `[128]` k1 name (`$x`, `$$g`), `[129].[5]` value, `[130].[5]` repetition |
+| Set Field (76) | inline field, `[128].[5]` value; repetition calculation at position 10 (`[138].[5]`, not observed stored) |
+| Insert Text (61) | `[128]` k1 text; inline field, or `[160]` k1 target variable |
+| If (68), Else If (125), Exit Loop If (72) | `[128].[5]` condition; Else If also `[128]` k3 = u32 index of the End If |
+| Loop (71) | node key 129 = flush (1 always) |
+| Perform Script (1) | inline script, `[128].[5]` parameter |
+| Exit Script (103) | `[128].[5]` result |
+| Go to Layout (6) | inline layout or `[128].[5]` name/number; node key 134 = animation |
+| Go to Record/Request/Page (16) | bytes 22–23 kind, `[128].[5]` number; `[128]` k3 = `FFFFFFFF` |
+| Go to Object (145) | `[128].[5]` object name, `[129].[5]` repetition |
+| Show Custom Dialog (87) | `[128].[5]` title, `[129].[5]` message, `[130].[5]` label of input 1 (inputs 2–3 not observed); buttons 1–3: `[133…135].[5]` label, `[131…133]` k3 commit (1); `[128…130]` k1 = labels as plain text |
+| Omit Multiple Records (26) | `[128].[5]` count |
+| Sort Records (39) | node key 10 = sort specification |
+| Enter Find Mode (22), Perform Find (28) | `[6].[6]` stored requests |
+
+**Sort specification**: u32 count, then per key: TO, field (length-prefixed),
+u16 repetition, two length-prefixed references (`01 00`, not decoded), u16,
+value list (length-prefixed, empty if none: a custom order), order byte
+(0 ascending, 1 descending), u32 (0).
+
+**Find requests**: `[6].[6]` key 0 = count (`01 02`); request *r* is
+`[6].[6].[r]`, with key 0 (empty, op `00 00`) when it omits, and one
+byte-string key per criterion: `00 | TO ref | 01 field` → criterion text.
+`[6].[5]` holds a value not decoded (`01`, `00000006`).
+
+### Button actions
+
+A layout object's field 16 is the button. Its field 3 is the step as a
+message {1 step id, 2 bytes 22–23, 3 options, 4 the 14 inline bytes};
+step 0 means no action. A script button is a Perform Script step (id 1,
+options `0x40`). The step's parameters are under
+`[4].[5].[L].[5].[obj].[17]`, laid out like `[S].[5].[n]`.
+
+### Step catalogue
+
+`docs/reference/script_steps.txt` lists the 222 step ids FileMaker Pro 26
+names in its XML (1–247). Built with the reverse oracle
+(`tools/oracle/step_ids.py`): the step ids of a copy of Tasks were
+overwritten with 0…365 and the copy exported as XML, six exports of 61
+steps each.
+
+Parameters were decoded from the templates and from a script of 57 steps
+pasted into a copy of Tasks through the clipboard
+(`tools/oracle/step_params.xml`, `Add-FmScriptSteps` in `fmui.ps1`), then
+checked against the XML export (`tests/oracle.rs`,
+`step_parameters_match_xml`).
 ## 9. Value lists ✅
 
 `[33].[5].[V]`: key 16 = name, key 3 = custom values (CR-separated),

@@ -100,3 +100,9 @@ from files we authored ourselves.
   reading the CSS FileMaker prints in the XML (`<LocalCSS>`), and object option bits by
   setting each one in FileMaker's Inspector and reading the file back
   (`cargo run -p fmp12 --example objects -- <file> "*"` prints kinds, options and nesting).
+* `step_params_m5.xml`: the 102 steps pasted into a copy of Tasks to decode the M5 steps'
+  parameters (FORMAT.md §8); `steps_dump.py <raw.txt> <marker>` prints each step of the
+  script whose first comment is `marker` (id, bytes 22–23, options, inline bytes, parameter
+  keys) from `fmdump <file> raw`. `step_errors_m5.xml` runs those steps with `Get ( LastError )`
+  after each and stores the results in `Tasks::Description` of a new record, read back through
+  UI Automation (`AutomationId` `Field: Tasks::Description`): no dialog is left open.

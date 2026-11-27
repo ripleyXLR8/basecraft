@@ -441,11 +441,18 @@ impl Database {
                 let next = ed
                     .next_serial(t.id, f.id)
                     .and_then(|s| s.trim().parse::<u64>().ok());
-                if let (Some(max), Some(next)) = (max, next)
-                    && max >= next
+                // The value in memory (Set Next Serial Value, Replace
+                // Field Contents), moved past the numbers given here.
+                let inc = f.def.serial_increment() as u64;
+                let want = match (f.def.serial_next.trim().parse::<u64>().ok(), max) {
+                    (Some(w), Some(m)) if m >= w => Some(m + inc),
+                    (Some(w), _) => Some(w),
+                    (None, m) => m.map(|m| m + inc),
+                };
+                if let (Some(want), Some(next)) = (want, next)
+                    && want != next
                 {
-                    let inc = f.def.serial_increment() as u64;
-                    ed.set_next_serial(t.id, f.id, &(max + inc).to_string());
+                    ed.set_next_serial(t.id, f.id, &want.to_string());
                     moved = true;
                 }
             }

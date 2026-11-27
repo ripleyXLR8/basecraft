@@ -627,6 +627,83 @@ pasted into a copy of Tasks through the clipboard
 (`tools/oracle/step_params.xml`, `Add-FmScriptSteps` in `fmui.ps1`), then
 checked against the XML export (`tests/oracle.rs`,
 `step_parameters_match_xml`).
+
+### Parameters of the M5 steps
+
+Decoded from 102 steps pasted into a copy of Tasks
+(`tools/oracle/step_params_m5.xml`, plus a second paste of variants) and
+read back with `fmdump <file> raw` and `tools/oracle/steps_dump.py`
+(one line per step: id, bytes 22–23, options, inline bytes, parameter
+keys). Positions are parameter nodes `[128 + p]`; a calculation is at
+`[128 + p].[5]` key 5. FileMaker's import log names the XML elements it
+did not know; those steps were left out below.
+
+| Step | Bytes 22–23 (`arg`) | Options | Parameters |
+|------|---------------------|---------|------------|
+| Perform Script by name | 0 | `0x2004800` | [128] parameter, [130] name calculation |
+| Install OnTimer Script | 0 | `0x4040` | inline script; [128] parameter, [129] interval |
+| Set Error Logging | 0 | `0x2_0000` On, `0x1_0000` always, `0x4000` with a calculation | [128] custom debug information |
+| Set Layout Object Animation, Allow User Abort | 0 | `0x2_0000` On | — |
+| Go to Portal Row | 1 first, 2 last, 3 previous, 4 next, 5 by calculation | `0x1000` select, `0x2000` exit after last, `0x80` no dialog | [128] row calculation; [128] key 3 `ffffffff` |
+| Go to Related Record | 1 current layout, 5 layout (inline) | `0x100` show only related records, `0x200` match all records of the found set, `0x2_0000` new window, `0x200_0000` use external table's layouts, `0x8` with a layout | [128] key 17 the related occurrence (`03 D0 hi lo`); new window: [128] key 3 style, [128] name, [129] height, [130] width, [131] top, [132] left |
+| Cut, Copy, Paste, Clear | 0 | `0x1000` select entire contents, `0x200` Paste without style | inline field (none: the active field; Copy with none copies the record) |
+| Set Selection | 0 | `0x4000` | inline field; [128] start, [129] end |
+| Undo/Redo | 1 undo, 2 redo, 3 toggle | — | — |
+| Set Next Serial Value | 0 | `0x4000` | inline field; [128] value |
+| Insert from Index, Insert from Last Visited | 0 | `0x1000` select | inline field |
+| Export Field Contents | 0 | `0x200` create folders | inline field; [128] key 130 path list |
+| Truncate Table | 1 a table (inline `03 02 <path int>`), 0 none | `0x80` no dialog | — |
+| Constrain / Extend Found Set | 0 | `0x200_0000` restore, `0x8000` | stored requests at `[6]`, as Perform Find |
+| Perform Quick Find | 0 | `0x4000` | [128] text |
+| New Window | 1 current layout, 5 layout (inline) | `0x4000` | [128] key 3 style; [128] name, [129] height, [130] width, [131] top, [132] left |
+| Select / Close Window | 1 by name, 0 current | `0x8000_0000` current file only | [128] name |
+| Move/Resize Window | 1 by name, 0 current | as Close Window | [128] name, [129] height, [130] width, [131] top, [132] left |
+| Set Window Title | 1 by name, 0 current | `0x4000` | [128] window name, [129] new title |
+| Adjust Window | 1 resize to fit, 2 maximize, 3 minimize, 4 restore, 5 hide | — | — |
+| Arrange All Windows | 1 tile horizontally, 2 tile vertically, 3 cascade, 4 bring all to front | — | — |
+| Scroll Window | 1 home, 2 end, 3 page up, 4 page down, 5 to selection | — | — |
+| Show/Hide Toolbars, Menubar, Text Ruler | 1 show, 2 hide, 3 toggle | `0x8_0000` lock | — |
+| View As | 1 form, 2 list, 3 table, 4 cycle | — | — |
+| Set Zoom Level | 1–8: 25, 50, 75, 100, 150, 200, 300, 400 %; 9 zoom in, 10 zoom out | `0x8_0000` lock | — |
+| Open File, Close File | 0 | `0x100` hidden | key 32 file reference |
+| Save a Copy as | 1 copy, 2 compacted, 3 clone, 4 self-contained | `0x2000_0000` automatically open | [128] key 130 path list |
+| Print, Print Setup, Import / Export Records | (Import: 1) | `0x80` no dialog | — |
+| Save Records as PDF / Excel | (PDF: 1 records being browsed) | `0x80` no dialog, `0x200` create folders | [128] key 130 path list |
+| Open URL | 0 | `0x80` no dialog | [128] URL |
+| Send Mail (client) | 0 | `0x80` no dialog | [128] To, [129] CC, [130] BCC, [131] subject, [132] message |
+| Get Folder Path | 0 | `0x100` allow folder creation | [128] key 1 the variable name; [131] dialog title, [132] default location |
+| Speak, Dial Phone, Set Web Viewer | (Set Web Viewer: 5 go to URL) | `0x80` no dialog | [128] text / number / object name, [129] URL |
+
+The path list ([128] key 130) is XOR-encoded like text: a u32 count, then
+per path a u8-prefixed kind (`file`) and a u16-prefixed path
+(`file:out.txt`, `script::stored_path`).
+
+Not decoded (FileMaker 26's import refused the XML names tried): Find
+Matching Records' replace / constrain / extend choice, Sort Records by
+Field's order, the data file steps, Go to List of Records.
+
+Error codes FileMaker 26 returned for these steps (a script of the steps,
+each followed by `Get ( LastError )`, run in a copy of Tasks on Windows;
+`tools/oracle/step_errors_m5.xml`): Go to Object, Set Web Viewer on a
+missing object 116; Select / Close Window by a missing name 112; Perform
+Script by a missing name 104; Set Next Serial Value on a field that is not
+a serial 5; Find Matching Records with no field and no active field 401;
+Go to Related Record to a layout of another table 414; Truncate Table with
+no table 106 (nothing deleted); Speak, Dial Phone, Perform Script on
+Server, Configure NFC Reading, Region Monitor, Machine Learning Model,
+AVPlayer Play 3; Set Allowed Orientations 4; Enable Touch Keyboard,
+Set Multi-User, Copy All Records, Omit Multiple, Show Omitted Only, Sort
+Records without keys, View As, Set Zoom Level, Show/Hide Toolbars 0.
+`Get ( WindowName )` of a file's first window is the file name without
+extension; after New Window [Name: "W2"] it is `W2`; Set Zoom Level
+[Zoom In] from 150 % gives 200; View As [Cycle] from Table gives Form. Go to Record by calculation past the
+end, 0, or Previous on the first record: 101. Perform Quick Find with no
+match: 401 and an empty found set. Go to Portal Row with no related
+record: 0 (nothing happens); with an active field outside any portal: 3.
+Go to Related Record with no related record: 101 (layout unchanged).
+Execute SQL without a data source: 5. Modify Last Find enters Find mode
+(`Get ( WindowMode )` 1); Set Window Title [Current; "T9"] makes
+`Get ( WindowName )` `T9`.
 ## 9. Value lists ✅
 
 `[33].[5].[V]`: key 16 = name, key 3 = custom values (CR-separated),

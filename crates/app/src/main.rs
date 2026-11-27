@@ -16,13 +16,16 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use engine::{Database, Order, Request};
 use fmp12::layouts::Layout;
 
+mod browse;
 mod chart;
 mod container;
+mod debugger;
 mod design;
 mod i18n;
 mod look;
 mod preview;
 mod records;
+mod script_ui;
 #[cfg(test)]
 mod ui_tests;
 mod workspace;
@@ -63,13 +66,7 @@ struct Active {
     since: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum View {
-    #[default]
-    Form,
-    List,
-    Table,
-}
+use script::View;
 
 /// A file picked asynchronously (browser), waiting to be opened.
 type Incoming = Rc<RefCell<Option<(String, Vec<u8>)>>>;
@@ -135,6 +132,14 @@ struct App {
     designer: Option<design::Designer>,
     /// Records menu, Find/Replace, import and export dialogs (`records.rs`).
     m8: records::Dialogs,
+    /// Sort, Go to Record, Saved Finds, Revert dialogs (`browse.rs`).
+    m5: browse::Dialogs,
+    /// Script steps done by the app (`script_ui.rs`).
+    steps_ui: script_ui::State,
+    /// Tools › Script Debugger (`debugger.rs`).
+    debugger: debugger::Debugger,
+    /// The window as scripts last left it: name, zoom, toolbar…
+    win: script::Window,
 }
 
 impl App {
@@ -378,7 +383,15 @@ impl App {
         let t = self.table()?;
         let found = self.found(t).clone();
         let d = self.doc.as_ref()?;
-        let mut window = script::Window::new(&d.db, d.layouts.get(self.layout)?.id);
+        let mut window = script::Window {
+            view: self.view,
+            ..self.win.clone()
+        };
+        window.layout = d.layouts.get(self.layout)?.id;
+        if window.name.is_empty() {
+            // Get ( WindowName ) of the file's window: the file name.
+            window.name = d.name.clone();
+        }
         window.found = found;
         window.current = *self.current.get(&t).unwrap_or(&0);
         window.sorted = self.sorted.get(&t).copied().unwrap_or(false);
@@ -408,6 +421,8 @@ impl App {
         let out = f(&mut engine, &mut host);
         let window = host.window;
         self.engine = Some(engine);
+        self.view = window.view;
+        self.win = window.clone();
         let old_layout = self.layout;
         if let Some(i) = d.layouts.iter().position(|l| l.id == window.layout) {
             self.layout = i;
@@ -455,8 +470,18 @@ impl App {
             return;
         }
         self.from_trigger = trigger;
+        // Tools › Script Debugger open: stop at the first step and at
+        // the workspace's breakpoints.
+        let debug = self
+            .debugger
+            .open
+            .then(|| self.workspace.breakpoints.clone());
         let r = self.with_host(|e, h| {
             let mut run = start(e, h);
+            if let Some(bps) = debug {
+                run.set_debug(true);
+                run.breakpoints = bps;
+            }
             let st = run.resume(e, h, script::Answer::Start);
             (run, st)
         });
@@ -485,7 +510,7 @@ impl App {
             script::Status::Suspended(wait) => {
                 let inputs = match &wait {
                     script::Suspend::Dialog(d) => d.inputs.iter().map(|i| i.2.clone()).collect(),
-                    script::Suspend::Pause(_) => Vec::new(),
+                    _ => Vec::new(),
                 };
                 self.active = Some(Active {
                     run,
@@ -551,6 +576,12 @@ impl App {
     fn script_wait_ui(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let mut answer = None;
+        if let Some(script::Suspend::Ui(r)) = self.active.as_ref().map(|a| a.wait.clone()) {
+            if let Some(a) = self.ui_request(ctx, &r) {
+                self.answer(a, now);
+            }
+            return;
+        }
         let Some(act) = self.active.as_mut() else {
             return;
         };
@@ -604,6 +635,8 @@ impl App {
                     }
                 }
             }
+            // Driven by the debugger window; Ui requests are handled above.
+            script::Suspend::Breakpoint | script::Suspend::Ui(_) => {}
         }
         if let Some(a) = answer {
             self.answer(a, now);
@@ -654,6 +687,16 @@ impl App {
             Some([500.0, 120.0]),
             &mut open,
             |ui| {
+                // FileMaker's two tabs: Current (the paused script's
+                // variables) and Watch.
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.debugger.current_tab, true, tr("Current"));
+                    ui.selectable_value(&mut self.debugger.current_tab, false, tr("Watch"));
+                });
+                if self.debugger.current_tab {
+                    self.data_viewer_current(ui);
+                    return;
+                }
                 egui::Grid::new("watches")
                     .striped(true)
                     .num_columns(3)
@@ -1022,6 +1065,7 @@ impl App {
                     self.enter_layout();
                     ui.close();
                 }
+                self.view_menu_more(ui);
             });
             ui.menu_button(tr("Insert"), |ui| {
                 if let Some(ds) = self.designer.as_mut() {
@@ -1082,6 +1126,13 @@ impl App {
                 if ui.button(tr("Data Viewer")).clicked() {
                     self.data_viewer = true;
                     focus_tool_window(ui.ctx(), DATA_VIEWER);
+                    ui.close();
+                }
+                if ui
+                    .checkbox(&mut self.debugger.open, tr("Script Debugger"))
+                    .clicked()
+                {
+                    focus_tool_window(ui.ctx(), debugger::KEY);
                     ui.close();
                 }
             });
@@ -2109,6 +2160,7 @@ impl eframe::App for App {
         }
         self.layout_dialogs(&ctx);
         self.records_dialogs(&ctx);
+        self.m5_frame(&ctx);
         for (o, ev) in std::mem::take(&mut self.obj_events) {
             if ev == event::OBJECT_ENTER {
                 self.m8.focus = Some(o);
@@ -2165,7 +2217,7 @@ impl eframe::App for App {
         }
         self.data_viewer_window(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        if self.doc.is_some() {
+        if self.doc.is_some() && self.win.toolbar {
             egui::Panel::top("status").show(ui, |ui| {
                 self.status_toolbar(ui);
                 self.layout_bar(ui);

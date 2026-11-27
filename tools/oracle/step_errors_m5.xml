@@ -1,0 +1,142 @@
+<fmxmlsnippet type="FMObjectList">
+<Step enable="True" id="86" name="Set Error Capture"><Set state="True"/></Step>
+<Step enable="True" id="6" name="Go to Layout"><LayoutDestination value="SelectedLayout"/><Layout id="3" name="Task Details"/></Step>
+<Step enable="True" id="7" name="New Record/Request"/>
+<Step enable="True" id="76" name="Set Field"><Calculation><![CDATA["Alpha"]]></Calculation><Field table="Tasks" id="1" name="Task"/></Step>
+<Step enable="True" id="7" name="New Record/Request"/>
+<Step enable="True" id="76" name="Set Field"><Calculation><![CDATA["Beta"]]></Calculation><Field table="Tasks" id="1" name="Task"/></Step>
+<Step enable="True" id="75" name="Commit Records/Requests"><NoInteract state="True"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA["wn=" & Get ( WindowName ) & " sn=" & Get ( ScriptName ) & " anim=" & Get ( ScriptAnimationState ) & " z=" & Get ( WindowZoomLevel ) & " |"]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="174" name="Enable Touch Keyboard"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " tk=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="201" name="Configure NFC Reading"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " nfc=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="176" name="Set Allowed Orientations"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " ori=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="187" name="Configure Local Notification"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " notif=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="185" name="Configure Region Monitor Script"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " region=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="202" name="Configure Machine Learning Model"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " ml=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="66" name="Speak"><Calculation><![CDATA["hi"]]></Calculation></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " speak=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="164" name="Perform Script on Server"><WaitForCompletion state="True"/><Script id="7" name="Sort by Name"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " psos=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="212" name="Configure AI Account"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " ai=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="177" name="AVPlayer Play"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " av=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="99" name="Go to Portal Row"><SelectAll state="False"/><NoInteract state="True"/><RowPageLocation value="First"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " portal=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="123" name="Select Window"><Window value="ByName"/><Name><Calculation><![CDATA["nope"]]></Calculation></Name></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " selwin=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="121" name="Close Window"><Window value="ByName"/><Name><Calculation><![CDATA["nope"]]></Calculation></Name></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " closewin=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="145" name="Go to Object"><ObjectName><Calculation><![CDATA["nope"]]></Calculation></ObjectName></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " obj=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="1" name="Perform Script"><Calculated><Calculation><![CDATA["nope"]]></Calculation></Calculated></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " psname=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="146" name="Set Web Viewer"><Action value="Reload"/><ObjectName><Calculation><![CDATA["nope"]]></Calculation></ObjectName></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " wv=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="116" name="Set Next Serial Value"><Calculation><![CDATA[100]]></Calculation><Field table="Tasks" id="1" name="Task"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " serial=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="155" name="Find Matching Records"><FindMatchingRecordsByValue value="Replace"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " fmr=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="74" name="Go to Related Record"><Option state="True"/><MatchAllRecords state="False"/><ShowInNewWindow state="False"/><Restore state="False"/><LayoutDestination value="CurrentLayout"/><Table id="1065091" name="Attachments"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " gtrr=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="122" name="New Window"><NewWndStyles Style="Document" Close="Yes" Minimize="Yes" Maximize="Yes" Resize="Yes" Styles="3606018"/><Name><Calculation><![CDATA["W2"]]></Calculation></Name><LayoutDestination value="CurrentLayout"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " newwin=" & Get ( LastError ) & " wn=" & Get ( WindowName )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="121" name="Close Window"><Window value="Current"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " close=" & Get ( LastError ) & " wn=" & Get ( WindowName )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="16" name="Go to Record/Request/Page"><NoInteract state="True"/><RowPageLocation value="ByCalculation"/><Calculation><![CDATA[99999]]></Calculation></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " gtrbig=" & Get ( LastError ) & " rn=" & Get ( RecordNumber )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="16" name="Go to Record/Request/Page"><NoInteract state="True"/><RowPageLocation value="ByCalculation"/><Calculation><![CDATA[0]]></Calculation></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " gtr0=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="16" name="Go to Record/Request/Page"><NoInteract state="True"/><RowPageLocation value="First"/></Step><Step enable="True" id="16" name="Go to Record/Request/Page"><NoInteract state="False"/><Exit state="False"/><RowPageLocation value="Previous"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " gtrprev=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="150" name="Perform Quick Find"><Calculation><![CDATA["zzzqqq"]]></Calculation></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " qf=" & Get ( LastError ) & " fc=" & Get ( FoundCount )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="23" name="Show All Records"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " all=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="97" name="Set Zoom Level"><Lock state="False"/><Zoom value="150"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " zoom=" & Get ( LastError ) & " z=" & Get ( WindowZoomLevel )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="30" name="View As"><View value="Table"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " view=" & Get ( LastError ) & " v=" & Get ( LayoutViewState )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="21" name="Unsort Records"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " unsort=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="24" name="Modify Last Find"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " modlast=" & Get ( LastError ) & " m=" & Get ( WindowMode )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="55" name="Enter Browse Mode"><Pause state="False"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " browse=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="51" name="Revert Record/Request"><NoInteract state="True"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " revert=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="133" name="Open Record/Request"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " open=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="4" name="Go to Next Field"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " nextf=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="50" name="Select All"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " selall=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="45" name="Undo/Redo"><UndoRedo value="Undo"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " undo=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="51" name="Revert Record/Request"><NoInteract state="True"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " revert2=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="17" name="Go to Field"><SelectAll state="True"/><Field table="Tasks" id="1" name="Task"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " gofield=" & Get ( LastError ) & " af=" & Get ( ActiveFieldName )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="50" name="Select All"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " selall2=" & Get ( LastError ) & " ss=" & Get ( ActiveSelectionStart ) & "/" & Get ( ActiveSelectionSize )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="130" name="Set Selection"><StartPosition><Calculation><![CDATA[2]]></Calculation></StartPosition><EndPosition><Calculation><![CDATA[3]]></Calculation></EndPosition></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " setsel=" & Get ( LastError ) & " ss=" & Get ( ActiveSelectionStart ) & "/" & Get ( ActiveSelectionSize )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="47" name="Copy"><SelectAll state="False"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " copy=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="4" name="Go to Next Field"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " nextf2=" & Get ( LastError ) & " af=" & Get ( ActiveFieldName )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="74" name="Go to Related Record"><Option state="True"/><MatchAllRecords state="False"/><ShowInNewWindow state="False"/><Restore state="False"/><LayoutDestination value="SelectedLayout"/><Table id="1065092" name="Assignees"/><Layout id="7" name="Assignee Details"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " gtrr2=" & Get ( LastError ) & " ln=" & Get ( LayoutName )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="117" name="Execute SQL"><NoInteract state="True"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " sql=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="102" name="Flush Cache to Disk"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " flush=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="92" name="Show/Hide Text Ruler"><ShowHide value="Show"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " ruler=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="168" name="Set Layout Object Animation"><Set state="False"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " anim=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="200" name="Set Error Logging"><Set state="False"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " log=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="84" name="Set Multi-User"><MultiUser value="Off"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " multi=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="148" name="Install OnTimer Script"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " timer=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="155" name="Find Matching Records"><Field table="Tasks" id="1" name="Task"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " fmr2=" & Get ( LastError ) & " fc=" & Get ( FoundCount )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="23" name="Show All Records"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " all2=" & Get ( LastError ) & " fc=" & Get ( FoundCount )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="124" name="Set Window Title"><Window value="Current"/><NewName><Calculation><![CDATA["T9"]]></Calculation></NewName></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " title=" & Get ( LastError ) & " wn=" & Get ( WindowName )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="99" name="Go to Portal Row"><SelectAll state="False"/><NoInteract state="True"/><Exit state="False"/><RowPageLocation value="Previous"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " pprev=" & Get ( LastError ) & " pr=" & Get ( ActivePortalRowNumber )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="99" name="Go to Portal Row"><SelectAll state="False"/><NoInteract state="True"/><RowPageLocation value="Last"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " plast=" & Get ( LastError ) & " pr=" & Get ( ActivePortalRowNumber )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="116" name="Set Next Serial Value"><Calculation><![CDATA[100]]></Calculation><Field table="Tasks" id="8" name="PrimaryKey"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " serial2=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="26" name="Omit Multiple Records"><NoInteract state="True"/><Calculation><![CDATA[1]]></Calculation></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " omitm=" & Get ( LastError ) & " fc=" & Get ( FoundCount )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="27" name="Show Omitted Only"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " omitted=" & Get ( LastError ) & " fc=" & Get ( FoundCount )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="39" name="Sort Records"><NoInteract state="True"/><Restore state="False"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " sortnone=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="98" name="Copy All Records/Requests"/>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " cpall=" & Get ( LastError )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="30" name="View As"><View value="Cycle"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " vlist=" & Get ( LastError ) & " v=" & Get ( LayoutViewState )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="97" name="Set Zoom Level"><Lock state="False"/><Zoom value="ZoomIn"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " zin=" & Get ( LastError ) & " z=" & Get ( WindowZoomLevel )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="29" name="Show/Hide Toolbars"><Lock state="False"/><ShowHide value="Hide"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " tb=" & Get ( LastError ) & " sa=" & Get ( StatusAreaState )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="182" name="Truncate Table"><NoInteract state="True"/></Step>
+<Step enable="True" id="141" name="Set Variable"><Value><Calculation><![CDATA[$e & " trunc=" & Get ( LastError ) & " fc=" & Get ( FoundCount ) & " tc=" & Get ( TotalRecordCount )]]></Calculation></Value><Repetition><Calculation><![CDATA[1]]></Calculation></Repetition><Name>$e</Name></Step>
+<Step enable="True" id="6" name="Go to Layout"><LayoutDestination value="SelectedLayout"/><Layout id="3" name="Task Details"/></Step>
+<Step enable="True" id="7" name="New Record/Request"/>
+<Step enable="True" id="76" name="Set Field"><Calculation><![CDATA[$e]]></Calculation><Field table="Tasks" id="3" name="Description"/></Step>
+<Step enable="True" id="75" name="Commit Records/Requests"><NoInteract state="True"/></Step>
+</fmxmlsnippet>

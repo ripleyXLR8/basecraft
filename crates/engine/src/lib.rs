@@ -799,6 +799,38 @@ impl calc::Context for RecordContext<'_, '_> {
             .unwrap_or_else(Value::empty))
     }
 
+    fn summary(
+        &mut self,
+        summary: (Option<&str>, &str),
+        break_field: (Option<&str>, &str),
+    ) -> Result<Value, calc::EvalError> {
+        // ponytail: the found set is the whole table (no found set in the engine).
+        let t = self
+            .db
+            .table(self.table)
+            .ok_or_else(|| calc::EvalError::new(106, "table missing"))?;
+        let field = |n: &str| {
+            t.field_by_name(n)
+                .map(|f| f.id)
+                .ok_or_else(|| calc::EvalError::new(102, format!("field {n} missing")))
+        };
+        let (sf, bf) = (field(summary.1)?, field(break_field.1)?);
+        let found: Vec<usize> = (0..t.records.len()).collect();
+        if sf == bf {
+            return Ok(summary::summarize(self.db, t.id, sf, &found, &found));
+        }
+        // Records sharing this record's break value, in table order.
+        let mine = self.db.value(t.id, self.record, bf);
+        let group: Vec<usize> = found
+            .iter()
+            .copied()
+            .filter(|&r| {
+                calc::eval::compare(&self.db.value(t.id, r, bf), &mine) == std::cmp::Ordering::Equal
+            })
+            .collect();
+        Ok(summary::summarize(self.db, t.id, sf, &group, &found))
+    }
+
     fn record_ids(&mut self, _table: Option<&str>) -> Result<Vec<u64>, calc::EvalError> {
         Ok(self
             .db

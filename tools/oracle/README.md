@@ -33,6 +33,26 @@ from files we authored ourselves.
 * Saving records: `cargo run -p engine --example edit -- <in> <out> new:Products "set:Products:+:Name=x" del:Products:3 …`
   writes a copy through `Database::save`; open it with `Test-FmOpen` and read
   fields back through UI Automation (`Edit` controls named `Field: Table::Field`).
+* Manage Database helpers (in `fmui.ps1`): `Open-FmManageDb`, `Select-FmTab`,
+  `Get-FmDbRows` (rows of the Tables or Fields list as FileMaker shows them),
+  `Add-FmFields <snippet.xml>` (pastes fields, clipboard format `Mac-XMFD`),
+  `Save-FmWindowShot <element> <name>` (screenshot of one FileMaker dialog).
+* `schema_check.ps1`: `Test-FmSchema <file> <Table> [-Records n] [-Layout i] [-Xml out.xml]`
+  checks a file whose schema BaseCraft wrote: opens a copy, reports the
+  damage dialog if any, lists the Tables and Fields rows of Manage Database
+  (screenshots too), creates records on the table's layout and optionally
+  saves the copy as XML. `schema_demo.sh <out.fmp12> [basecraft-cli]` builds
+  the file used for the check with `basecraft-cli new-file` and `schema`.
+* `compile_snippet.py exprs out_prefix` + `compile_exprs.txt`: compiled-form
+  oracle. Builds scripts of Set Variable steps; pasted with `Add-FmScriptSteps`
+  into a file, FileMaker stores each calculation's key 5 and key 6, listed by
+  `cargo run -p fmp12 --example calcdump -- <file>`
+  (`crates/fmp12/tests/fixtures/compiled.tsv`). Paste into a file whose
+  formats match the UI: in a French UI, decimal literals need a comma.
+* More `fmp12` examples: `entedit` (delete or add raw entries of a file, for
+  bisecting what FileMaker needs), `namekeys` (name-index keys next to the
+  names), `schemaops` / `schemademo` (schema edits), `mkblank` (makes
+  `assets/blank.fmp12` from a new file FileMaker created).
 * `calc_oracle.ps1` + `calc_snippet.py`: calculation oracle. `Invoke-FmCalcs exprs.txt out.tsv`
   (or `Invoke-FmCalcBatches` for long files, 150 lines per script) pastes a script that
   `Evaluate`s each line and stores `index TAB result TAB EvaluationError` in

@@ -170,7 +170,13 @@ the binary (`tools/oracle/uuidmap.py`). `T` is a base-table id (≥ 128).
 
 Every catalog follows the same pattern:
 
-* `[cat].[1]`: catalog header (key 216 = catalog UUID);
+* `[cat].[1]`: catalog header: key 0 = last id ever used, key 4 = number
+  of objects (u32), key 216 = catalog UUID, key 252 = change counter
+  (length-prefixed integer, +1 per change); `[cat].[1].[1]` = name index
+  (collation key of the name → object reference, §14); `[cat].[1].[3]` =
+  display order (u32 position 1…n → object reference, renumbered when an
+  object is deleted). An object reference is a length + path integer
+  (`02 80 02` = 130), or `03 D0 hi lo` for table occurrences;
 * `[cat].[5].[id]`: one object per id. Common keys: **16** name,
   **216** UUID, **217** source UUID, **31873** user name,
   **31874** account name, **31875** timestamp (modification metadata);
@@ -178,9 +184,9 @@ Every catalog follows the same pattern:
 
 | Path | XML catalog | Status |
 |------|-------------|--------|
-| `[2]` | file-level settings; key 13 = locale (§13) | 🔍 |
-| `[3].[16]` | BaseTableCatalog; `[3].[16].[5].[T]` key 251 = change counter (§13) | ✅ names |
-| `[3].[17]` | TableOccurrenceCatalog | 🔍 |
+| `[2]` | file-level settings; key 13 = locale (§13), key 134 = data formats (§14) | 🔍 |
+| `[3].[16]` | BaseTableCatalog; `[3].[16].[5].[T]` key 251 = change counter (§13) | ✅ read, written (§14) |
+| `[3].[17]` | TableOccurrenceCatalog; `[3].[17].[1].[14].[T]` = evaluation plan cache (§7) | ✅ read, written (§14) |
 | `[3].[251]` | RelationshipCatalog | 🔍 |
 | `[4]` | LayoutCatalog; `[4].[5].[L].[5].[n]` = LayoutObject | 🔍 |
 | `[6]` | ThemeCatalog (§12) | ✅ styles |
@@ -194,7 +200,7 @@ Every catalog follows the same pattern:
 | `[38]` | BaseDirectoryCatalog | 🔍 |
 | `[65]` | CustomMenuCatalog | 🔍 |
 | `[T].[3].[5].[F]` | FieldCatalog of table T | ✅ names |
-| `[T].[3].[1]` | index of the table's *field names* (collation keys) | 🔍 |
+| `[T].[3].[1]` | field catalog header: name index `[1]` (collation keys, §14), order `[3]`, type index `[6]`, dependencies `[14]` (§5) | ✅ |
 | `[T]` key 0 | last record id ever used (§13) | ✅ |
 | `[T].[1].[F]` | index of field F's values (§13) | ✅ |
 | `[T].[5].[R]` | record R: key F = value of field F (§13) | ✅ |
@@ -250,7 +256,9 @@ FileMaker export XML. All 214 template fields match the export (`tests/oracle.rs
 | 15 | 7 | custom message |
 | 24–25 | — | maximum repetitions, u16 BE |
 
-Bytes 2, 12–13 and 16–23 changed nothing visible in the XML.
+Bytes 2, 12–13 and 16–23 changed nothing visible in the XML. FileMaker
+writes byte 19 = 1 in every field it creates. Index language: the file's
+language (`[2]` key 13, §13) for new fields.
 
 **Summary fields** keep their definition in key 9 of the field node, e.g.
 `01 00 02 01 00 00 FE 7F 02 01 05 BE BF EF 00 01 02 01 00 00 FF 1F 02 01 00 00 BF EF 00 01`:
@@ -258,11 +266,30 @@ Bytes 2, 12–13 and 16–23 changed nothing visible in the XML.
 | Byte | Meaning |
 |-----:|---------|
 | 0 | operation: 1 Total, 3 Count (seen in the templates); 2 Average, 4 Minimum, 5 Maximum, 6 Standard Deviation, 7 Fraction of Total, 8 List assumed from the dialog order |
-| 9 | length *n* of the summarized field id |
-| 10… | summarized field id (path integer, *n* bytes) |
+| 8… | summarized field: length *n*, `01`, path integer (*n* − 1 bytes) |
 
 The other bytes (running total, by population, restart per sort group,
-the "subtotaled" field of Fraction of Total) are not decoded.
+the "subtotaled" field of Fraction of Total) are not decoded; bytes 4–7,
+11–13, 20–21 and 26–27 hold leftovers (FileMaker writes zeros in a new
+summary, `F9 7F`, `64 23` in others).
+
+Other keys of a field node: **12** next serial value (text), **13**
+auto-enter constant (text), **33**/**34** validation range low/high
+(text), **251** and **252** counters, **217** source UUID, **218** tags;
+sub-node **`[5]`** the calculation of a calculated field or the auto-enter
+calculation, **`[25]`** the validation calculation (both keys 4, 5, 6 as
+in §11, key 4 = the table's occurrence).
+
+The field catalog header `[T].[3].[1]` also holds:
+
+* `[6]`: a second name index by type: key = field type, data type × 4
+  (+1 when global), the name's collation key without its tertiary part
+  (§14); names that differ only there share one entry;
+* `[14].[FFF0].[F]`: what field *F* depends on: key *G* = 01 for each field
+  of the table its calculation uses (00 for the field a summary summarizes),
+  key FF00 (32640) = 01 for any auto-enter, FF02 (32642) = 01 for a
+  modification stamp; `[14].[FFF1].[F]`: fields its validation
+  calculation uses. FileMaker does not rebuild these.
 
 ## 6. Long values
 
@@ -276,6 +303,14 @@ formatting for text). Short values stay inline. Readers must accept both.
   XML shows `0x104000 | id`.
 * `[3].[17].[5].[TO]` key 2: `02 01 00 | len 02 path-int(base table) |
   f32 left, top, width, height (BE) | u32 collapsed height | u32 | RGBA`.
+  The node's path element is `D0 hi lo`. A table occurrence made with
+  Manage Database › Tables has position and size 0 (FileMaker places it
+  when the graph is shown) and colour `77 77 77 FF`.
+* `[3].[17].[1].[14].[T]`: per base table, an evaluation plan of its
+  auto-enter, calculated and summary fields (`[FF]` field → rank,
+  `[FF00]` rank → kind and field, `[FF02]` modification stamps, `[FFFB]`
+  summaries, `[FFFC]` fields to validate, `[G]` fields depending on G).
+  It is a cache: FileMaker rebuilds it when it is missing.
 * `[3].[251].[5].[R]` key 2: `04 TOref(left) 04 TOref(right) | sort spec… |
   flags`. The last byte holds the flags: 0x10 cascade-create right, 0x20 cascade-create left.
   `[R].[3]` keys 1…n = join predicates `op | len 01 field | len 01 field`
@@ -449,7 +484,9 @@ implemented). Not yet verified in FileMaker.
 
 Stored next to their owner as keys 4 (context: a TO ref `03 D0 hi lo`, or
 `01 00` in scripts and layouts), 5 (token stream that keeps the source text,
-whitespace included) and 6 (compiled form, not needed for display).
+whitespace included) and 6 (compiled form). Key 6 is what FileMaker
+evaluates: without it an auto-enter calculation gives `?`, and FileMaker
+does not rebuild it from key 5.
 
 The token table was recovered by overwriting token bytes in copies of real
 files and reading FileMaker's XML rendering. Full table:
@@ -469,6 +506,65 @@ two-byte functions behind prefixes F8–FE, 140 `Get` flags after `9C`).
 | `41`–`49`, `50` | comparisons, `&` |
 | `9B` / `9C xx` | `Get` / its flag |
 | `F8`–`FE xx` | two-byte functions (`F8 00` = While, `FA 00` = Self, …) |
+| `0D 13 len text 00` | `/* comment */` (text between the delimiters) |
+| `0E 13 len text 00` | `// comment`, its line break included |
+| `24` | `¶` outside quotes |
+| `1A len name` | `$variable` / `$$global`; `06 … 07` after it = repetition |
+| `1D 00 00 15` + 4 bytes + u16 | library function: `FMDR` design functions (01 DatabaseNames, 02 FieldBounds, 03 FieldIDs, 04 FieldNames, 05 FieldRepetitions, 06 FieldStyle, 07 FieldType, 08 GetNextSerialValue, 09 LayoutIDs, 0A LayoutNames, 0B TableIDs, 0C TableNames, 0D RelationInfo, 0E ScriptIDs, 0F ScriptNames, 10 ValueListIDs, 11 ValueListNames, 12 ValueListItems, 13 WindowNames, 14 FieldComment, 15 LayoutObjectNames, 16 BaseTableIDs, 17 BaseTableNames, 18 BaseTableComment, 19 FieldAnnotation, 1A FieldDisplayNames), `FMMB` 01 Location, 02 LocationValues, 03 RangeBeacons |
+
+A `len` of 128 UTF-16 units or more takes two bytes, the first with its top
+bit set (`13 81 14` = 276 units). Unary minus is `26` like subtraction in
+key 5. A number literal keeps its value, not its spelling (`1,50` and
+`1.5` give the same bytes); its last two bytes are `00 20`, or `00 40`
+when it was written with an exponent. The integer part is below 10⁹ in
+every literal FileMaker accepted from a pasted script; larger literals
+are not decoded. A calculation FileMaker cannot parse is stored as one
+`0D` comment holding the whole text, with key 6 = `00`.
+
+### Compiled form (key 6)
+
+Prefix notation without punctuation or trivia: each operator or function
+token comes before its operands, which are compiled the same way.
+
+* Binary operators: token, left, right (`1 & 2 + 3` → `50 1 25 2 3`);
+  precedence from loose to tight: `or`/`xor`, `and`, comparisons, `&`,
+  `+ -`, `* /`, `^`, then prefix operators; all left-associative
+  (`2^3^2` = `(2^3)^2`). Unary minus `2C`, unary plus `68`, `not` `1E`.
+* Number literals: as in key 5 without the last two bytes. Text, field
+  references, `$variables`, `Get` (`9B flag`) and constants as in key 5.
+* Functions with a fixed number of parameters: token, then the arguments
+  in order. `If` with two arguments ends with `00`.
+* Functions with optional or repeated parameters write a u16 argument
+  count and the arguments **in reverse order**: Factorial, Substitute,
+  Average, Count, Max, Min, StDev, StDevP, Sum, List, Variance, VarianceP,
+  TextFont, TextColorRemove, TextFontRemove, TextSizeRemove, Lookup,
+  LookupNext, every `F9 xx` function and every library function
+  (`1D <count> 15 FMDR idx`). A `[ a ; b ]` list argument is `19`, u16
+  count, items in reverse order. SetPrecision and SetRecursion reverse
+  their two arguments without a count.
+* `Choose`: u16 number of results, arguments in order. `Case`: u16 number
+  of test/result pairs, in order; a default result is given the test `1`.
+  `Evaluate`: u16 count of the expression and trigger fields, `00 00`, then
+  them in order (a list of fields is spread). `GetField`: `DD 00 00` +
+  argument.
+* A field passed to an aggregate function, GetNthRecord, GetRepetition,
+  Last, Extend, GetSummary, Lookup or LookupNext is `17` instead of `16`.
+  `Field[n]` compiles as GetRepetition: `89 17… n`; `$var[n]` as `E4 n $var`.
+* `Let`: `DF`, u16 number of bindings, the bindings, the body. Variables
+  are numbered by binding position, counting the bindings of the
+  enclosing Let/While (a binding that reassigns a name of the same Let
+  still uses a number); a reference is `18 u16 slot` (key 5 keeps
+  `0B len name 00 00`). A new name compiles to its value alone; a name
+  already bound in the same Let to `E3 value 1 18 slot`; a `$variable` to
+  `E3 value repetition $var`. `While`: `F8 00`, initial bindings (u16
+  count + bindings), condition, loop bindings (count + bindings), result.
+
+`calc::compile` reproduces FileMaker's keys 5 and 6 for the 1,890
+calculations of `crates/fmp12/tests/fixtures/compiled.tsv` (Set Variable
+steps pasted with `tools/oracle/compile_snippet.py`) and for all 341 field
+calculations of the templates. Exception: FileMaker's SCSU uses dynamic
+windows and Unicode mode for non-Latin text where BaseCraft quotes each
+character; both decode alike.
 
 ## 12. Themes and styles ✅ (partial)
 
@@ -700,3 +796,78 @@ whose values changed (all fields when a record is added or deleted) and
 clears its index bits. Fields with automatic indexing off keep their stale
 index (not handled). Writing exact index keys would need FileMaker's
 collation table for every index language.
+
+A table that never had records has no records node `[T].[5]`. When
+BaseCraft writes the first records it writes the node marker too: without
+it, FileMaker adding a record of its own starts the node afresh and the
+records BaseCraft wrote disappear (seen in FileMaker Pro 26).
+
+## 14. Schema writing (`fmp12::schema_edit`) ✅
+
+Decoded by doing each change in FileMaker's Manage Database on copies of a
+new file and diffing the entries (`fmdump <file> entries`), then checked by
+opening files BaseCraft wrote.
+
+### Name keys
+
+The name indexes `[cat].[1].[1]` (tables, occurrences, layouts, fields,
+scripts, themes…) are keyed by a collation key of the name: the primary
+weights (u16 per collation element: `a` = `120F`, `b` = `1225`, digits
+`1205`–`120E`, space `020A`), `00 00`, the secondary weights (one byte per
+element, e.g. `13` acute, `16` grave, `37` cedilla; left out when all are
+`01`), `00`, then the tertiary weights (left out when all are `01`; set by
+fractions, superscripts, ligatures and capital Greek or Cyrillic letters;
+Latin case is ignored). `é` is two elements: `126B`/`01` and an accent
+with no primary weight and secondary `13`. A second object with the same
+name (layouts named `-`) gets its id appended to the key. The weights of
+423 characters (ASCII, Latin-1, Latin Extended-A, common punctuation,
+Greek and Cyrillic letters) were read from fields named "x" + character
+(`crates/fmp12/src/collate.rs`); they reproduce the 4,097 name-index keys
+of the templates. Names with other characters get no index entry.
+FileMaker opens a file whose name indexes lack entries; it does not
+rebuild them.
+
+### A new table
+
+FileMaker's Manage Database › Tables › Create writes:
+
+* the table: `[3].[16]` catalog entries (§4) and node `[3].[16].[5].[T]`
+  (16 name, 216 UUID, 251 counter, 252 = 1, metadata 31873–31875 —
+  optional);
+* a table occurrence of the same name (`[3].[17]`, §7);
+* a layout of the same name on that occurrence: `[4].[1]` catalog entries,
+  `[4].[1].[7].[L]` (key 2 = `{2: 0x104000 | TO, 3: 0}`, 16 name, 48, 240,
+  241) and `[4].[5].[L]`, a copy of the new file's layout with no objects
+  (header key 2 field 2 = the occurrence, parts, theme key 11, empty
+  object list `00 07`, empty `[8]`, `[10]`, `[21]`, `[1].[D0 hi lo]`);
+* the field catalog `[T].[3].[1]` and the fields;
+* the graph's evaluation plan `[3].[17].[1].[14].[T]` (rebuilt by
+  FileMaker when missing, so BaseCraft leaves it out and drops it whenever
+  a table's fields change).
+
+A file must hold its data formats (`[2]` key 134, written the first time
+FileMaker closes a file) before it can get a second table: without them
+FileMaker reports "the file's access privileges have been damaged".
+
+### Fields
+
+Adding a field writes its node (§5), the catalog entries, the `[6]` type
+index, the `[14]` dependencies and, for an indexed field of an empty
+table, empty index statistics `[T].[1].[F]` key 16 (and 17 for "All"):
+16 zero bytes. In a table with records an index is left for FileMaker to
+build (§13). Renaming updates key 16 and both name indexes; deleting
+removes the node, its index entries, its values in every record and its
+dependencies, and compacts the display order. Renaming a table also
+renames the occurrences and layouts that had its name; deleting a table
+removes its data and, as when "also delete occurrences" is ticked, its
+occurrences and their relationships.
+
+### New files
+
+`schema_edit::new_file` starts from `crates/fmp12/assets/blank.fmp12`, a
+file FileMaker created (File › Create › Blank), opened and closed once,
+then emptied of its default fields with BaseCraft's own code and given
+BaseCraft's plain theme (`examples/mkblank.rs`). A theme whose compiled
+styles hold only a few default rules (background, borders, text colour
+and size) is enough for FileMaker; one with no rules opens too, but
+draws layouts grey.

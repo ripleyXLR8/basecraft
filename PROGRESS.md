@@ -34,7 +34,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | File locale (`[2]` key 13): separators, date order, AM/PM | ✅ 11 languages |
 | Repeating fields | ⏳ |
 | Field types and options (type, data type, storage, index, auto-enter, validation) | ✅ |
-| Calculation token streams → source text (253 functions, 140 `Get()` flags, operators, literals, field refs, Let) | ✅ |
+| Calculation token streams → source text (253 functions, 140 `Get()` flags, 29 design and location functions, operators, literals, field refs, Let, comments) | ✅ |
 | Calculations in scripts and layouts (contexts other than a table occurrence) | 🚧 |
 | Table occurrences (base table, position, colour) and relationships (TOs, join fields, cascade create) | ✅ |
 | Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
@@ -176,6 +176,11 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Files saved by BaseCraft, edited and saved again by FileMaker, read back | ✅ verified |
 | Auto-enter values (serials, UUIDs, stamps) on records created by BaseCraft | ⏳ |
 | Repeating fields, container data | ⏳ |
+| Calculation compiler: source text → token stream (key 5) and compiled form (key 6) FileMaker evaluates (`fmp12::calc::compile`) | ✅ 1,890 FileMaker-compiled calculations and 341 template field calculations byte for byte |
+| Name indexes: collation keys of names (423 characters; `fmp12::collate`) | ✅ all 4,097 template name-index keys |
+| Schema editing (`fmp12::schema_edit`): add, rename, delete tables (with occurrence and layout) and fields; every data type; calculated and summary fields; auto-enter (serial, stamps, constant, calculation), validation (not empty, unique, existing, range, calculation), storage (global, repetitions, indexing) | ✅ verified in FileMaker: opens without warning, Manage Database and Save a Copy as XML show the tables, fields and options, records created in FileMaker get serials, stamps, constants and calculated values |
+| New empty file (`schema_edit::new_file`, from `assets/blank.fmp12` with BaseCraft's own theme) | ✅ verified in FileMaker |
+| Lookups, value-list and maximum-size validation, custom validation messages, serial increment ≠ 1, summary options (running total, restart per group), relationships | ⏳ |
 
 ## M3 — Data engine (`crates/engine`)
 | Feature | State |
@@ -193,6 +198,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
 | Stored calculations re-evaluated for new and edited records on save | ✅ |
+| Schema changes in memory (`Database::add_table`, `add_field`, `set_field`, `rename_*`, `delete_*`) with unsaved records kept; `save` writes records and moves the next serial value | ✅ |
 ## M8 — Import/export, Preview and PDF
 
 | Feature | State |
@@ -243,6 +249,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
 | Run scripts from the CLI and MCP (`run-script`, `run_script`, `list_scripts`), dialogs answered automatically | ✅ |
 | MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |
+| Manage Database from the CLI: `schema add-table`, `add-field`, `set-options`, `rename`, `delete`, `new-file`; MCP `new_file`, `create_table`, `create_field` | ✅ |
 
 ### Scripts in the GUI
 
@@ -257,3 +264,18 @@ Layout writing check (2026-11-27): a file whose "Contact List" layout BaseCraft
 edited (object moved, text changed, object deleted, body taller, new text,
 rectangle and button) opens in FileMaker Pro 26 without a warning. FileMaker's
 Layout mode shows every edit.
+
+Schema writing check (2026-11-27, `tools/oracle/schema_demo.sh` +
+`Test-FmSchema` in `schema_check.ps1`): a file made by `basecraft-cli new-file`
+and 26 `schema` commands (a table with 17 fields of every kind and option,
+a field set, renamed and deleted, a table added, renamed and deleted) opens in
+FileMaker Pro 26 without a warning. Manage Database lists both tables and all
+17 fields with their types and options (serial, stamps, constant, auto-enter
+calculations, range and calculated validation, global, repetitions, index,
+stored and unstored calculations, Total and Count summaries); Save a Copy as
+XML shows the same schema with the calculation texts; two records created in
+FileMaker on the new table's layout get serials 1 and 2, stamps, the constant,
+a UUID, `Code` = `FR-1` and `Label` = `France #1 first` / `France #2 many`.
+A copy of the Tasks template with a table added (a calculation referring to
+`Tasks::Task`), a Tasks field renamed and a field deleted also opens without a
+warning, and its XML export shows the new table, its layout and the renamed field.

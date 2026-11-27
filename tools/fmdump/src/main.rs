@@ -4,6 +4,7 @@
 //! fmdump <file> chunks         every chunk with its path (text-decoded)
 //! fmdump <file> raw            tab-separated path, kind, key, hex value, file offset
 //! fmdump <file> tables         tables and fields
+//! fmdump <file> graph          table occurrences and relationships
 //! fmdump <file> records <tbl>  records of a table (by name)
 
 use fmp12::{Chunk, File, schema};
@@ -36,7 +37,7 @@ fn path(p: &[&[u8]]) -> String {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let [_, file, cmd, rest @ ..] = args.as_slice() else {
-        eprintln!("usage: fmdump <file.fmp12> sectors|chunks|tables|records <table>");
+        eprintln!("usage: fmdump <file.fmp12> sectors|chunks|raw|tables|graph|records <table>");
         std::process::exit(2);
     };
     let f = File::open(file)?;
@@ -114,6 +115,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         flags.join(" ")
                     );
                 }
+            }
+        }
+        "graph" => {
+            for to in fmp12::graph::table_occurrences(&f)? {
+                println!(
+                    "TO {} {:?} → table {} at ({}, {}) {}×{}",
+                    to.id, to.name, to.base_table, to.left, to.top, to.width, to.height
+                );
+            }
+            for r in fmp12::graph::relationships(&f)? {
+                let p: Vec<String> = r
+                    .predicates
+                    .iter()
+                    .map(|p| format!("{} {:?} {}", p.left_field, p.op, p.right_field))
+                    .collect();
+                println!(
+                    "REL {}: TO {} ⇄ TO {} [{}]",
+                    r.id,
+                    r.left,
+                    r.right,
+                    p.join(", ")
+                );
             }
         }
         "records" => {

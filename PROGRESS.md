@@ -31,13 +31,14 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Repeating fields | ⏳ |
 | Field types and options (type, data type, storage, index, auto-enter, validation) | ✅ |
 | Compiled calculations (auto-enter, validation, calc fields) | 🚧 |
-| Table occurrences and relationships | ⏳ |
+| Table occurrences (base table, position, colour) and relationships (TOs, join fields, cascade create) | ✅ |
+| Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
 | Layouts: parts, objects, styles | ⏳ |
 | Scripts and script steps | ⏳ |
 | Value lists, custom functions, accounts and privileges | ⏳ |
 | Container data | ⏳ |
 
-Oracle: all 214 template fields match FileMaker's XML export.
+Oracle: all 214 template fields and 32 graph objects match FileMaker's XML export.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 

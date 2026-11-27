@@ -146,3 +146,89 @@ fn fields_match_xml() {
     }
     eprintln!("{checked} fields checked against XML");
 }
+
+#[test]
+fn graph_matches_xml() {
+    let mut checked = 0;
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let tos = fmp12::graph::table_occurrences(&file).unwrap();
+        let rels = fmp12::graph::relationships(&file).unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        let xid = |n: roxmltree::Node| n.attribute("id").unwrap().parse::<u32>().unwrap() & 0xFFF;
+        for x in doc
+            .descendants()
+            .filter(|n| n.has_tag_name("TableOccurrence"))
+        {
+            let to = tos.iter().find(|t| t.id == xid(x)).expect("TO");
+            assert_eq!(to.name, x.attribute("name").unwrap());
+            let bt = x
+                .descendants()
+                .find(|n| n.has_tag_name("BaseTableReference"))
+                .unwrap();
+            assert_eq!(to.base_table.to_string(), bt.attribute("id").unwrap());
+            let r = x.children().find(|n| n.has_tag_name("CoordRect")).unwrap();
+            let a = |k: &str| r.attribute(k).unwrap().parse::<f32>().unwrap();
+            assert_eq!((to.top, to.left), (a("top"), a("left")), "{}", to.name);
+            assert_eq!(
+                (to.top + to.height, to.left + to.width),
+                (a("bottom"), a("right")),
+                "{}",
+                to.name
+            );
+            assert_eq!(
+                to.collapsed_height.to_string(),
+                x.attribute("height").unwrap()
+            );
+            let c = x.children().find(|n| n.has_tag_name("Color")).unwrap();
+            assert_eq!(to.rgba[0].to_string(), c.attribute("red").unwrap());
+            checked += 1;
+        }
+        for x in doc.descendants().filter(|n| n.has_tag_name("Relationship")) {
+            let id: u32 = x.attribute("id").unwrap().parse().unwrap();
+            let r = rels.iter().find(|r| r.id == id).expect("relationship");
+            let side = |tag: &str| x.children().find(|n| n.has_tag_name(tag)).unwrap();
+            let (l, rt) = (side("LeftTable"), side("RightTable"));
+            let to_of = |n: roxmltree::Node| {
+                xid(n
+                    .children()
+                    .find(|c| c.has_tag_name("TableOccurrenceReference"))
+                    .unwrap())
+            };
+            assert_eq!((r.left, r.right), (to_of(l), to_of(rt)));
+            assert_eq!(
+                r.left_cascade_create().to_string(),
+                l.attribute("cascadeCreate").unwrap().to_lowercase()
+            );
+            assert_eq!(
+                r.right_cascade_create().to_string(),
+                rt.attribute("cascadeCreate").unwrap().to_lowercase()
+            );
+            let preds: Vec<_> = x
+                .descendants()
+                .filter(|n| n.has_tag_name("JoinPredicate"))
+                .collect();
+            assert_eq!(r.predicates.len(), preds.len());
+            for (p, xp) in r.predicates.iter().zip(&preds) {
+                let fid = |tag: &str| {
+                    xp.descendants()
+                        .find(|n| n.has_tag_name(tag))
+                        .unwrap()
+                        .first_element_child()
+                        .unwrap()
+                        .attribute("id")
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap()
+                };
+                assert_eq!(
+                    (p.left_field, p.right_field),
+                    (fid("LeftField"), fid("RightField"))
+                );
+            }
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} graph objects checked against XML");
+}

@@ -20,8 +20,18 @@ The file is a sequence of 4096-byte sectors. Sector 0 is the **header**:
 | 0 | 15 | magic `00 01 00 00 00 02 00 01 00 05 00 02 00 02 C0` |
 | 15 | 5 | `HBAM7` (plain) or `HBAMe` (encryption at rest, not supported) |
 | 541 | 1+n | Pascal string naming the creator, e.g. `Pro 12.0` |
+| 0x800 | 1 | **clean-close flag**: `AC` = closed cleanly; FileMaker clears it while it writes the file and checks a file without it on open |
+| 0x802 | 8 | **file sequence number** (u64 BE): FileMaker sets it on close to the largest sector write sequence number (offset 16 below) |
 
 The format version has not changed since 12, so FileMaker 26 files still say `Pro 12.0`.
+
+Only the flag and the sequence number change when FileMaker writes a file
+(the rest of sector 0 stays as created; same finding in OpenMaker's notes,
+`HBFile::WriteCleanCloseAndSCN`). Files FileMaker closed have, e.g.,
+`AC 00 … 0B FB` with 0x0BFB = 3067 = the largest sector sequence number.
+BaseCraft's writer (`write::build`) copies sector 0, sets the flag to `AC`
+and keeps a sequence number at least that of its sectors (it stamps them
+all 1), so FileMaker opens its files as cleanly closed.
 
 Body sector layout:
 

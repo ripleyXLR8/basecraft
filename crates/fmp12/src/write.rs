@@ -427,6 +427,21 @@ fn pack_index(seps: &[Sep]) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Builds a complete file. `header` is the 4096-byte header sector to keep.
+/// Page 0 of a file closed cleanly (FORMAT.md §1): byte 0x800 = `AC`
+/// (FileMaker clears it while the file is open and verifies a file
+/// without it on open), and a file SCN (u64 at 0x802) not below the
+/// pages' sequence numbers (ours are 1).
+fn mark_clean(page0: &mut [u8]) {
+    if let Some(flag) = page0.get_mut(0x800..0x80A) {
+        let scn = u64::from_be_bytes([
+            flag[2], flag[3], flag[4], flag[5], flag[6], flag[7], flag[8], flag[9],
+        ]);
+        flag[0] = 0xAC;
+        flag[1] = 0;
+        flag[2..].copy_from_slice(&scn.max(1).to_be_bytes());
+    }
+}
+
 pub fn build(header: &[u8], entries: &[Entry]) -> Vec<u8> {
     let leaves = pack(entries);
     // Separator of each node at the current level: its first key.
@@ -454,6 +469,7 @@ pub fn build(header: &[u8], entries: &[Entry]) -> Vec<u8> {
     let total = next - 1;
     let mut out = header.to_vec();
     out.resize(SECTOR * (total as usize + 1), 0);
+    mark_clean(&mut out);
     let mut write = |level: usize, i: usize, payload: &[u8]| {
         let id = base[level] + i as u32;
         let prev = if i == 0 { 0 } else { id - 1 };

@@ -8,6 +8,7 @@
 //!   1000 bytes, split over keys 1…n of `[4].[5].[L].[7]` (key 0 = total
 //!   length). Repeated field 2 = object
 //!   (1 = kind, 2 = id, 3 = options, 4 = bounds, 5 = style, 8 = field);
+//! * `[4].[5].[L]` key 11 = theme number (`01 n`), see [`crate::theme`];
 //! * `[4].[5].[L].[5].[obj]` key 1 = static text of a text object.
 
 use std::collections::BTreeMap;
@@ -21,6 +22,8 @@ pub struct Part {
     pub top: f64,
     pub height: f64,
     pub style: String,
+    /// Raw style message (field 10), see [`crate::theme::ObjectStyle`].
+    pub style_raw: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -39,6 +42,8 @@ pub struct LayoutObject {
     pub options: u64,
     pub bounds: Bounds,
     pub style: String,
+    /// Raw style message (field 5), see [`crate::theme::ObjectStyle`].
+    pub style_raw: Vec<u8>,
     /// (table occurrence id as in XML, field id, repetition)
     pub field: Option<(u64, u64, u64)>,
     pub text: Option<String>,
@@ -51,6 +56,12 @@ pub struct Layout {
     /// Table occurrence id as in XML (`0x104000 | id`), 0 for folders.
     pub table_occurrence: u64,
     pub width: f64,
+    /// Theme number (`[6].[5].[n]`), from layout key 11 (`01 n`); 0 if none.
+    pub theme: u32,
+    /// Raw header style message (field 5) and local CSS (field 7),
+    /// see [`crate::theme::ObjectStyle::of_layout`].
+    pub style_raw: Vec<u8>,
+    pub css_raw: Vec<u8>,
     pub parts: Vec<Part>,
     pub objects: Vec<LayoutObject>,
 }
@@ -59,6 +70,7 @@ pub struct Layout {
 struct Raw {
     name: String,
     header: Vec<u8>,
+    theme: u32,
     parts: BTreeMap<u32, Vec<u8>>,
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
@@ -82,6 +94,7 @@ fn object(m: &Msg, texts: &BTreeMap<u32, String>) -> LayoutObject {
             right: b.f64(4).unwrap_or(0.0),
         },
         style: m.msg(5).map(|s| style_name(&s)).unwrap_or_default(),
+        style_raw: m.bytes(5).unwrap_or_default().to_vec(),
         field: m.msg(8).and_then(|f| f.msg(2)).map(|r| {
             (
                 r.uint(1).unwrap_or(0),
@@ -104,6 +117,8 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 match key {
                     16 => r.name = text(data),
                     2 => r.header = data.to_vec(),
+                    // `01 n`: byte count, then the theme number.
+                    11 => r.theme = data[1..].iter().fold(0, |a, b| (a << 8) | *b as u32),
                     // Short object lists are stored inline instead of in [7].
                     7 => {
                         r.objects.insert(1, data.to_vec());
@@ -142,6 +157,7 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     top: m.f64(4).unwrap_or(0.0),
                     height: m.f64(5).unwrap_or(0.0),
                     style: m.msg(10).map(|s| style_name(&s)).unwrap_or_default(),
+                    style_raw: m.bytes(10).unwrap_or_default().to_vec(),
                 })
                 .collect();
             let blob: Vec<u8> = r.objects.into_values().flatten().collect();
@@ -153,6 +169,9 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 name: r.name,
                 table_occurrence: header.uint(2).unwrap_or(0),
                 width: header.f64(8).unwrap_or(0.0),
+                theme: r.theme,
+                style_raw: header.bytes(5).unwrap_or_default().to_vec(),
+                css_raw: header.bytes(7).unwrap_or_default().to_vec(),
                 parts,
                 objects,
             }

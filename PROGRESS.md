@@ -40,7 +40,8 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Scripts: catalog, folders, step list (type, enabled, options) | ✅ |
 | Script step parameters | 🚧 |
 | Value lists (custom values, from field) | ✅ |
-| Custom functions, accounts and privileges, themes | ⏳ |
+| Themes: compiled styles, named styles, local object styles, fonts (`theme.rs`) | ✅ |
+| Custom functions, accounts and privileges | ⏳ |
 | Container data | ⏳ |
 
 Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export.
@@ -112,6 +113,7 @@ ApplicationArchitecture.
 | Browse mode: navigate, edit fields, new/delete record, show all | ✅ |
 | Find mode (one request), sort by one field ascending/descending | ✅ |
 | Calculated fields displayed live | ✅ |
-| Theme styles (fonts, colours, borders from the embedded theme) | ⏳ |
+| Theme styles decoded (`fmp12::theme`: colours, borders, fonts, padding, alignment) | ✅ |
+| Theme styles applied when drawing layouts | ⏳ |
 | List and Table views, portals, tab controls, popups, value lists | ⏳ |
 | Layout mode, Preview mode | ⏳ |

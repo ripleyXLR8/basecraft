@@ -127,7 +127,8 @@ Every catalog follows the same pattern:
 | `[3].[17]` | TableOccurrenceCatalog | 🔍 |
 | `[3].[251]` | RelationshipCatalog | 🔍 |
 | `[4]` | LayoutCatalog; `[4].[5].[L].[5].[n]` = LayoutObject | 🔍 |
-| `[6]` | ThemeCatalog | 🔍 |
+| `[6]` | ThemeCatalog (§12) | ✅ styles |
+| `[25]` | font catalog (§12) | ✅ names |
 | `[17]` | ScriptCatalog; `[17].[5].[S].[5].[n]` = Step | 🔍 |
 | `[23].[1]` | AccountsCatalog | 🔍 |
 | `[23].[2]` | PrivilegeSetsCatalog | 🔍 |
@@ -226,11 +227,11 @@ key 2 = definition: byte 0 = source (0 custom, 1 field), then for a field:
 
 Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
 
-* `[4].[5].[L]` key 2 = header (2 TO in XML form, 5 style, 7 local CSS, 8 width);
+* `[4].[5].[L]` key 2 = header (2 TO in XML form, 5 style, 7 local CSS, 8 width), key 11 = theme (`01 n`);
 * `[4].[5].[L].[3].[P]` key 2 = part (1 kind, 4 top, 5 height, 6 break field, 10 style);
 * key 7 (or long value `[7]`) = object list: repeated field 2 = object
   (1 kind, 2 id, 3 options, 4 bounds {1 top, 2 left, 3 bottom, 4 right},
-  5 style {1 CSS properties, 2 style name, 4 display name}, 7 text options,
+  5 style {1 local rules, 2 style name, 3 theme object type, 4 display name} (§12), 7 text options,
   8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);
 * `[4].[5].[L].[5].[obj]` key 1 = static text, `.[3]` = button label calculation.
 
@@ -258,3 +259,135 @@ two-byte functions behind prefixes F8–FE, 140 `Get` flags after `9C`).
 | `41`–`49`, `50` | comparisons, `&` |
 | `9B` / `9C xx` | `Get` / its flag |
 | `F8`–`FE xx` | two-byte functions (`F8 00` = While, `FA 00` = Self, …) |
+
+## 12. Themes and styles ✅ (partial)
+
+Decoder: `crates/fmp12/src/theme.rs`. Property ids were mapped by comparing
+the compiled styles of the template themes with FileMaker's installed theme
+CSS (local reference only, never copied here).
+
+### Storage
+
+* `[6].[5].[n]`: theme *n*. Key 10 = display name ("Universal Touch"),
+  13 = group, 16 = id (`com.filemaker.theme.universal_touch`),
+  22 (or long value `[22]`, §6) = compiled styles (protobuf),
+  `[23]` = manifest metadata as protobuf of string pairs (chart palette,
+  layout-builder constants, named-style display names).
+* `[4].[5].[L]` key 11 = `01 n`: the layout uses theme *n*.
+* `[25].[5].[id]`: font catalog, ids from 128. Key 16 = family
+  ("arial,sans-serif", "Helvetica Neue"), key 3 = face name ("HelveticaNeue-Bold").
+
+### Compiled styles
+
+```
+top: repeated 1 = default style { 1: object type, 2: rules }
+     repeated 2 = named style   { 1: name, 2: rules, 3: object type }
+rules: repeated 1 = rule { 1: element, 2: state, 3: { repeated 1: property } }
+property: { 1: property id, one value field }
+```
+
+The same `{1: rules, 2: name, 3: object type, 4: display name}` message is
+the style of a layout object (object field 5), of a part (part field 10;
+field 11 = alternate-row style, type 35 for the body) and of the layout
+background (header field 5, type 20, local rules in header field 7).
+Field 1 holds the object's local overrides. Effective style = theme default
+for the type → named style → local rules; in each, the `:normal` rule
+applies first, then the requested state.
+
+Value fields:
+
+| Field | Value |
+|------:|-------|
+| 3 | enum / integer (varint; −1 as 64-bit two's complement) |
+| 5 | colour `{1 r, 2 g, 3 b, 4 a}`, f32 in 0..1 |
+| 6 | length `{1 f64 value, 2 unit, 3 always 0}` |
+| 12, 18 | border-image / background-image; `{1: 0}` = none |
+| 13 | pair of lengths `{1, 2}` (corner radius horizontal, vertical) |
+| 14 | 🔍 icon-related, element 4 only |
+| 19 | box-shadow `{1 enabled (0 = none), 2 inset, 3 colour, 4 x, 5 y, 6 blur, 7 spread}` |
+
+Units: 0 none (zero values), 1 `%`, 6 `pt`, 7 `em`, 9 `line`.
+
+### Property ids
+
+Confidence: ✅ matched against CSS values across several themes,
+🔸 consistent with the CSS but few samples.
+
+| Id | CSS property | Values | |
+|---:|--------------|--------|-|
+| 1 | background-image | 18 | ✅ |
+| 7 | background-color | colour | ✅ |
+| 20–23 | border-{top,right,bottom,left}-color | colour | ✅ |
+| 24–27 | border-{top,right,bottom,left}-style | 1 none, 5 solid | ✅ |
+| 28–31 | border-{top,right,bottom,left}-width | length | ✅ |
+| 32–35 | border-{top-left,top-right,bottom-right,bottom-left}-radius | pair | ✅ (corner order 🔸) |
+| 36 | border-image-source | 12 | ✅ |
+| 64 | font-family | font id − 128 (`[25]`) | ✅ |
+| 65 | font-weight | 2 bold | ✅ |
+| 67 | font-style | 1 normal | 🔸 |
+| 69 | font-size | length | ✅ |
+| 70 | color | colour | ✅ |
+| 72 | line-height | length (`line`) | ✅ |
+| 74 | text-align | 1 left, 2 center, 3 right | ✅ |
+| 75 | text-transform | 1 none, 3 uppercase | 🔸 |
+| 101–104 | padding-{top,right,bottom,left} | length | ✅ |
+| 105–108 | margin-{top,right,bottom,left} | length | ✅ |
+| 109, 110 | width, height | length | ✅ |
+| 117–120 | top, right, bottom, left | length | ✅ |
+| 121 | position | 3 absolute | 🔸 |
+| 122 | box-shadow | 19 | ✅ |
+| 123 | box-sizing | 1 border-box | 🔸 |
+| 513 | -fm-icon | 2 down-arrow, 3 calendar, 5 radio, 6 modern-check | 🔸 |
+| 514 | -fm-icon-color | colour | ✅ |
+| 515 | -fm-tab-spacing | integer | 🔸 |
+| 610 | -fm-portal-alt-background | bool | 🔸 |
+| 611 | -fm-text-vertical-align | 0 top, 1 center, 2 bottom | ✅ |
+| 616 | -fm-body-alt-background | bool | 🔸 |
+| 619 | -fm-use-body-current-row-style | bool | 🔸 |
+| 620 | -fm-use-portal-current-row-style | bool | 🔸 |
+| 621 | -fm-icon-padding | length | ✅ |
+
+Unknown: 2 (field 14, icons), 510/511 (pairs), 613 (in every local style, 0),
+618 (a shadow on `.inner_border`).
+
+### Object types
+
+| Id | CSS type | Id | CSS type |
+|---:|----------|---:|----------|
+| 20 | layout_background | 60 | field (shared: `.baseline`, `:droptarget`) |
+| 30 | any part (named part styles) | 61 | edit_box |
+| 32 | header (part kind 1) | 62 | drop_down |
+| 34 | body (part kind 4) | 63 | pop_up |
+| 35 | body_alt | 64 | checkbox_set |
+| 38 | footer (part kind 7) | 65 | radio_set |
+| 40 | top_nav_part (part kind 12) | 66 | calendar (drop-down calendar) |
+| 41 | bottom_nav_part 🔸 | 67 | container |
+| 31, 33, 37, 39 | title header/footer, grand summaries 🔍 | 68 | text_area |
+| 100–102, 200–202 | sub-summaries (part kind 3 → 101) 🔍 | 70 | text_box |
+| 50 | line | 78 | button_bar |
+| 51 | rectangle | 79 | button_bar_segment |
+| 52 | rounded rectangle | 80 | button |
+| 53 | oval | 81 | tab_control |
+| 54 | any shape (named shape styles) | 82 | tab_panel |
+| 83 | portal | 85 | chart |
+| 86 | web_viewer | 89 | popover |
+| 90 | scrollbar | 91 | dot_control (slide control) |
+
+### Elements and states
+
+| Element | CSS | Element | CSS |
+|--:|-----|--:|-----|
+| 1 | `.self` | 13 | `.row_alt` |
+| 2 | `.inner_border` | 20 | `.scrollbar_top_button` |
+| 3 | `.text` | 21 | `.scrollbar_bottom_button` |
+| 4 | `.icon` | 22 | `.scrollbar_track` |
+| 5 | `.baseline` | 23 | `.scrollbar_thumb` |
+| 6 | `.repeat_border` | 26 | `.dot` |
+| 8 | `.contents` | 27 | `.dot_container` |
+| 9 | `.tab` | 28 | `.row_active` |
+| 10 | `.tab_inner_border` | 29 | `.button_bar_divider` |
+| 12 | `.row` | | |
+
+States: 1 `:normal`, 2 `:hover`, 3 `:pressed`, 4 `:focus`, 6 `:disabled`,
+7 `:checked` (also `:active`; the later CSS rule wins), 15 `:droptarget`,
+16 `:activefocus`, 18 `:placeholder`.

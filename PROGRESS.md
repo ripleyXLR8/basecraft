@@ -9,7 +9,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M0 | Bootstrap: workspace, CI, docs | ✅ |
 | M1 | Read `.fmp12`: schema, data, layouts, scripts | 🚧 |
 | M2 | Calculation engine | 🚧 |
-| M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | ⏳ |
+| M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | 🚧 |
 | M4 | GUI: Browse / Find / List / Table views | ⏳ |
 | M5 | Script engine and Script Workspace | ⏳ |
 | M6 | Layout mode | ⏳ |
@@ -89,3 +89,16 @@ ApplicationArchitecture.
 | Chunk encoder (all opcodes) and leaf packing; round-trips through our reader | ✅ |
 | Same-size in-place edits accepted by FileMaker | ✅ (verified) |
 | Index (separator) sectors that FileMaker accepts | 🚧 rebuilt indexes are rejected; separator rules under study |
+
+## M3 — Data engine (`crates/engine`)
+
+| Feature | State |
+|---------|-------|
+| Load tables, fields, records, graph and layouts from `.fmp12` | ✅ |
+| Calculated fields: decompiled from the file and evaluated with `calc` | ✅ |
+| New record, edit, in memory | ✅ |
+| Find requests: words, `=`, `==`, `*`, `@`, `#`, `<` `>` `<=` `>=`, ranges, phrases, omit | ✅ |
+| Sort ascending/descending by several fields | ✅ |
+| Related records (portals, related fields beyond the first record) | ⏳ |
+| Summary fields, auto-enter, validation enforcement | ⏳ |
+| Storage formats of dates/times/numbers in records (no sample data yet) | ⏳ |

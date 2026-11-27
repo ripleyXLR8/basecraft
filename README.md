@@ -23,9 +23,9 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 | Area | State |
 |------|-------|
 | `.fmp12` reading: sectors, byte code, text, tables, fields, records | ✅ |
-| `.fmp12` reading: layouts, scripts, relationships, field options | 🚧 |
-| Calculation engine | ⏳ |
-| Data engine (find, sort, relationships) | ⏳ |
+| `.fmp12` reading: field options, relationships, scripts, value lists, layouts, calculations | ✅ (verified against FileMaker's XML) |
+| Calculation engine (`crates/calc`): 142 of 234 functions | 🚧 |
+| Data engine (`crates/engine`): records, find, sort, calculated fields | 🚧 |
 | GUI (egui): read-only viewer, layouts drawn in form view | 🚧 |
 | `.fmp12` writing | ⏳ |
 
@@ -39,9 +39,8 @@ tools/oracle   scripts that drive a real FileMaker Pro to produce test oracles
 docs/          format specification and reference lists
 ```
 
-Planned crates: `calc` (calculation language), `engine` (tables, found
-sets, relationships), `script` (script engine), `layout`, and `app` (the
-egui desktop application).
+Also: `crates/calc` (calculation language) and `crates/engine` (records,
+found sets, find, sort). Planned: `script` (script engine).
 
 ## Try it
 

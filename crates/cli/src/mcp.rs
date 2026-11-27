@@ -152,6 +152,20 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
                 _ => "delete",
             }
         }
+        "list_scripts" => "scripts",
+        "run_script" => {
+            args.push(str_of("name").ok_or("name is required")?);
+            if let Some(p) = str_of("parameter") {
+                args.extend(["--param".into(), p]);
+            }
+            if let Some(l) = str_of("layout") {
+                args.extend(["--layout".into(), l]);
+            }
+            if let Some(n) = a.get("answer").and_then(Json::as_u64) {
+                args.extend(["--answer".into(), n.to_string()]);
+            }
+            "run-script"
+        }
         "save_file" => {
             if let Some(p) = str_of("path") {
                 args.extend(["-o".into(), p]);
@@ -229,7 +243,7 @@ mod tests {
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         )
         .unwrap();
-        assert!(r["result"]["tools"].as_array().unwrap().len() >= 8);
+        assert!(r["result"]["tools"].as_array().unwrap().len() >= 10);
         let r = handle(
             &mut doc,
             &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"describe_database"}}),

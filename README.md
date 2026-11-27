@@ -64,6 +64,8 @@ basecraft-cli eval    Contacts.fmp12 'Upper ( ${Last Name} )' --table Contacts -
 basecraft-cli new     Contacts.fmp12 Contacts "First Name=Ada" "Last Name=Lovelace" -o out.fmp12
 basecraft-cli set     Contacts.fmp12 Contacts 2 "Company=Navy" --in-place
 basecraft-cli delete  Contacts.fmp12 Contacts 2 --in-place
+basecraft-cli scripts Contacts.fmp12                       # scripts and their steps
+basecraft-cli run-script Contacts.fmp12 "Sort by Name" --layout "Contact List" [--param P] [--answer 2] [-o out.fmp12]
 ```
 
 * `records` uses FileMaker's find syntax (`=`, `==`, `*`, `<`, `>`, ranges `a...b`,
@@ -92,6 +94,7 @@ server on stdio. It exposes these tools:
 * `open_file`, `describe_database`;
 * `find_records`, `evaluate`;
 * `create_record`, `update_record`, `delete_record`;
+* `list_scripts`, `run_script`;
 * `save_file`.
 
 Changes stay in memory until `save_file` is called.

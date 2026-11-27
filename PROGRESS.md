@@ -183,5 +183,5 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 |---------|-------|
 | `basecraft-cli`: info, records (find/omit/sort/limit), eval, new, set, delete, JSON output | ✅ |
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
-| Run scripts from the CLI | ⏳ (after M5) |
+| Run scripts from the CLI and MCP (`run-script`, `run_script`, `list_scripts`), dialogs answered automatically | ✅ |
 | MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |

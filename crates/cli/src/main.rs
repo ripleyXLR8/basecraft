@@ -12,6 +12,8 @@
 //! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place)
 //! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)
+//! basecraft-cli scripts <file>                                 list scripts and their steps
+//! basecraft-cli run-script <file> <name|id> [--param P] [--layout L] [--answer N] [-o out | --in-place]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
 //! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
 //! ```
@@ -19,6 +21,7 @@
 use std::io::{BufRead, Write};
 
 mod mcp;
+mod scripting;
 
 use engine::{Database, Order, Request};
 use serde_json::{Value as Json, json};
@@ -29,6 +32,8 @@ struct Doc {
     path: String,
     file: fmp12::File,
     db: Database,
+    /// Script engine, created on first use; keeps `$$globals` across runs.
+    engine: Option<script::Engine>,
 }
 
 impl Doc {
@@ -39,7 +44,19 @@ impl Doc {
             path: path.to_string(),
             file,
             db,
+            engine: None,
         })
+    }
+
+    fn engine(&self) -> Res<script::Engine> {
+        script::Engine::load(&self.file).map_err(|e| e.to_string())
+    }
+
+    fn take_engine(&mut self) -> Res<script::Engine> {
+        match self.engine.take() {
+            Some(e) => Ok(e),
+            None => self.engine(),
+        }
     }
 
     fn table(&self, name: &str) -> Res<&engine::Table> {
@@ -289,6 +306,9 @@ struct Opts {
     query: Query,
     table: Option<String>,
     record: Option<u32>,
+    param: Option<String>,
+    layout: Option<String>,
+    answer: usize,
     out: Option<String>,
     in_place: bool,
 }
@@ -304,6 +324,9 @@ fn opts(args: &[String]) -> Res<Opts> {
         },
         table: None,
         record: None,
+        param: None,
+        layout: None,
+        answer: 1,
         out: None,
         in_place: false,
     };
@@ -330,6 +353,9 @@ fn opts(args: &[String]) -> Res<Opts> {
             "--table" => o.table = Some(val("--table")?),
             "--record" => o.record = Some(val("--record")?.parse().map_err(|_| "bad --record")?),
             "-o" | "--out" => o.out = Some(val("-o")?),
+            "--param" => o.param = Some(val("--param")?),
+            "--layout" => o.layout = Some(val("--layout")?),
+            "--answer" => o.answer = val("--answer")?.parse().map_err(|_| "bad --answer")?,
             "--in-place" => o.in_place = true,
             _ => o.rest.push(a.clone()),
         }
@@ -362,6 +388,14 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
             &pairs(o.rest.get(2..).unwrap_or(&[]))?,
         ),
         "delete" => delete(d, &arg(0, "table")?, id(1)?),
+        "scripts" => scripting::list(d),
+        "run-script" => scripting::run(
+            d,
+            &arg(0, "script name or id")?,
+            o.param.as_deref(),
+            o.layout.as_deref(),
+            o.answer,
+        ),
         "save" => {
             let out = o.out.clone().unwrap_or_else(|| d.path.clone());
             d.save(&out)
@@ -416,7 +450,7 @@ fn main_inner() -> Res<Json> {
         std::process::exit(0);
     }
     let [cmd, file, rest @ ..] = args.as_slice() else {
-        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|session> <file.fmp12> [args] (see README)".into());
+        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|scripts|run-script|session|mcp> <file.fmp12> [args] (see README)".into());
     };
     let mut d = Doc::open(file)?;
     if cmd == "session" {
@@ -424,7 +458,7 @@ fn main_inner() -> Res<Json> {
     }
     let o = opts(rest)?;
     let result = run(&mut d, cmd, &o)?;
-    if matches!(cmd.as_str(), "new" | "set" | "delete") {
+    if matches!(cmd.as_str(), "new" | "set" | "delete" | "run-script") {
         let target = match (&o.out, o.in_place) {
             (Some(p), _) => p.clone(),
             (None, true) => file.clone(),

@@ -481,6 +481,7 @@ dependencies = [
  "calc",
  "engine",
  "fmp12",
+ "script",
  "serde_json",
 ]
 

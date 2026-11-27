@@ -896,6 +896,11 @@ fn raw_step(id: u16, to: u32, f: u32, calcs: &[Calc], options: u32) -> Step {
     }
 }
 
+/// Sets key 3 of parameter node `[128 + p]` (a u32, as FileMaker writes it).
+fn set_byte(s: &mut Step, p: u32, v: u8) {
+    s.raw_params.kv.insert((vec![128 + p], 3), vec![0, 0, 0, v]);
+}
+
 /// Clients (Id, Name) and Invoices (ClientId, Amount, ClientName looked
 /// up from Clients::Name), built with the schema editor; a host on the
 /// Invoices layout. Returns the host and (invoices, invoices TO, ClientId,
@@ -991,10 +996,64 @@ fn script_steps_run_lookups() {
     assert_eq!(e.run_step(&mut h, &insert).last_error, 0);
     assert_eq!(names(&h), ["Bob", "Ada"]);
     // Replace Field Contents: every record of the found set.
-    let replace = raw_step(id::REPLACE_FIELD_CONTENTS, ito, cid, &[c("2")], 0);
+    // ([129] = 3: with a calculation, as FileMaker stores it.)
+    let mut replace = raw_step(id::REPLACE_FIELD_CONTENTS, ito, cid, &[c("2")], 0);
+    set_byte(&mut replace, 1, 3);
     assert_eq!(e.run_step(&mut h, &replace).last_error, 0);
     assert_eq!(names(&h), ["Bob", "Bob"]);
     assert_eq!(h.win.current, 0);
+    // Serial numbers 10, 15 ([129] = 2, [130] increment, [131] initial).
+    let mut serial = raw_step(id::REPLACE_FIELD_CONTENTS, ito, cid, &[], 0);
+    set_byte(&mut serial, 1, 2);
+    set_byte(&mut serial, 2, 5);
+    serial.raw_params.kv.insert(
+        (vec![131], 1),
+        "10".bytes().map(|b| b ^ fmp12::XOR).collect(),
+    );
+    assert_eq!(e.run_step(&mut h, &serial).last_error, 0);
+    let ids: Vec<String> = h
+        .win
+        .found
+        .iter()
+        .map(|&r| h.db.value(inv, r, cid).to_text())
+        .collect();
+    assert_eq!(ids, ["10", "15"]);
+    // Perform Find/Replace, Replace All of "1" by "2" ([128] = 3), whole
+    // word ([133]): "10" and "15" do not match, "1" would.
+    let mut fr = raw_step(
+        id::PERFORM_FIND_REPLACE,
+        ito,
+        0,
+        &[c("\"1\""), c("\"2\"")],
+        0,
+    );
+    set_byte(&mut fr, 0, 3);
+    set_byte(&mut fr, 5, 1);
+    assert_eq!(e.run_step(&mut h, &fr).last_error, 0);
+    let ids: Vec<String> = h
+        .win
+        .found
+        .iter()
+        .map(|&r| h.db.value(inv, r, cid).to_text())
+        .collect();
+    assert_eq!(ids, ["10", "15"]);
+    set_byte(&mut fr, 5, 0);
+    assert_eq!(e.run_step(&mut h, &fr).last_error, 0);
+    let ids: Vec<String> = h
+        .win
+        .found
+        .iter()
+        .map(|&r| h.db.value(inv, r, cid).to_text())
+        .collect();
+    assert_eq!(ids, ["20", "25"]);
+    // Find Next ([128] = 0) of "25" goes to the second record.
+    let mut next = raw_step(id::PERFORM_FIND_REPLACE, ito, 0, &[c("\"25\"")], 0);
+    set_byte(&mut next, 0, 0);
+    assert_eq!(e.run_step(&mut h, &next).last_error, 0);
+    assert_eq!(h.win.current, 1);
+    h.win.current = 0;
+    // Back to client 2 for Relookup.
+    assert_eq!(e.run_step(&mut h, &replace).last_error, 0);
     // Relookup Field Contents after Bob's name changed.
     let clients = h.db.tables.iter().position(|t| t.id != inv).unwrap();
     h.db.tables[clients].records[1]

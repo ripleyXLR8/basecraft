@@ -176,31 +176,41 @@ pub struct Export<'a> {
 impl Export<'_> {
     /// Text of every cell: rows × columns × values.
     pub fn cells(&self) -> Vec<Vec<Vec<String>>> {
-        let mut rows: Vec<Vec<Vec<String>>> = self
-            .found
-            .iter()
-            .map(|&r| self.columns.iter().map(|c| self.texts(r, c)).collect())
-            .collect();
+        let row = |r: usize| -> Vec<Vec<String>> {
+            self.columns.iter().map(|c| self.texts(r, c)).collect()
+        };
+        if self.group_by.is_empty() {
+            return self.found.iter().map(|&r| row(r)).collect();
+        }
+        // Grouped: one row per group, with the values of its first record;
+        // summary fields hold the grand total on the first row only.
         let table = self.db.table_of(self.to).map_or(0, |t| t.id);
-        for k in 0..self.group_by.len() {
-            // A level-k field shows where a group of levels 0..=k starts.
-            let starts: Vec<usize> =
-                crate::groups(self.db, table, self.found, &self.group_by[..=k])
-                    .into_iter()
-                    .map(|g| g.start)
-                    .collect();
-            for (ci, c) in self.columns.iter().enumerate() {
-                if c.to != self.to || c.field != self.group_by[k] {
-                    continue;
-                }
-                for (i, row) in rows.iter_mut().enumerate() {
-                    if !starts.contains(&i) {
-                        row[ci] = vec![String::new()];
+        let groups = crate::groups(self.db, table, self.found, self.group_by);
+        groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let mut cells = row(self.found[g.start]);
+                for (ci, c) in self.columns.iter().enumerate() {
+                    let summary = c.to == self.to
+                        && self
+                            .db
+                            .table(c.table)
+                            .and_then(|t| t.field(c.field))
+                            .is_some_and(|f| f.kind == FieldKind::Summary);
+                    if summary {
+                        cells[ci] = vec![if i == 0 {
+                            let v =
+                                crate::summarize(self.db, c.table, c.field, self.found, self.found);
+                            stored_text(&v, &self.db.locale)
+                        } else {
+                            String::new()
+                        }];
                     }
                 }
-            }
-        }
-        rows
+                cells
+            })
+            .collect()
     }
 
     fn texts(&self, record: usize, c: &Column) -> Vec<String> {
@@ -227,38 +237,48 @@ impl Export<'_> {
             Format::Xml => self.xml().into_bytes(),
             Format::Json => self.json().into_bytes(),
             Format::Xlsx => self.xlsx(),
-            Format::Html => self.html().into_bytes(),
+            Format::Html => self.html(),
         }
     }
 
-    /// HTML table: one `TH` per field, one `TR` per record; values are
-    /// escaped and returns become `<BR>`.
-    /// 🔍 page layout after FileMaker's documentation, not compared byte
-    /// for byte with a FileMaker export.
-    fn html(&self) -> String {
-        let cell = |s: &str| xml_escape(s).replace("&#13;", "<BR>").replace('\n', "<BR>");
+    /// HTML table as FileMaker writes it (ISO-8859-1, CR LF): a row of
+    /// field names, one row per record; returns become `<BR>` and an empty
+    /// value is `<BR>`. Characters outside Latin-1 become `&#n;`.
+    fn html(&self) -> Vec<u8> {
+        let cell = |s: &str| {
+            let mut out = String::new();
+            for c in s.chars() {
+                match c {
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    '"' => out.push_str("&quot;"),
+                    '\r' | '\n' => out.push_str("<BR>"),
+                    c if (c as u32) > 0xFF => out.push_str(&format!("&#{};", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out
+        };
         let mut out = String::from(
-            "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\">\n<HTML>\n<HEAD>\n<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;charset=utf-8\">\n",
+            "<HTML>\r\n<HEAD><META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;CHARSET=ISO-8859-1\"></HEAD>\r\n<BODY><TABLE BORDER=1>\r\n<TR>\r\n",
         );
-        out.push_str(&format!(
-            "<TITLE>\n{}\n</TITLE>\n</HEAD>\n<BODY>\n<TABLE BORDER=1>\n<TR>\n",
-            cell(self.file_name)
-        ));
         for c in self.columns {
-            out.push_str(&format!("<TH>\n{}\n</TH>\n", cell(&c.name)));
+            out.push_str(&format!("<TH>{}</TH>\r\n", cell(&c.name)));
         }
-        out.push_str("</TR>\n");
+        out.push_str("</TR>\r\n");
         for row in self.cells() {
-            out.push_str("<TR>\n");
+            out.push_str("<TR>\r\n");
             for v in row {
                 let v = cell(&v.join("\r"));
                 let v = if v.is_empty() { "<BR>".to_string() } else { v };
-                out.push_str(&format!("<TD>\n{v}\n</TD>\n"));
+                out.push_str(&format!("<TD>{v}</TD>\r\n"));
             }
-            out.push_str("</TR>\n");
+            out.push_str("</TR>\r\n");
         }
-        out.push_str("</TABLE>\n</BODY>\n</HTML>\n");
-        out
+        out.push_str("</TABLE></BODY></HTML>\r\n");
+        // Latin-1: every char is below 0x100 here.
+        out.chars().map(|c| c as u32 as u8).collect()
     }
 
     fn delimited(&self, header: bool) -> String {
@@ -530,14 +550,20 @@ mod tests {
 
     #[test]
     fn html_and_grouped() {
+        // As FileMaker 26 writes it (Latin-1, CR LF, <BR> for returns and empty values).
         let html = run(Format::Html, &["Name", "Note"], false);
-        assert!(html.contains("<TITLE>\nPeople.fmp12\n</TITLE>"));
-        assert!(html.contains("<TR>\n<TH>\nName\n</TH>\n<TH>\nNote\n</TH>\n</TR>"));
-        assert!(html.contains("<TD>\nline 1<BR>line 2\n</TD>"));
-        assert!(html.contains("<TD>\nBob &quot;B&quot;\n</TD>\n<TD>\n<BR>\n</TD>"));
-        // Grouped by City (sorted): the city shows once per group.
-        let db = sample();
-        let cols = columns(&db, T, &["City".into(), "Name".into()]).unwrap();
+        assert_eq!(
+            html,
+            "<HTML>\r\n<HEAD><META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;CHARSET=ISO-8859-1\"></HEAD>\r\n<BODY><TABLE BORDER=1>\r\n<TR>\r\n<TH>Name</TH>\r\n<TH>Note</TH>\r\n</TR>\r\n\
+             <TR>\r\n<TD>Ada</TD>\r\n<TD>line 1<BR>line 2</TD>\r\n</TR>\r\n\
+             <TR>\r\n<TD>Bob &quot;B&quot;</TD>\r\n<TD><BR></TD>\r\n</TR>\r\n\
+             <TR>\r\n<TD>Cy</TD>\r\n<TD>a,b</TD>\r\n</TR>\r\n</TABLE></BODY></HTML>\r\n"
+        );
+        // Grouped by City (sorted): one row per city, its first record's
+        // values; a summary field holds the grand total on the first row.
+        let mut db = sample();
+        crate::tests::summary_field(&mut db, fmp12::schema::SummaryOp::Total, AMOUNT);
+        let cols = columns(&db, T, &["City".into(), "Name".into(), "Total".into()]).unwrap();
         let mut found = vec![0, 1, 2, 3, 4];
         crate::sort(
             &db,
@@ -557,7 +583,7 @@ mod tests {
         let csv = String::from_utf8(e.write(Format::Csv)).unwrap();
         assert_eq!(
             csv,
-            "\"Oslo\",\"Di\"\r\n\"Paris\",\"Bob \"\"B\"\"\"\r\n\"Rome\",\"Ada\"\r\n\"\",\"Cy\"\r\n\"\",\"Ed\"\r\n"
+            "\"Oslo\",\"Di\",\"100\"\r\n\"Paris\",\"Bob \"\"B\"\"\",\"\"\r\n\"Rome\",\"Ada\",\"\"\r\n"
         );
     }
 

@@ -137,6 +137,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Go to Layout (layout, original, by name, by number); one found set per window | ✅ |
 | Show Custom Dialog (title, message, 3 buttons, input field 1), Go to Field, Go to Object, Refresh/Freeze Window, Beep through the `Host` trait | ✅ |
 | Button actions (`Engine::run_step`) | ✅ |
+| Perform Find/Replace (all four operations, direction, current record, match case, whole word), Replace Field Contents (current contents, serial numbers with Entry Options, calculation, auto-enter): parameters decoded from steps made in FileMaker 26 | ✅ |
 | Template scripts run in tests: Contacts and Tasks "Sort by Name", "Sort by Status", "Create Assignee Entry", "Cancel Add Assignee", "Go to Entry Field" | ✅ |
 | Windows (New/Close/Select Window), Go to Related Record, Go to Portal Row, Select All, finds on related fields | ⏳ |
 | Resumable runs (`Engine::start`, `Run::resume` → `Suspended(Dialog \| Pause)` / `Finished`): Show Custom Dialog, delete confirmations, Pause/Resume Script, modes entered with Pause wait for the user; no threads (wasm32) | ✅ |
@@ -227,10 +228,15 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Tab-separated text (tabs in values become spaces), Merge (`.mer`, field-name row) | ✅ |
 | FMPXMLRESULT XML (ERRORCODE, PRODUCT, DATABASE, METADATA, RESULTSET; one DATA per related record) | ✅ |
 | Excel `.xlsx` (hand-written OOXML, numbers and Excel dates typed, header row) and JSON | ✅ |
-| Grouped export by sort fields (sub-summary rows), layout data formats, repeating fields, container data | ⏳ |
+| HTML Table (`.htm`): ISO-8859-1, CR LF, field-name row, one row per record, returns and empty values as `<BR>` | ✅ byte for byte with a FileMaker 26 export |
+| Grouped export ("Group by" sort fields): one row per group with its first record's values, summary fields' grand total on the first row only | ✅ as FileMaker 26 exports; the automatic "Summary by field" subtotal columns are not added yet |
+| Layout data formats, repeating fields, container data, DBF and FileMaker Pro export formats | ⏳ |
+| File › Export Records… dialog (Specify Field Order for Export: current layout and related occurrences, Move / Move All / Clear All, double-click, reorder, Group by with "(Unsorted)", Apply current layout's data formatting, type: tab, CSV, Merge, HTML, XML, Excel) | ✅ compared with FileMaker 26's dialog |
 | Import Records (`engine::import`): CSV, tab, Merge, `.xlsx`; mapping by name or order; add, update matching (match fields, add remaining), replace found set | ✅ |
 | Import: auto-enter on or off, validation reported, records failing always validation skipped | ✅ |
-| Import from XML, other files, folders; character sets other than UTF-8 | ⏳ |
+| Import from a FileMaker file (`engine::import::fmp12_source`: every table, values converted to the target file's formats) | ✅ |
+| File › Import Records › File… dialog (Import Field Mapping: source record browser, Import / `=` / Don't import per field, target by matching names or creation order, Add / Update / Replace with "add remaining", auto-enter on or off, Import Summary; the imported records become the found set) | ✅ compared with FileMaker 26's dialog |
+| Import from XML, folders, ODBC; character sets other than UTF-8; field delimiter choice | ⏳ |
 | Summary field definitions (field key 9) and sub-summary break fields (part field 6) decoded | ✅ (operation numbers and options checked in FileMaker's Table view) |
 | Preview pagination (`crates/print`): header/footer per page, title header/footer on page 1, body per record, leading/trailing sub-summaries by sorted break field, grand summaries, letter/A4, landscape, margins | ✅ |
 | PDF output: hand-written PDF 1.4, Helvetica (WinAnsi), theme backgrounds, borders, text colours, sizes, bold, alignment, padding; fields, text with merge fields and `{{PageNumber}}`, button labels, portals | ✅ |
@@ -238,12 +244,19 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | GUI Preview mode | ⏳ |
 | CLI `export`, `import`, `print-pdf`; MCP `export_records`, `import_records`, `print_pdf` | ✅ |
 | Builds for `wasm32-unknown-unknown` (`engine`, `print`) | ✅ |
-| Charts, security (accounts, privileges), Data Viewer | ⏳ |
+| Charts (`fmp12::charts`, FORMAT.md §10): object kind 13 (`CHRT`), title, axis titles, X data, Y series and names, bubble size, type (column, bar, line, area, pie, positive/negative, stacked column, stacked bar, bubble, scatter), data source (found set, current record delimited values, related records), legend, data points, colour scheme | ✅ 14 charts made in FileMaker 26 decoded (`tests/charts.rs`) |
+| Charts drawn in Browse, Preview (`app::chart`) and PDF (`print::chart`, one layout for both): all 10 types, title, legend, ticks, value labels, Earth and Bright palettes | ✅ compared with FileMaker screenshots |
+| Chart fonts, custom series colours, gridlines, legend position, axis ranges and formats, other colour schemes, "summary groups when sorted" | ⏳ |
+| Security (accounts, privileges) | ⏳ |
 
 ## M4 — GUI (`crates/app`)
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |
 | Layout drawn at stored coordinates: parts, fields, text, buttons | ✅ |
 | Browse mode: navigate, edit fields, new/delete record, show all | ✅ |
+| Records menu as in FileMaker 26: New, Duplicate (Ctrl+D), Delete Record… (Ctrl+E) and Delete All Records… with FileMaker's confirmations (related records deleted by cascade), Show All (Ctrl+J), Show Omitted Only, Omit Record (Ctrl+T), Omit Multiple… (Ctrl+Shift+T), Modify Last Find (Ctrl+R), Replace Field Contents… (Ctrl+=) | ✅ |
+| Replace Field Contents (`engine::replace`): current contents, serial numbers (prefix and leading zeros kept, "Update serial number in Entry Options"), calculated result; auto-enter options on or off | ✅ |
+| Edit › Find/Replace (Ctrl+Shift+F, modeless): Find Next, Replace & Find, Replace, Replace All; direction forward / backward / all; match case, whole word; all records or current record; all fields or current field | ✅ compared with FileMaker 26's dialog |
+| Go to Record, Saved Finds, Sort Records dialog, Unsort, Relookup and Revert Record in the Records menu | ⏳ |
 | Find mode with multiple requests and omit requests; Omit Record, Show Omitted Only; sort by one field | ✅ |
 | Calculated fields displayed live | ✅ |
 | Theme styles decoded (`fmp12::theme`: colours, borders, fonts, padding, alignment) | ✅ |

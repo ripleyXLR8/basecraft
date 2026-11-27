@@ -227,6 +227,7 @@ fn export_import_round_trip_and_summaries() {
             columns: &cols,
             formatted: false,
             file_name: "Assets.fmp12",
+            group_by: &[],
         }
         .write(format);
         let mut copy = db.clone();
@@ -263,6 +264,7 @@ fn export_import_round_trip_and_summaries() {
         columns: &cols,
         formatted: true,
         file_name: "Assets.fmp12",
+        group_by: &[],
     }
     .write(Format::Xml);
     let xml = String::from_utf8(xml).unwrap();

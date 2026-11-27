@@ -45,6 +45,7 @@ pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
         columns: &cols,
         formatted: o.formatted,
         file_name: &file_name,
+        group_by: &[],
     }
     .write(format);
     let fields: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
@@ -131,7 +132,8 @@ pub fn print_pdf(d: &Doc, layout: &str, o: &Opts) -> Res<Json> {
         paper = paper.with_margins(m);
     }
     let out = o.out.as_deref().ok_or("print-pdf needs -o <file.pdf>")?;
-    let (bytes, pages) = print::pdf(&d.db, l.id, &found, &sort, &paper)?;
+    let charts = fmp12::charts::charts(&d.file).map_err(|e| e.to_string())?;
+    let (bytes, pages) = print::pdf_with_charts(&d.db, &charts, l.id, &found, &sort, &paper)?;
     std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
     Ok(json!({ "path": out, "pages": pages, "records": found.len(), "layout": l.name }))
 }

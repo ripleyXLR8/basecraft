@@ -10,6 +10,7 @@
 //!   the records;
 //! * a part that does not fit in the space left on a page moves to the next.
 
+pub mod chart;
 pub mod look;
 pub mod pdf;
 
@@ -440,6 +441,21 @@ pub fn pdf(
     sort: &[(u32, Order)],
     paper: &Paper,
 ) -> Result<(Vec<u8>, usize), String> {
+    pdf_with_charts(db, &Charts::new(), layout_id, found, sort, paper)
+}
+
+/// Charts by (layout id, object id), see [`fmp12::charts::charts`].
+pub type Charts = std::collections::BTreeMap<(u32, u64), fmp12::charts::Chart>;
+
+/// [`pdf`], drawing the layout's charts too.
+pub fn pdf_with_charts(
+    db: &Database,
+    charts: &Charts,
+    layout_id: u32,
+    found: &[usize],
+    sort: &[(u32, Order)],
+    paper: &Paper,
+) -> Result<(Vec<u8>, usize), String> {
     let layout = db
         .layouts
         .iter()
@@ -487,6 +503,11 @@ pub fn pdf(
                     ab.right - ab.left,
                     ab.bottom - ab.top,
                 );
+                if let Some(c) = charts.get(&(layout.id, o.id)) {
+                    let d = chart::data(db, c, layout_to(layout), found, band.record);
+                    chart::paint_pdf(&mut out, &chart::shapes(c, &d, r));
+                    continue;
+                }
                 draw(&mut out, &ctx, o, lk, r, band.record, &group, body);
                 if o.kind == 9 {
                     portal(&mut out, &ctx, o, &looks, r, band.record);

@@ -24,6 +24,9 @@ use std::collections::HashMap;
 pub mod text;
 
 use calc::Value;
+use engine::replace::{
+    Direction, FindReplace, Hit, ReplaceWith, find_next, replace_field_contents,
+};
 use engine::{Database, Request};
 use fmp12::scripts::{
     Calc, FieldRef, LayoutDest, RecordDest, Script, SortOrder, Step, StepParams, Target, id,
@@ -949,36 +952,154 @@ impl Engine {
                 self.set_field(host, f, v)?;
             }
             (StepParams::Other, id::REPLACE_FIELD_CONTENTS) => {
-                // ponytail: with a calculation, or the current contents
-                // without one; serial numbers are not done.
+                // Parameters (FORMAT.md §8): [129] k3 = with (2 serial
+                // numbers, 3 calculation, otherwise current contents),
+                // [128] calculation, [130] increment, [131] initial value,
+                // [132] update Entry Options, [133] use Entry Options,
+                // [134] perform auto-enter.
                 self.commit(host)?;
                 let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
                 let (table, _, rec) = Self::context(host);
+                let p = &s.raw_params;
+                let auto_enter = p.byte(6).is_none_or(|b| b != 0);
+                let w = host.window().clone();
                 let db = host.db();
                 if db.table_of(f.to).map(|t| t.id) != Some(table) {
                     return Err(error::FIELD_MISSING);
                 }
-                let current = rec.map(|r| db.value(table, r, f.field));
-                let calc = calcs(s).into_iter().next();
-                let w = host.window().clone();
-                for i in 0..w.found.len() {
-                    host.window().current = i;
-                    let v = match &calc {
-                        Some(c) => self.eval(host, frame, c),
-                        None => current.clone().ok_or(error::RECORD_MISSING),
-                    };
-                    let v = match v {
-                        Ok(v) => v,
-                        Err(e) => {
-                            host.window().current = w.current;
-                            return Err(e);
-                        }
-                    };
-                    let db = host.db();
-                    let text = engine::stored_text(&v, &db.locale);
-                    db.set_values(table, w.found[i], &[(f.field, text)]);
+                let field = db.table(table).and_then(|t| t.field(f.field)).cloned();
+                if p.byte(1) == Some(3) {
+                    // Evaluated per record, with the script's variables.
+                    let c = calcs(s).into_iter().next().ok_or(error::UNAVAILABLE)?;
+                    for i in 0..w.found.len() {
+                        host.window().current = i;
+                        let v = match self.eval(host, frame, &c) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                host.window().current = w.current;
+                                return Err(e);
+                            }
+                        };
+                        let db = host.db();
+                        let text = engine::stored_text(&v, &db.locale);
+                        let with = ReplaceWith::Value(text);
+                        let one = [w.found[i]];
+                        let _ = replace_field_contents(db, table, &one, f.field, &with, auto_enter);
+                    }
+                    host.window().current = w.current;
+                    return Ok(Flow::Next);
                 }
-                host.window().current = w.current;
+                let with = if p.byte(1) == Some(2) {
+                    let (initial, increment) = match &field {
+                        // "Use Entry Options": the field's next serial and increment.
+                        Some(fd) if p.byte(5) == Some(1) => {
+                            (fd.def.serial_next.clone(), fd.def.serial_increment() as i64)
+                        }
+                        _ => (
+                            p.text(3).unwrap_or_else(|| "1".into()),
+                            p.byte(2).map_or(1, i64::from),
+                        ),
+                    };
+                    ReplaceWith::Serial {
+                        initial,
+                        increment,
+                        update_entry: p.byte(4) == Some(1),
+                    }
+                } else {
+                    let r = rec.ok_or(error::RECORD_MISSING)?;
+                    let v = db.value(table, r, f.field);
+                    ReplaceWith::Value(engine::stored_text(&v, &db.locale))
+                };
+                replace_field_contents(host.db(), table, &w.found, f.field, &with, auto_enter)
+                    .map_err(|_| error::FIELD_MISSING)?;
+            }
+            (StepParams::Other, id::PERFORM_FIND_REPLACE) => {
+                // [128] k3 = operation (0 Find Next, 1 Replace & Find,
+                // 2 Replace, 3 Replace All) and find calculation; [129]
+                // k3 = direction (0 forward, 1 backward, 2 all) and
+                // replace calculation; [130] current record, [131]
+                // current field, [132] match case, [133] whole word.
+                // ponytail: a script has no active field, so "current
+                // field" searches every field of the layout.
+                self.commit(host)?;
+                let p = &s.raw_params;
+                let find = match p.calc(0) {
+                    Some(c) => self.eval(host, frame, &c)?.to_text(),
+                    None => String::new(),
+                };
+                let replace = match p.calc(1) {
+                    Some(c) => self.eval(host, frame, &c)?.to_text(),
+                    None => String::new(),
+                };
+                let q = FindReplace {
+                    find,
+                    replace,
+                    match_case: p.byte(4) == Some(1),
+                    whole_word: p.byte(5) == Some(1),
+                };
+                let dir = match p.byte(1) {
+                    Some(1) => Direction::Backward,
+                    Some(2) => Direction::All,
+                    _ => Direction::Forward,
+                };
+                let current_only = p.byte(2) == Some(1);
+                let (table, _, _) = Self::context(host);
+                let w = host.window().clone();
+                let records: Vec<usize> = if current_only {
+                    w.found.get(w.current).copied().into_iter().collect()
+                } else {
+                    w.found.clone()
+                };
+                let db = host.db();
+                let mut fields: Vec<u32> = db
+                    .layouts
+                    .iter()
+                    .find(|l| l.id == w.layout)
+                    .map(|l| {
+                        l.objects
+                            .iter()
+                            .filter(|o| o.kind == 1)
+                            .filter_map(|o| o.field.map(|x| x.1 as u32))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // A layout without fields (or none): every field of the table.
+                if fields.is_empty() {
+                    fields = db
+                        .table(table)
+                        .map(|t| t.fields.iter().map(|f| f.id).collect())
+                        .unwrap_or_default();
+                }
+                let op = p.byte(0).unwrap_or(0);
+                if op == 3 {
+                    engine::replace::replace_all(db, table, &records, &fields, &q);
+                } else {
+                    let start = (w.current > 0 && !current_only).then(|| Hit {
+                        pos: w.current - 1,
+                        field: u32::MAX,
+                        range: usize::MAX..usize::MAX,
+                    });
+                    let hit = find_next(db, table, &records, &fields, &q, start.as_ref(), dir)
+                        .ok_or(error::RECORD_MISSING)?;
+                    let mut go = hit.pos;
+                    if op != 0 {
+                        engine::replace::replace_hit(db, table, &records, &q, &hit);
+                    }
+                    if op == 1 {
+                        let after = Hit {
+                            range: hit.range.start..hit.range.start + q.replace.len(),
+                            ..hit.clone()
+                        };
+                        if let Some(h) =
+                            find_next(db, table, &records, &fields, &q, Some(&after), dir)
+                        {
+                            go = h.pos;
+                        }
+                    }
+                    if !current_only {
+                        host.window().current = go;
+                    }
+                }
             }
             (StepParams::Other, id::RELOOKUP) => {
                 self.commit(host)?;
@@ -1169,31 +1290,10 @@ impl Engine {
                     w.current_request = w.requests.len() - 1;
                 } else {
                     let src = rec.ok_or(error::RECORD_MISSING)?;
-                    let db = host.db();
-                    let r = db.new_record(table).ok_or(error::RECORD_MISSING)?;
-                    let t = db
-                        .tables
-                        .iter_mut()
-                        .find(|t| t.id == table)
+                    let r = host
+                        .db()
+                        .duplicate_record(table, src)
                         .ok_or(error::RECORD_MISSING)?;
-                    // Auto-entered values (serials, stamps) stay those of the new record.
-                    let auto: Vec<u32> = t
-                        .fields
-                        .iter()
-                        .filter(|f| {
-                            f.def.auto_serial()
-                                || f.def.auto_stamp().is_some()
-                                || f.def.auto_calculation()
-                        })
-                        .map(|f| f.id)
-                        .collect();
-                    let copy: Vec<(u32, String)> = t.records[src]
-                        .values
-                        .iter()
-                        .filter(|(f, _)| !auto.contains(f))
-                        .map(|(f, v)| (*f, v.clone()))
-                        .collect();
-                    t.records[r].values.extend(copy);
                     let w = host.window();
                     w.found.insert(w.current + 1, r);
                     w.current += 1;

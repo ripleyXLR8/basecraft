@@ -26,8 +26,45 @@ pub fn read_rows(format: Format, bytes: &[u8]) -> Result<Vec<Vec<String>>, Strin
             .map(|l| l.split('\t').map(vt).collect())
             .collect()),
         Format::Xlsx => crate::xlsx::read(bytes),
-        Format::Xml | Format::Json => Err(format!("importing {format:?} is not supported")),
+        Format::Xml | Format::Json | Format::Html => {
+            Err(format!("importing {format:?} is not supported"))
+        }
     }
+}
+
+/// A table of a FileMaker import source: its name and rows.
+pub type SourceTable = (String, Vec<Vec<String>>);
+
+/// A FileMaker file as an import source: per table, its name and rows (a
+/// row of field names, then one row per record). Values are written in
+/// `locale` (the destination file's formats), so dates and numbers keep
+/// their meaning between files of different languages. Summary and
+/// container fields are left out.
+pub fn fmp12_source(
+    bytes: &[u8],
+    locale: &fmp12::schema::Locale,
+) -> Result<Vec<SourceTable>, String> {
+    let file = fmp12::File::from_bytes(bytes.to_vec()).map_err(|e| e.to_string())?;
+    let src = Database::load(&file).map_err(|e| e.to_string())?;
+    Ok(src
+        .tables
+        .iter()
+        .map(|t| {
+            let fields: Vec<&crate::Field> = t
+                .fields
+                .iter()
+                .filter(|f| f.kind != FieldKind::Summary && f.data_type != DataType::Container)
+                .collect();
+            let mut rows = vec![fields.iter().map(|f| f.name.clone()).collect()];
+            rows.extend((0..t.records.len()).map(|r| {
+                fields
+                    .iter()
+                    .map(|f| stored_text(&src.value(t.id, r, f.id), locale))
+                    .collect()
+            }));
+            (t.name.clone(), rows)
+        })
+        .collect())
 }
 
 /// Comma-separated values: quoted values may hold commas, doubled quotes
@@ -393,6 +430,7 @@ mod tests {
                 columns: &cols,
                 formatted: false,
                 file_name: "",
+                group_by: &[],
             }
             .write(format);
             let mut dst = sample();

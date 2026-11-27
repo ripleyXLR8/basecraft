@@ -31,6 +31,8 @@ pub enum Format {
     Xlsx,
     /// JSON array of records (a BaseCraft extra).
     Json,
+    /// HTML table (`.htm`): a header row of field names, one row per record.
+    Html,
 }
 
 impl Format {
@@ -45,6 +47,7 @@ impl Format {
             "xml" | "fmpxmlresult" => Format::Xml,
             "xlsx" | "excel" => Format::Xlsx,
             "json" => Format::Json,
+            "htm" | "html" => Format::Html,
             _ => return None,
         })
     }
@@ -165,14 +168,48 @@ pub struct Export<'a> {
     pub formatted: bool,
     /// File name for FMPXMLRESULT's `DATABASE NAME`.
     pub file_name: &'a str,
+    /// "Group by" fields (the sort fields, outermost first): a grouped
+    /// field's value is written in the first record of its group only.
+    pub group_by: &'a [u32],
 }
 
 impl Export<'_> {
     /// Text of every cell: rows × columns × values.
     pub fn cells(&self) -> Vec<Vec<Vec<String>>> {
-        self.found
+        let row = |r: usize| -> Vec<Vec<String>> {
+            self.columns.iter().map(|c| self.texts(r, c)).collect()
+        };
+        if self.group_by.is_empty() {
+            return self.found.iter().map(|&r| row(r)).collect();
+        }
+        // Grouped: one row per group, with the values of its first record;
+        // summary fields hold the grand total on the first row only.
+        let table = self.db.table_of(self.to).map_or(0, |t| t.id);
+        let groups = crate::groups(self.db, table, self.found, self.group_by);
+        groups
             .iter()
-            .map(|&r| self.columns.iter().map(|c| self.texts(r, c)).collect())
+            .enumerate()
+            .map(|(i, g)| {
+                let mut cells = row(self.found[g.start]);
+                for (ci, c) in self.columns.iter().enumerate() {
+                    let summary = c.to == self.to
+                        && self
+                            .db
+                            .table(c.table)
+                            .and_then(|t| t.field(c.field))
+                            .is_some_and(|f| f.kind == FieldKind::Summary);
+                    if summary {
+                        cells[ci] = vec![if i == 0 {
+                            let v =
+                                crate::summarize(self.db, c.table, c.field, self.found, self.found);
+                            stored_text(&v, &self.db.locale)
+                        } else {
+                            String::new()
+                        }];
+                    }
+                }
+                cells
+            })
             .collect()
     }
 
@@ -200,7 +237,48 @@ impl Export<'_> {
             Format::Xml => self.xml().into_bytes(),
             Format::Json => self.json().into_bytes(),
             Format::Xlsx => self.xlsx(),
+            Format::Html => self.html(),
         }
+    }
+
+    /// HTML table as FileMaker writes it (ISO-8859-1, CR LF): a row of
+    /// field names, one row per record; returns become `<BR>` and an empty
+    /// value is `<BR>`. Characters outside Latin-1 become `&#n;`.
+    fn html(&self) -> Vec<u8> {
+        let cell = |s: &str| {
+            let mut out = String::new();
+            for c in s.chars() {
+                match c {
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    '"' => out.push_str("&quot;"),
+                    '\r' | '\n' => out.push_str("<BR>"),
+                    c if (c as u32) > 0xFF => out.push_str(&format!("&#{};", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out
+        };
+        let mut out = String::from(
+            "<HTML>\r\n<HEAD><META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;CHARSET=ISO-8859-1\"></HEAD>\r\n<BODY><TABLE BORDER=1>\r\n<TR>\r\n",
+        );
+        for c in self.columns {
+            out.push_str(&format!("<TH>{}</TH>\r\n", cell(&c.name)));
+        }
+        out.push_str("</TR>\r\n");
+        for row in self.cells() {
+            out.push_str("<TR>\r\n");
+            for v in row {
+                let v = cell(&v.join("\r"));
+                let v = if v.is_empty() { "<BR>".to_string() } else { v };
+                out.push_str(&format!("<TD>{v}</TD>\r\n"));
+            }
+            out.push_str("</TR>\r\n");
+        }
+        out.push_str("</TABLE></BODY></HTML>\r\n");
+        // Latin-1: every char is below 0x100 here.
+        out.chars().map(|c| c as u32 as u8).collect()
     }
 
     fn delimited(&self, header: bool) -> String {
@@ -431,6 +509,7 @@ mod tests {
             columns: &cols,
             formatted,
             file_name: "People.fmp12",
+            group_by: &[],
         };
         String::from_utf8(e.write(format)).unwrap()
     }
@@ -470,6 +549,45 @@ mod tests {
     }
 
     #[test]
+    fn html_and_grouped() {
+        // As FileMaker 26 writes it (Latin-1, CR LF, <BR> for returns and empty values).
+        let html = run(Format::Html, &["Name", "Note"], false);
+        assert_eq!(
+            html,
+            "<HTML>\r\n<HEAD><META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;CHARSET=ISO-8859-1\"></HEAD>\r\n<BODY><TABLE BORDER=1>\r\n<TR>\r\n<TH>Name</TH>\r\n<TH>Note</TH>\r\n</TR>\r\n\
+             <TR>\r\n<TD>Ada</TD>\r\n<TD>line 1<BR>line 2</TD>\r\n</TR>\r\n\
+             <TR>\r\n<TD>Bob &quot;B&quot;</TD>\r\n<TD><BR></TD>\r\n</TR>\r\n\
+             <TR>\r\n<TD>Cy</TD>\r\n<TD>a,b</TD>\r\n</TR>\r\n</TABLE></BODY></HTML>\r\n"
+        );
+        // Grouped by City (sorted): one row per city, its first record's
+        // values; a summary field holds the grand total on the first row.
+        let mut db = sample();
+        crate::tests::summary_field(&mut db, fmp12::schema::SummaryOp::Total, AMOUNT);
+        let cols = columns(&db, T, &["City".into(), "Name".into(), "Total".into()]).unwrap();
+        let mut found = vec![0, 1, 2, 3, 4];
+        crate::sort(
+            &db,
+            T,
+            &mut found,
+            &[(crate::tests::CITY, crate::Order::Ascending)],
+        );
+        let e = Export {
+            db: &db,
+            to: T,
+            found: &found,
+            columns: &cols,
+            formatted: false,
+            file_name: "",
+            group_by: &[crate::tests::CITY],
+        };
+        let csv = String::from_utf8(e.write(Format::Csv)).unwrap();
+        assert_eq!(
+            csv,
+            "\"Oslo\",\"Di\",\"100\"\r\n\"Paris\",\"Bob \"\"B\"\"\",\"\"\r\n\"Rome\",\"Ada\",\"\"\r\n"
+        );
+    }
+
+    #[test]
     fn xml_and_json() {
         let xml = run(Format::Xml, &["Name", "Amount", "Pets::Pet"], false);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<FMPXMLRESULT xmlns=\"http://www.filemaker.com/fmpxmlresult\"><ERRORCODE>0</ERRORCODE>"));
@@ -506,6 +624,7 @@ mod tests {
             columns: &cols,
             formatted: false,
             file_name: "",
+            group_by: &[],
         };
         assert_eq!(e.write(Format::Tab), b"010.50\t12/10/1815\r\n");
         e.formatted = true;

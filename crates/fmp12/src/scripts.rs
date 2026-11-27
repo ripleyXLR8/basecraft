@@ -58,6 +58,7 @@ pub mod id {
     pub const INSERT_CURRENT_USER_NAME: u16 = 60;
     pub const INSERT_CALCULATED_RESULT: u16 = 77;
     pub const REPLACE_FIELD_CONTENTS: u16 = 91;
+    pub const PERFORM_FIND_REPLACE: u16 = 128;
     pub const SET_FIELD_BY_NAME: u16 = 147;
     pub const PAUSE_RESUME: u16 = 62;
     pub const IF: u16 = 68;

@@ -514,3 +514,206 @@ fn field_commit_runs_lookups_and_validation() {
     let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
     assert_eq!(t.records.len(), 1);
 }
+
+/// Values of an Invoices field over the found set.
+fn invoices(h: &Harness<'_, App>, field: &str) -> Vec<String> {
+    let app = h.state();
+    let db = &app.doc.as_ref().unwrap().db;
+    let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
+    let f = t.field_by_name(field).unwrap().id;
+    app.found
+        .get(&t.id)
+        .cloned()
+        .unwrap_or_else(|| (0..t.records.len()).collect())
+        .iter()
+        .map(|&r| db.value(t.id, r, f).to_text())
+        .collect()
+}
+
+fn menu(h: &mut Harness<'_, App>, top: &'static str, item: &'static str) {
+    h.get_by_label(tr(top)).click();
+    h.run_steps(2);
+    h.get_by_label_contains(records::t(item)).click();
+    h.run_steps(3);
+}
+
+/// Import (field mapping dialog), Find/Replace, Replace Field Contents,
+/// Duplicate, Omit Multiple, Delete (All) with confirmations, Modify Last
+/// Find and Export, driven through menus, shortcuts and dialogs.
+#[test]
+fn records_menu_and_m8_dialogs() {
+    let t = records::t;
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    // Import: three invoices; ClientName is looked up while importing.
+    h.state_mut().start_import(
+        "new.csv".into(),
+        b"ClientId,Size\r\n2,S\r\n1,L\r\n2,M\r\n".to_vec(),
+    );
+    h.run_steps(3);
+    shot(&mut h, "m8_01_import_mapping");
+    // The header row names the fields: matching names map both columns.
+    h.get_by_label(t("Don't import first record (contains field names)"))
+        .click();
+    h.run_steps(2);
+    h.get_by_label("▼").click();
+    h.run_steps(2);
+    h.get_by_label(t("Matching names")).click();
+    h.run_steps(2);
+    // The dialog's Import button, below the mapping buttons of the same name.
+    h.get_all_by_label(t("Import"))
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    shot(&mut h, "m8_02_import_summary");
+    assert_eq!(invoices(&h, "ClientName"), ["Bob", "Ada", "Bob"]);
+    assert_eq!(invoices(&h, "Size"), ["S", "L", "M"]);
+    h.get_by_label("OK").click();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "Size").len(), 4);
+
+    // Find/Replace (Ctrl+Shift+F): Replace All over the found set.
+    h.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::F,
+    );
+    h.run_steps(3);
+    h.get_by_label(t("Find what:")).click();
+    h.run_steps(1);
+    h.get_by_label(t("Find what:")).type_text("bob");
+    h.get_by_label(t("Replace with:")).click();
+    h.run_steps(1);
+    h.get_by_label(t("Replace with:")).type_text("Robert");
+    h.run_steps(1);
+    h.get_by_label(t("Find Next")).click();
+    h.run_steps(2);
+    shot(&mut h, "m8_03_find_replace");
+    h.get_by_label(t("Replace All")).click();
+    h.run_steps(2);
+    assert_eq!(
+        invoices(&h, "ClientName"),
+        ["Ada", "Robert", "Ada", "Robert"]
+    );
+    h.get_by_label_contains("2 occurrence");
+    // Match case: "robert" no longer matches.
+    h.get_by_label(t("Match case")).click();
+    h.get_by_label(t("Find what:")).click();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label(t("Find what:")).type_text("robert");
+    h.run_steps(1);
+    h.get_by_label(t("Find Next")).click();
+    h.run_steps(2);
+    h.get_by_label(t("No match found."));
+    h.state_mut().close_find();
+    h.run_steps(2);
+
+    // Replace Field Contents with serial numbers.
+    menu(&mut h, "Records", "Replace Field Contents…");
+    h.get_by_label(t("Replace with serial numbers:")).click();
+    h.run_steps(1);
+    h.get_by_label(t("Initial value:")).click();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label(t("Initial value:")).type_text("10");
+    h.get_by_label(t("Increment by:")).click();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label(t("Increment by:")).type_text("5");
+    h.run_steps(2);
+    shot(&mut h, "m8_04_replace_field_contents");
+    h.get_by_label(t("Replace")).click();
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "ClientId"), ["10", "15", "20", "25"]);
+
+    // Duplicate (Ctrl+D): the copy follows the original (the record
+    // Find Next went to).
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "ClientId"), ["10", "15", "15", "20", "25"]);
+    // Omit Multiple (Ctrl+Shift+T): 2 records from the current one.
+    h.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::T,
+    );
+    h.run_steps(2);
+    h.get_by_label(t("Number of records to omit:")).click();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_label(t("Number of records to omit:"))
+        .type_text("2");
+    h.run_steps(1);
+    shot(&mut h, "m8_05_omit_multiple");
+    h.get_by_label(t("Omit")).click();
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "ClientId"), ["10", "15", "25"]);
+    // Delete Record (Ctrl+E) asks first; Cancel keeps it.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+    h.run_steps(2);
+    shot(&mut h, "m8_06_delete_confirm");
+    h.get_by_label(t("Cancel")).click();
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "ClientId").len(), 3);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+    h.run_steps(2);
+    h.get_by_label(t("Delete")).click();
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "ClientId"), ["10", "15"]);
+
+    // Export Records: every field, CSV.
+    menu(&mut h, "File", "Export Records…");
+    h.get_by_label(t("Move All")).click();
+    h.run_steps(2);
+    shot(&mut h, "m8_07_export_order");
+    let csv = String::from_utf8(h.state_mut().export_now().unwrap()).unwrap();
+    assert_eq!(csv, "\"10\",\"Ada\",\"M\"\r\n\"15\",\"Robert\",\"S\"\r\n");
+
+    // Delete All Records: the found set only.
+    menu(&mut h, "Records", "Delete All Records…");
+    h.get_by_label_contains("2 record");
+    h.get_by_label(t("Delete All")).click();
+    h.run_steps(2);
+    assert!(invoices(&h, "ClientId").is_empty());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(2);
+    assert_eq!(invoices(&h, "ClientId"), ["20", "15"]);
+
+    // Modify Last Find (Ctrl+R): Find mode with the last requests.
+    let size = {
+        let db = &h.state().doc.as_ref().unwrap().db;
+        let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
+        t.field_by_name("Size").unwrap().id
+    };
+    h.state_mut().requests = vec![([(size, "M".to_string())].into(), false)];
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+    h.run_steps(2);
+    assert_eq!(h.state().mode(), Mode::Find);
+    assert_eq!(h.state().request.get(&size).map(|s| s.as_str()), Some("M"));
+    assert!(!h.state().dialogs_open());
+}
+
+/// The 14 charts of `fmp12/tests/fixtures/charts.fmp12` (a BaseCraft-made
+/// file whose charts were made in FileMaker Pro 26) in Browse and Preview.
+#[test]
+fn charts_render() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fmp12/tests/fixtures/charts.fmp12"
+    ))
+    .unwrap();
+    let mut app = App::default();
+    app.open("charts".into(), bytes);
+    let mut h = harness_for(app);
+    h.run_steps(3);
+    let key = {
+        let doc = h.state().doc.as_ref().unwrap();
+        egui::Id::NULL.with(("charts", &doc.name, doc.file.bytes().len()))
+    };
+    let cached = h
+        .ctx
+        .data(|d| d.get_temp::<std::sync::Arc<print::Charts>>(key));
+    assert_eq!(cached.unwrap().len(), 14);
+    shot(&mut h, "ours_charts_browse");
+    h.state_mut().mode = Some(Mode::Preview);
+    h.run_steps(3);
+    shot(&mut h, "ours_charts_preview");
+}

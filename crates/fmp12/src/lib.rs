@@ -7,6 +7,7 @@
 pub mod calc;
 mod calc_compile;
 mod calc_tables;
+pub mod charts;
 pub mod chunk;
 pub mod collate;
 pub mod graph;

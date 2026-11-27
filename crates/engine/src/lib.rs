@@ -6,6 +6,7 @@ pub mod export;
 mod find;
 mod host;
 pub mod import;
+pub mod replace;
 pub mod summary;
 mod xlsx;
 
@@ -609,6 +610,28 @@ impl Database {
         }
         self.apply_lookups(table, r, None);
         self.touch(table, r);
+        Some(r)
+    }
+
+    /// Duplicate Record: a new record (auto-enter applied) with the values
+    /// of `record`, except the auto-entered ones (serials, stamps,
+    /// auto-enter calculations), which stay those of the new record.
+    /// Returns its index.
+    pub fn duplicate_record(&mut self, table: u32, record: usize) -> Option<usize> {
+        let src = self.table(table)?.records.get(record)?.values.clone();
+        let r = self.new_record(table)?;
+        let t = self.tables.iter_mut().find(|t| t.id == table)?;
+        let auto: Vec<u32> = t
+            .fields
+            .iter()
+            .filter(|f| {
+                f.def.auto_serial() || f.def.auto_stamp().is_some() || f.def.auto_calculation()
+            })
+            .map(|f| f.id)
+            .collect();
+        t.records[r]
+            .values
+            .extend(src.into_iter().filter(|(f, _)| !auto.contains(f)));
         Some(r)
     }
 

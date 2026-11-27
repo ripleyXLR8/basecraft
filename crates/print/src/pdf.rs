@@ -133,6 +133,21 @@ impl Pdf {
         s.extend_from_slice(cmd.as_bytes());
     }
 
+    /// A filled polygon (points from the page's top-left corner).
+    pub fn polygon(&mut self, points: &[(f64, f64)], c: Color) {
+        let (s, ph) = self.out();
+        let mut cmd = Self::rgb(c, "rg");
+        for (i, (x, y)) in points.iter().enumerate() {
+            let op = if i == 0 { "m" } else { "l" };
+            cmd.push_str(&format!(" {} {} {op}", num(*x), num(ph - y)));
+        }
+        cmd.push_str(
+            " h f
+",
+        );
+        s.extend_from_slice(cmd.as_bytes());
+    }
+
     /// Text with its baseline at `y`, clipped to the rectangle `clip`
     /// (x, y, w, h).
     #[allow(clippy::too_many_arguments)]

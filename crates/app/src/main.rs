@@ -16,10 +16,12 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use engine::{Database, Order, Request};
 use fmp12::layouts::Layout;
 
+mod chart;
 mod design;
 mod i18n;
 mod look;
 mod preview;
+mod records;
 #[cfg(test)]
 mod ui_tests;
 mod workspace;
@@ -130,6 +132,8 @@ struct App {
     tabs: BTreeMap<u64, u64>,
     /// Layout mode state (the layout being edited).
     designer: Option<design::Designer>,
+    /// Records menu, Find/Replace, import and export dialogs (`records.rs`).
+    m8: records::Dialogs,
 }
 
 impl App {
@@ -731,32 +735,6 @@ impl App {
         self.fire(event::RECORD_LOAD);
     }
 
-    fn delete_record(&mut self) {
-        let Some(t) = self.table() else { return };
-        let pos = *self.current.get(&t).unwrap_or(&0);
-        let Some(r) = self.found(t).get(pos).copied() else {
-            return;
-        };
-        if let Some(tbl) = self
-            .doc
-            .as_mut()
-            .and_then(|d| d.db.tables.iter_mut().find(|x| x.id == t))
-        {
-            tbl.records.remove(r);
-        }
-        // Re-index the found set after removal.
-        let f = self.found(t);
-        f.retain(|&x| x != r);
-        for x in f.iter_mut() {
-            if *x > r {
-                *x -= 1;
-            }
-        }
-        let n = f.len();
-        self.current.insert(t, pos.min(n.saturating_sub(1)));
-        self.dirty = true;
-    }
-
     fn show_all(&mut self) {
         if !self.commit() {
             return;
@@ -952,6 +930,9 @@ impl App {
                     ui.close();
                     self.save(&ui.ctx().clone(), true);
                 }
+                ui.separator();
+                self.file_menu_items(ui);
+                ui.separator();
                 if ui.button(tr("Close")).clicked() {
                     ui.close();
                     *self = App {
@@ -969,7 +950,7 @@ impl App {
             });
             ui.menu_button(tr("Edit"), |ui| {
                 let Some(ds) = self.designer.as_mut() else {
-                    ui.label(tr("Not implemented yet"));
+                    self.edit_menu_items(ui);
                     return;
                 };
                 let undo = egui::Button::new(tr("Undo")).shortcut_text("Ctrl+Z");
@@ -1029,29 +1010,7 @@ impl App {
             ui.menu_button(tr("Format"), |ui| {
                 ui.label(tr("Not implemented yet"));
             });
-            ui.menu_button(tr("Records"), |ui| {
-                if ui.button(tr("New Record")).clicked() {
-                    self.new_record();
-                    ui.close();
-                }
-                if ui.button(tr("Delete Record…")).clicked() {
-                    self.delete_record();
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button(tr("Show All Records")).clicked() {
-                    self.show_all();
-                    ui.close();
-                }
-                if ui.button(tr("Show Omitted Only")).clicked() {
-                    self.show_omitted();
-                    ui.close();
-                }
-                if ui.button(tr("Omit Record")).clicked() {
-                    self.omit_record();
-                    ui.close();
-                }
-            });
+            ui.menu_button(tr("Records"), |ui| self.records_menu(ui));
             ui.menu_button(tr("Scripts"), |ui| {
                 let ws = egui::Button::new(tr("Script Workspace…")).shortcut_text("Ctrl+Shift+S");
                 if ui.add_enabled(self.engine.is_some(), ws).clicked() {
@@ -1169,7 +1128,7 @@ impl App {
                         .add_enabled(found > 0, egui::Button::new(tr("Delete Record")))
                         .clicked()
                     {
-                        self.delete_record();
+                        self.confirm_delete();
                     }
                     if ui.button(tr("Find")).clicked() {
                         self.enter_find();
@@ -1610,6 +1569,7 @@ impl App {
                             }
                         }
                     }
+                    13 if chart::draw(ui.ctx(), &painter, doc, &layout, o, r, &found, rec) => {}
                     _ => {
                         if let Some(step) = o.button.as_ref().filter(|_| mode == Mode::Browse) {
                             let id = ui.scope_id().with(("button", o.id));
@@ -2046,7 +2006,11 @@ impl eframe::App for App {
             }
         }
         self.layout_dialogs(&ctx);
+        self.records_dialogs(&ctx);
         for (o, ev) in std::mem::take(&mut self.obj_events) {
+            if ev == event::OBJECT_ENTER {
+                self.m8.focus = Some(o);
+            }
             self.fire_object(o, ev);
         }
         if let Some(step) = self.pending_step.take() {

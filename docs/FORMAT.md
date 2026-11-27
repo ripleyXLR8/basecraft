@@ -523,8 +523,10 @@ and evaluate (the dialog shows `21|two|yes|two|x¶y`).
   file: one script "Nouveau script" gives `786c087f…62da` in a blank file
   and in an emptied Tasks.
 
-  *How it was confirmed (Nov 2026).* A public description of the format
-  gave this algorithm; we tested it on our own files only. It reproduces
+  *How it was confirmed (Nov 2026).* The algorithm was suggested by the
+  public format notes of the OpenMaker project
+  (github.com/OpenMaker-Dev/openmaker, `docs/re/scripts.md`); no code or
+  text was taken from it, and we tested it on our own files only. It reproduces
   key 8 of all 66 installed starter templates (every language, including
   ja/ko/zh and de names stored in the long form) and of all 395 files in
   our oracle and sample sets that have a key 8 (75 distinct values); six

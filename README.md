@@ -22,7 +22,7 @@
   <img alt="Agent-drivable over MCP and CLI" src="https://img.shields.io/badge/agents-MCP%20%C2%B7%20CLI-8a5cc2?style=flat-square">
   <br>
   <a href="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-83%25-orange?style=flat-square"></a>
+  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-84%25-orange?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -65,7 +65,7 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~83 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
+**Estimated overall progress: ~84 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is

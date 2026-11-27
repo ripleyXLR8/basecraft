@@ -143,20 +143,16 @@ fn script_workspace_flow() {
     );
     assert!(app.dirty, "saved scripts make the file dirty");
 
-    // File › Save (Ctrl+S) to a copy: the script list changed, so the app
-    // warns that FileMaker will report the file as damaged.
+    // File › Save (Ctrl+S) to a copy: the new script is written with the
+    // script catalog digest (key 8), so FileMaker opens the file.
     let out = std::env::temp_dir().join("basecraft_ui_ws_save.fmp12");
     h.state_mut().doc.as_mut().unwrap().path = Some(out.clone());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     h.run_steps(3);
-    shot(&mut h, "17_saved_warning");
+    shot(&mut h, "17_saved");
     let app = h.state();
     assert!(!app.dirty);
-    assert!(
-        app.messages.iter().any(|m| m.1 == tr("Saved. Scripts were added, renamed or deleted: BaseCraft opens this file, but FileMaker Pro will report it as damaged.")),
-        "no warning: {:?}",
-        app.messages
-    );
+    assert!(app.messages.is_empty(), "{:?}", app.messages);
     let back = fmp12::scripts::scripts(&fmp12::File::open(&out).unwrap()).unwrap();
     assert!(back.iter().any(|s| s.name == tr("New Script")));
     let _ = std::fs::remove_file(out);

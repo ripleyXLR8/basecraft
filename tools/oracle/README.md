@@ -56,13 +56,15 @@ from files we authored ourselves.
   (most dialogs, e.g. Field Options, Edit Relationship, Specify Fields for Value List, have
   automation ids such as `IDC_LOOKUP_FIELD_LIST`), `Open-FmValueLists`,
   `Add-FmScriptSteps <snippet> -Run`.
-* `script_check.ps1`: `Test-FmScripts <file> [-Xml out.xml] [-Click x,y]`
+* `script_check.ps1`: `Test-FmScripts <file> [-Xml out.xml] [-Click x,y] [-Menu n]`
   checks a file whose scripts BaseCraft wrote: opens a copy, reports the
-  damage dialog if any, lists every step as FileMaker prints it (Save a
-  Copy as XML, `StepText`), and after a click (a button, or a layout
-  change that fires a trigger) reads the custom dialog a script showed.
-  `cargo run -p fmp12 --example scriptedit -- <Tasks en.fmp12> <out> edit,flow,calc,inplace`
-  builds the file it was written for (`-Click 50,160`).
+  damage dialog if any, lists every script and step as FileMaker prints
+  them (Save a Copy as XML, `StepText`), and after a click (a button, or a
+  layout change that fires a trigger) or script n of the Scripts menu
+  reads the custom dialog a script showed.
+  `cargo run -p fmp12 --example scriptedit -- <Tasks en.fmp12> <out> "edit,delete,flow,calc,call,rename:Sort by Name:BC Renamed"`
+  builds the file it was written for (`-Click 50,160`): scripts added,
+  renamed and deleted, the new BC Calc run through a layout trigger.
 * `compile_snippet.py exprs out_prefix` + `compile_exprs.txt`: compiled-form
   oracle. Builds scripts of Set Variable steps; pasted with `Add-FmScriptSteps`
   into a file, FileMaker stores each calculation's key 5 and key 6, listed by

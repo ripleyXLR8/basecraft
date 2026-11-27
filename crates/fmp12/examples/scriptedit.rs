@@ -6,8 +6,10 @@
 //! "Go to Entry Field", adds "BC Flow" (If/Else/End If, Set Variable, Go to
 //! Layout, Perform Script) and "BC Calc" (Let, nested Let, `$v[2]`, Case,
 //! Choose, List; the result in a dialog). `steps` picks the edits
-//! (default `edit,delete,flow,calc`; `none` = an unchanged save). Prints the
-//! calculations written.
+//! (default `edit,delete,flow,calc`; `none` = an unchanged save). Also:
+//! `call` (Sort by Status, run by Task List's OnLayoutEnter, performs BC
+//! Calc), `rename:Old:New`, `drop:Name`, `beep` (a new script named by the
+//! 4th argument). Prints the calculations written.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fmp12::calc::{FileNames, compile};
@@ -50,10 +52,8 @@ fn main() {
         s
     };
     let mut list = scripts(&file).unwrap();
-    let next = list.iter().map(|s| s.id).max().unwrap() + 1;
-    // `inplace`: the new scripts' steps go into existing scripts instead
-    // (FileMaker refuses new, deleted or renamed scripts without the name
-    // digest [17].[1] key 8, FORMAT.md §8).
+    let next = list.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+    // `inplace`: the new scripts' steps go into existing scripts instead.
     let inplace = on("inplace");
     let id_of = |l: &[Script], n: &str| l.iter().find(|s| s.name == n).map(|s| s.id).unwrap();
     let (flow_id, calc_id) = if inplace {
@@ -136,6 +136,28 @@ fn main() {
             ],
         );
     }
+    if on("call") {
+        let mut perform = Step::new(id::PERFORM_SCRIPT);
+        perform.params = StepParams::PerformScript {
+            script: Some(calc_id),
+            parameter: None,
+        };
+        let s = list
+            .iter_mut()
+            .find(|s| s.name == "Sort by Status")
+            .unwrap();
+        s.steps = vec![perform];
+    }
+    for op in ops.split(',') {
+        let parts: Vec<&str> = op.split(':').collect();
+        match parts.as_slice() {
+            ["rename", old, new] => {
+                list.iter_mut().find(|s| s.name == *old).unwrap().name = (*new).into()
+            }
+            ["drop", name] => list.retain(|s| s.name != *name),
+            _ => {}
+        }
+    }
     if on("clear") {
         list.clear();
     }
@@ -145,7 +167,12 @@ fn main() {
             id: next,
             name: a.get(3).map_or("Nouveau script", |s| s.as_str()).into(),
             options: 8,
-            steps: vec![Step::new(id::BEEP)],
+            // `say`: a dialog instead, to see that the script runs.
+            steps: vec![if on("say") {
+                dialog("\"BC\"", "Get ( ScriptName ) & \" ran\"")
+            } else {
+                Step::new(id::BEEP)
+            }],
         });
     }
     std::fs::write(&a[1], save_scripts(&file, &list).unwrap()).unwrap();

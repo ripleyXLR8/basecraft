@@ -1433,6 +1433,7 @@ dependencies = [
 name = "fmp12"
 version = "0.1.0"
 dependencies = [
+ "md-5",
  "roxmltree",
 ]
 

@@ -165,6 +165,10 @@ fn info(d: &Doc) -> Json {
             "name": l.name,
             "occurrence": to_name((l.table_occurrence & 0xFFF) as u32),
         })).collect::<Vec<_>>(),
+        "accounts": db.accounts.iter().map(|a| json!({
+            "name": a.name,
+            "privilege_set": db.privilege_sets.iter().find(|p| p.id == a.privilege_set).map(|p| p.name.clone()),
+        })).collect::<Vec<_>>(),
         "value_lists": db.value_lists.iter().map(|v| json!({
             "name": v.name,
             "values": db.value_list_values(v.id),

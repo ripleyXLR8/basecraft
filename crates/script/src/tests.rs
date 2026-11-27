@@ -213,6 +213,8 @@ fn db(people: &[(&str, &str, &str)]) -> Database {
         relationships: vec![],
         layouts: vec![layout(1, "People"), layout(2, "People List")],
         themes: vec![],
+        accounts: vec![],
+        privilege_sets: vec![],
         value_lists: vec![fmp12::valuelists::ValueList {
             id: 1,
             name: "Cities".into(),

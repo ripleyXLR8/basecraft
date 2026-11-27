@@ -833,3 +833,45 @@ fn step_parameters_match_xml() {
         "{steps} steps ({values} parameter values) and {buttons} button actions checked against XML"
     );
 }
+
+#[test]
+fn security_matches_xml() {
+    let mut checked = 0;
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let accounts = fmp12::security::accounts(&file).unwrap();
+        let sets = fmp12::security::privilege_sets(&file).unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        for x in doc.descendants().filter(|n| n.has_tag_name("PrivilegeSet")) {
+            let id: u32 = x.attribute("id").unwrap().parse().unwrap();
+            let s = sets.iter().find(|s| s.id == id).expect("privilege set");
+            assert_eq!(s.name, x.attribute("name").unwrap());
+            checked += 1;
+        }
+        for x in doc
+            .descendants()
+            .filter(|n| n.has_tag_name("Account") && n.attribute("type").is_some())
+        {
+            let id: u32 = x.attribute("id").unwrap().parse().unwrap();
+            let a = accounts.iter().find(|a| a.id == id).expect("account");
+            let name = x
+                .descendants()
+                .find(|n| n.has_tag_name("AccountName"))
+                .and_then(|n| n.text())
+                .unwrap();
+            assert_eq!(a.name, name);
+            let ps = x
+                .children()
+                .find(|n| n.has_tag_name("PrivilegeSetReference"))
+                .unwrap();
+            assert_eq!(
+                a.privilege_set.to_string(),
+                ps.attribute("id").unwrap(),
+                "{name}"
+            );
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} accounts and privilege sets checked against XML");
+}

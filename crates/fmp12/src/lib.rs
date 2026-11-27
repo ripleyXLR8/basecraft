@@ -14,6 +14,7 @@ pub mod save;
 pub mod schema;
 pub mod scripts;
 pub mod scsu;
+pub mod security;
 pub mod theme;
 pub mod valuelists;
 pub mod write;

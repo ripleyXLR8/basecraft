@@ -90,6 +90,8 @@ pub struct Database {
     pub layouts: Vec<fmp12::layouts::Layout>,
     pub themes: Vec<fmp12::theme::Theme>,
     pub value_lists: Vec<fmp12::valuelists::ValueList>,
+    pub accounts: Vec<fmp12::security::Account>,
+    pub privilege_sets: Vec<fmp12::security::PrivilegeSet>,
     /// Formats the file stores dates, times and numbers in.
     pub locale: fmp12::schema::Locale,
 }
@@ -191,6 +193,8 @@ impl Database {
             layouts: fmp12::layouts::layouts(file)?,
             themes: fmp12::theme::themes(file)?,
             value_lists: fmp12::valuelists::value_lists(file)?,
+            accounts: fmp12::security::accounts(file)?,
+            privilege_sets: fmp12::security::privilege_sets(file)?,
             locale: fmp12::schema::locale(file)?,
             occurrences,
         })
@@ -971,6 +975,8 @@ pub(crate) mod tests {
             layouts: vec![],
             themes: vec![],
             value_lists: vec![],
+            accounts: vec![],
+            privilege_sets: vec![],
             locale: Locale::default(),
         }
     }

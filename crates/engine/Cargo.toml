@@ -9,3 +9,7 @@ repository.workspace = true
 bigdecimal = "0.4.11"
 calc = { version = "0.1.0", path = "../calc" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
+# .xlsx export/import: deflate for the zip container and an XML parser for
+# reading sheets. Both are pure Rust, small, and already in the lock file.
+miniz_oxide = "0.8.9"
+roxmltree = "0.21.2"

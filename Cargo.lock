@@ -1191,6 +1191,8 @@ dependencies = [
  "bigdecimal",
  "calc",
  "fmp12",
+ "miniz_oxide 0.8.9",
+ "roxmltree",
 ]
 
 [[package]]

@@ -18,6 +18,29 @@ pub struct Field {
     pub comment: String,
     /// Raw 26-byte option block (key 2), kept for lossless writing.
     pub options: Vec<u8>,
+    /// Raw summary definition of a summary field (key 9), see [`Field::summary`].
+    pub summary_raw: Vec<u8>,
+}
+
+/// Operation of a summary field ("Total of", "Count of"...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryOp {
+    Total,
+    Average,
+    Count,
+    Minimum,
+    Maximum,
+    StandardDeviation,
+    FractionOfTotal,
+    List,
+}
+
+/// Definition of a summary field: the operation and the summarized field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Summary {
+    pub op: SummaryOp,
+    /// Field id in the same table.
+    pub field: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +212,53 @@ impl Field {
         self.bit(11, 6)
     }
 
+    /// Summary definition (key 9): byte 0 = operation, bytes 8.. = `02 len
+    /// path-int field`. Operations 1 (Total) and 3 (Count) and the field
+    /// position are seen in the templates (FORMAT.md §5).
+    /// ponytail: the other operation numbers follow FileMaker's dialog order
+    /// and are unverified; option bytes (running total, by population,
+    /// restart per group, fraction subtotal field) are not decoded.
+    pub fn summary(&self) -> Option<Summary> {
+        use SummaryOp::*;
+        if self.kind() != FieldKind::Summary {
+            return None;
+        }
+        let b = &self.summary_raw;
+        let op = match b.first()? {
+            1 => Total,
+            2 => Average,
+            3 => Count,
+            4 => Minimum,
+            5 => Maximum,
+            6 => StandardDeviation,
+            7 => FractionOfTotal,
+            8 => List,
+            _ => return None,
+        };
+        let n = *b.get(9)? as usize;
+        let field = crate::path_int(b.get(10..10 + n)?)?;
+        Some(Summary { op, field })
+    }
+
+    /// Encodes a summary definition the way [`Field::summary`] reads it
+    /// (databases built in code, tests).
+    pub fn summary_bytes(s: Summary) -> Vec<u8> {
+        use SummaryOp::*;
+        let op = match s.op {
+            Total => 1,
+            Average => 2,
+            Count => 3,
+            Minimum => 4,
+            Maximum => 5,
+            StandardDeviation => 6,
+            FractionOfTotal => 7,
+            List => 8,
+        };
+        let mut b = vec![op, 0, 2, 1, 0, 0, 0xFE, 0x7F, 2, 1];
+        b.push(s.field.min(127) as u8);
+        b
+    }
+
     pub fn validation(&self) -> Validation {
         Validation {
             value_list: self.bit(14, 0),
@@ -245,6 +315,7 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
                 match (rel, c) {
                     ([], Chunk::Kv { key: 2, data }) => field.options = data.to_vec(),
                     ([], Chunk::Kv { key: 3, data }) => field.comment = text(data),
+                    ([], Chunk::Kv { key: 9, data }) => field.summary_raw = data.to_vec(),
                     _ => {
                         if let Some((first, s)) = name_part(rel, c) {
                             if first {

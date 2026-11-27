@@ -1,9 +1,12 @@
 //! Prints the parts and objects (absolute bounds, parent) of a layout.
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let a: Vec<String> = std::env::args().collect();
-    let f = fmp12::File::open(&a[1]).unwrap();
-    for l in fmp12::layouts::layouts(&f).unwrap() {
-        if l.name != a[2] {
+    let [_, file, name, ..] = a.as_slice() else {
+        return Err("usage: objects <file> <layout>".into());
+    };
+    let f = fmp12::File::open(file)?;
+    for l in fmp12::layouts::layouts(&f)? {
+        if l.name != *name {
             continue;
         }
         for p in &l.parts {
@@ -17,4 +20,5 @@ fn main() {
             );
         }
     }
+    Ok(())
 }

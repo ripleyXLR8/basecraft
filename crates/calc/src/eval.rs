@@ -444,7 +444,7 @@ impl<'a> Evaluator<'a> {
                 } => {
                     self.scopes
                         .last_mut()
-                        .expect("bind outside a scope")
+                        .ok_or_else(|| EvalError::generic("Let binding outside a scope"))?
                         .insert(name.to_lowercase(), v);
                 }
                 Expr::Var { name, rep } => {

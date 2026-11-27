@@ -2,6 +2,9 @@
 //! install. Those files are Claris property and never committed; the test is
 //! a no-op when they are absent (e.g. on CI). Override with FMP12_TEMPLATES.
 
+// Helpers outside #[test] functions may unwrap, expect and panic too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 
 /// Every `<dir>/<template>/<lang>.fmp12`.

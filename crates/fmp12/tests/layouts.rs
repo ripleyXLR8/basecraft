@@ -1,6 +1,9 @@
 //! Layout writing (M6) on the FileMaker starter templates (skipped when
 //! they are absent; override the folder with FMP12_TEMPLATES).
 
+// Helpers outside #[test] functions may unwrap, expect and panic too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

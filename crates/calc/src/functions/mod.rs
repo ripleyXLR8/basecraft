@@ -787,7 +787,8 @@ fn average(ev: &mut Evaluator, a: &[Expr]) -> R {
     }
     let total: Num = n.iter().sum();
     Ok(Value::Number(
-        num::div(&total, &num::int(n.len() as i64), ev.scale).unwrap(),
+        num::div(&total, &num::int(n.len() as i64), ev.scale)
+            .ok_or_else(|| EvalError::new(code::DIVIDE_BY_ZERO, "division by zero"))?,
     ))
 }
 
@@ -843,7 +844,8 @@ fn var(ev: &mut Evaluator, a: &[Expr], sample: bool) -> Result<Option<Num>, Eval
         return Ok(Some(Num::zero()));
     }
     let w = ev.scale + 10;
-    let mean = num::div(&n.iter().sum(), &num::int(n.len() as i64), w).unwrap();
+    let mean = num::div(&n.iter().sum(), &num::int(n.len() as i64), w)
+        .ok_or_else(|| EvalError::new(code::DIVIDE_BY_ZERO, "division by zero"))?;
     let ss: Num = n.iter().map(|x| (x - &mean) * (x - &mean)).sum();
     Ok(num::div(&ss, &num::int(count), w))
 }
@@ -852,7 +854,9 @@ fn variance_like(ev: &mut Evaluator, a: &[Expr], sample: bool, root: bool) -> R 
     let scale = ev.scale;
     match var(ev, a, sample)? {
         None => Ok(Value::empty()),
-        Some(v) if root => Ok(Value::Number(num::sqrt(&v, scale).unwrap())),
+        Some(v) if root => num::sqrt(&v, scale)
+            .map(Value::Number)
+            .ok_or_else(|| EvalError::new(code::NUMBER_DOMAIN, "negative variance")),
         Some(v) => Ok(Value::Number(num::round(&v, scale))),
     }
 }

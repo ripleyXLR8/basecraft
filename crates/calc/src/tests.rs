@@ -724,6 +724,9 @@ fn errors_never_panic() {
     let too_deep = format!("{}1{}", "(".repeat(5000), ")".repeat(5000));
     assert_eq!(eval(&too_deep), "?");
     assert_eq!(eval(&"-".repeat(5000)), "?");
+    // Literals beyond FileMaker's range and infinite JSON numbers.
+    assert_eq!(eval(&format!(".{}1", "0".repeat(900))), "?");
+    let _ = evaluate("JSONFormatElements ( \"[1e999]\" )", &mut ctx());
     assert_eq!(
         eval("Let ( $x = \"Evaluate ( $x )\" ; Evaluate ( $x ) )"),
         "?"

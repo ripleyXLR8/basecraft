@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dev-dependencies]
 roxmltree = "0.21.2"
+
+[lints]
+workspace = true

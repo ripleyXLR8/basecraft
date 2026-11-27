@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("no such table")?
                 .id;
             let i = db.new_record(tid).ok_or("no such table")?;
-            last_new = db.table(tid).unwrap().records[i].id;
+            last_new = db.table(tid).ok_or("no such table")?.records[i].id;
             continue;
         }
         let t = db

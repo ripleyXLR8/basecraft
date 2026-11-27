@@ -126,7 +126,7 @@ pub fn fix(x: Num) -> Num {
 pub fn exact(x: Num) -> Num {
     let x = if x.digits() > MAX_DIGITS {
         x.with_precision_round(
-            std::num::NonZeroU64::new(MAX_DIGITS).unwrap(),
+            const { std::num::NonZeroU64::new(MAX_DIGITS).unwrap() },
             RoundingMode::HalfUp,
         )
     } else {
@@ -248,9 +248,10 @@ pub fn from_f64(f: f64, scale: i64) -> Option<Num> {
     // round-tripping digits.
     // The exact binary value to 20 significant digits, cut (not rounded) to
     // the inexact scale: Sin ( 1 ) is .841470984807896504 in FileMaker.
-    let x = Num::try_from(f)
-        .ok()?
-        .with_precision_round(std::num::NonZeroU64::new(20).unwrap(), RoundingMode::HalfUp);
+    let x = Num::try_from(f).ok()?.with_precision_round(
+        const { std::num::NonZeroU64::new(20).unwrap() },
+        RoundingMode::HalfUp,
+    );
     Some(if scale == DEFAULT_SCALE {
         x.with_scale_round(INEXACT, RoundingMode::Down)
     } else {
@@ -291,8 +292,9 @@ pub fn exp(x: &Num, scale: i64) -> Option<Num> {
     }
     let mut k = 0u32;
     let mut r = x.clone();
-    while r > Num::from_str("0.5").unwrap() {
-        r = &r * Num::from_str("0.5").unwrap(); // exact, unlike `/`
+    let half = Num::new(5.into(), 1); // 0.5
+    while r > half {
+        r = &r * &half; // exact, unlike `/`
         k += 1;
     }
     let w = scale + 10 + exp_int_digits(x) + k as i64;
@@ -325,7 +327,7 @@ pub fn ln(x: &Num, scale: i64) -> Option<Num> {
     let mut y = x.clone();
     let mut j = 0u32;
     let one = int(1);
-    let near = Num::from_str("0.01").unwrap();
+    let near = Num::new(1.into(), 2); // 0.01
     while (&y - &one).abs() > near {
         y = sqrt(&y, w)?;
         j += 1;
@@ -398,7 +400,7 @@ pub fn powi(x: &Num, mut n: u64) -> Option<Num> {
 fn cap(x: Num) -> Num {
     if x.digits() > MAX_DIGITS + 50 {
         x.with_precision_round(
-            std::num::NonZeroU64::new(MAX_DIGITS + 50).unwrap(),
+            const { std::num::NonZeroU64::new(MAX_DIGITS + 50).unwrap() },
             RoundingMode::HalfUp,
         )
     } else {

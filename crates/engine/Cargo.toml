@@ -13,3 +13,6 @@ fmp12 = { version = "0.1.0", path = "../fmp12" }
 # reading sheets. Both are pure Rust, small, and already in the lock file.
 miniz_oxide = "0.8.9"
 roxmltree = "0.21.2"
+
+[lints]
+workspace = true

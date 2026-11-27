@@ -2,15 +2,17 @@
 //! original index), reporting the sectors whose bytes change.
 use fmp12::{File, write};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let a: Vec<String> = std::env::args().collect();
-    let f = File::open(&a[1]).unwrap();
+    let f = File::open(a.get(1).ok_or("usage: releaf <file> [out]")?)?;
     let mut b = f.bytes().to_vec();
     let mut changed = 0;
     for s in f.leaves() {
-        let es = write::leaf_entries(s.payload).unwrap();
+        let es = write::leaf_entries(s.payload)?;
         let pages = write::pack(&es);
-        assert_eq!(pages.len(), 1, "sector {} grew", s.id);
+        if pages.len() != 1 {
+            return Err(format!("sector {} grew", s.id).into());
+        }
         let p = &pages[0].0;
         let o = s.id as usize * 4096;
         let free = u16::from_be_bytes([b[o + 14], b[o + 15]]) as usize;
@@ -36,6 +38,7 @@ fn main() {
     }
     println!("{changed} leaves changed (ignoring trailing pops)");
     if let Some(out) = a.get(2) {
-        std::fs::write(out, b).unwrap();
+        std::fs::write(out, b)?;
     }
+    Ok(())
 }

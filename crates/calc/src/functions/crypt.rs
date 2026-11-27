@@ -33,7 +33,7 @@ fn bad(msg: &str) -> EvalError {
 fn cipher(key: &str, salt: &[u8]) -> aes_gcm::Aes128Gcm {
     let mut k = [0u8; 16];
     pbkdf2::pbkdf2_hmac::<Sha256>(key.as_bytes(), salt, ROUNDS, &mut k);
-    aes_gcm::Aes128Gcm::new_from_slice(&k).expect("16-byte key")
+    aes_gcm::Aes128Gcm::new(&k.into())
 }
 
 fn encrypt(v: &Value, key: &str) -> Result<Vec<u8>, EvalError> {
@@ -55,7 +55,7 @@ fn encrypt(v: &Value, key: &str) -> Result<Vec<u8>, EvalError> {
     let mut head = [0u8; SALT + NONCE];
     getrandom::fill(&mut head).map_err(|_| bad("no random source"))?;
     let (salt, nonce) = head.split_at(SALT);
-    let nonce = aes_gcm::Nonce::try_from(nonce).expect("12-byte nonce");
+    let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| bad("encryption failed"))?;
     let body = cipher(key, salt)
         .encrypt(&nonce, plain.as_slice())
         .map_err(|_| bad("encryption failed"))?;
@@ -69,7 +69,7 @@ fn decrypt(data: &[u8], key: &str) -> R {
     }
     let (salt, rest) = data.split_at(SALT);
     let (nonce, body) = rest.split_at(NONCE);
-    let nonce = aes_gcm::Nonce::try_from(nonce).expect("12-byte nonce");
+    let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| wrong())?;
     let plain = cipher(key, salt)
         .decrypt(&nonce, body)
         .map_err(|_| wrong())?;
@@ -80,8 +80,8 @@ fn decrypt(data: &[u8], key: &str) -> R {
     match payload.split_first() {
         Some((0, text)) => Ok(Value::Text(String::from_utf8_lossy(text).into_owned())),
         Some((1, rest)) => {
-            let (len, rest) = rest.split_at_checked(4).ok_or_else(wrong)?;
-            let len = u32::from_le_bytes(len.try_into().unwrap()) as usize;
+            let (len, rest) = rest.split_first_chunk().ok_or_else(wrong)?;
+            let len = u32::from_le_bytes(*len) as usize;
             let (name, data) = rest.split_at_checked(len).ok_or_else(wrong)?;
             Ok(Value::Container(Container {
                 name: String::from_utf8_lossy(name).into_owned(),

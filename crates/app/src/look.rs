@@ -1,7 +1,7 @@
 //! Resolves FileMaker theme styles into what egui needs to paint an object.
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Stroke, StrokeKind, Vec2};
-use fmp12::theme::{INNER_BORDER, NORMAL, ObjectStyle, PropsExt, SELF, Theme, prop};
+use fmp12::theme::{INNER_BORDER, NORMAL, ObjectStyle, PropsExt, SELF, TEXT, Theme, prop};
 
 /// Paint attributes of one layout object (or part, or layout background).
 #[derive(Debug, Clone)]
@@ -71,7 +71,13 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
     l.radius = p
         .length(prop::BORDER_RADIUS)
         .map_or(0.0, |x| x.pt(font_size, 0.0) as f32);
-    if let Some(c) = p.color(prop::COLOR) {
+    // Text colour may live on the `.text` element or on `.self`.
+    let text = th.resolve(style, TEXT, NORMAL);
+    if let Some(c) = text
+        .color(prop::COLOR)
+        .or_else(|| p.color(prop::COLOR))
+        .filter(|c| c.a > 0.0)
+    {
         l.color = color(c);
     }
     l.align = match p.enum_value(prop::TEXT_ALIGN) {

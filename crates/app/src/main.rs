@@ -669,7 +669,13 @@ impl App {
                         lk.paint_box(&painter, r);
                         let active = front(o, &self.tabs);
                         let mut x = r.left();
-                        for p in layout.objects.iter().filter(|p| p.parent == Some(o.id)) {
+                        let mut panels: Vec<_> = layout
+                            .objects
+                            .iter()
+                            .filter(|p| p.parent == Some(o.id))
+                            .collect();
+                        panels.sort_by_key(|p| p.id);
+                        for p in panels {
                             let label = p.text.clone().unwrap_or_default();
                             let w = (label.chars().count() as f32 * 8.0 + 32.0).max(60.0);
                             let tab =
@@ -766,7 +772,7 @@ impl App {
                         }
                     }
                     _ => {
-                        if let Some(l) = &o.label {
+                        if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 18)) {
                             let text = doc.db.eval_tokens(l, t, layout_to, rec).to_text();
                             lk.paint_box(&painter, r);
                             lk.paint_text(&painter, r, &text);
@@ -907,6 +913,11 @@ fn draw_object(
             lk.paint_text(painter, r, &v);
         }
         (Mode::Browse, Some(rec)) => {
+            // Placeholder text (a calculation, usually a literal).
+            let placeholder = o
+                .label
+                .as_ref()
+                .map(|l| doc.db.eval_tokens(l, t, 0, Some(rec)).to_text());
             // Pop-up menus and drop-down lists offer their value list.
             let choices = match (o.display, o.value_list) {
                 (1 | 2, Some(vl)) => Some(doc.db.value_list_values(vl)),
@@ -937,6 +948,15 @@ fn draw_object(
                         }
                     }
                     None => {
+                        if let Some(ph) = placeholder.as_ref().filter(|_| s.is_empty()) {
+                            painter.text(
+                                inner.left_center(),
+                                egui::Align2::LEFT_CENTER,
+                                ph,
+                                lk.font(),
+                                Color32::from_gray(170),
+                            );
+                        }
                         if ui.put(inner, lk.edit(s)).changed() {
                             changed = true;
                         }

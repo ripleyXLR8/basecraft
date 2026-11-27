@@ -143,6 +143,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | `perform` / `run_step` run to the end (dialogs through `Host::dialog`, button 1 by default): CLI and MCP unchanged | ✅ |
 | `Get ( LastErrorLocation / LastErrorDetail / ScriptAnimationState / Trigger… )` (trigger values set by the host) | ✅ |
 | Step text as in the Script Workspace (`script::text`), block indentation | ✅ |
+| French step names and step text (`script::text::step_name_fr`, `step_text_in`): the 222 step names, palette categories and step labels as FileMaker 26's French UI shows them (`Définir rubrique [Tasks::Description; "abc"]`), read from its Script Workspace through UI Automation; calculations keep English function names | ✅ |
 | Script triggers (`fmp12::triggers`): layout, object and file triggers, 26 event ids, modes (Browse 1, Find 2, Preview 4) and parameters decoded from triggers set in FileMaker 26; 25 triggers of the oracle files match the XML (event, script, modes, parameter) | ✅ read; writing ⏳ |
 | Calculation compiler (`fmp12::calc_compile`, one compiler for fields and scripts): source tokens (key 5) and prefix form (key 6); all 5,214 template calculations, comments included: key 6 derived from key 5 identical, decompiled text compiles back to both keys | ✅ |
 | Writing scripts (`fmp12::scripts_save::save_scripts`): step lists and parameter trees of existing scripts; 224 template and oracle scripts re-encode byte for byte, 886 typed steps encode back from their typed parameters | ✅ verified in FileMaker (`tools/oracle/script_check.ps1`): edited, added and disabled steps, If/Else, Set Variable, Go to Layout, Perform Script, Show Custom Dialog, Let/Case/Choose/List/`$v[2]` show as written and evaluate |
@@ -280,6 +281,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Script Workspace (Scripts › Script Workspace…, Ctrl+Shift+S): script list with folders, step text with indentation and greyed disabled steps, palette by category with search, add / delete / duplicate / disable / move (drag or buttons), new / rename / delete script, Run | ✅ |
 | Workspace step editors: Set Field, Set Variable, If / Else If / Exit Loop If, Go to Layout, Go to Record, Perform Script, Show Custom Dialog, Sort, Perform Find, Enter Find Mode, Comment, Commit, Insert Text, Go to Field/Object, Pause/Resume, Refresh Window; calculation editor with fields, functions and Get flags | ✅ |
 | Data Viewer (Tools menu): watch expressions evaluated in the window's context (Get functions, $$ globals) | ✅ |
+| Script Workspace and Data Viewer in their own OS windows (egui immediate viewports) on desktop, with title, icon, size remembered between openings, Ctrl+Shift+S / menu bring them to the front, closing the window closes them, Ctrl+S in the workspace saves its scripts; in-page windows in the browser and the UI tests | ✅ |
 | UI driven headless through `egui_kittest` (`crates/app/src/ui_tests.rs`): workspace edit / run / save, dialog and pause, Data Viewer, Preview, open trigger; `BASECRAFT_SHOTS=<dir>` also renders PNGs | ✅ |
 | Script debugger | ⏳ |
 

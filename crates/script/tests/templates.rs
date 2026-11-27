@@ -189,6 +189,18 @@ fn step_text_of_template_scripts() {
     );
     assert!(all.contains("If [ "), "{all}");
     assert!(all.contains("  Loop"), "{all}");
+    // FileMaker's French UI: French names and labels, `Nom [a; b]`.
+    let fr: Vec<String> = s
+        .steps
+        .iter()
+        .map(|st| script::text::step_text_in(st, &n, true))
+        .collect();
+    assert!(
+        fr.contains(&"Définir variable [$$parentPrimaryKey; Valeur: Tasks::PrimaryKey]".into()),
+        "{fr:?}"
+    );
+    assert!(fr.iter().any(|t| t.starts_with("Si [")), "{fr:?}");
+    assert!(fr.iter().any(|t| t == "Boucle"), "{fr:?}");
     // Every calculation in every step text compiles back to the same tokens.
     for s in &e.scripts {
         for st in &s.steps {

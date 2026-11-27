@@ -106,7 +106,10 @@ change from one export to the next even for the same file. After resolving
 each `DDRREF` to the hash it points to, the diff is empty.
 
 **In-place edits work.** Copies of real files with single bytes changed
-(same length) open in FileMaker without complaint: there is no checksum.
+(same length) open in FileMaker without complaint: there is no checksum on
+sectors or on the file as a whole. A few catalogs do carry digests of their
+own content, checked when the file opens: the script list (`[17].[1]` key 8,
+§8) and the accounts and privilege catalogs (`[23]`).
 We use this to reverse-engineer field semantics (`tools/oracle`).
 
 ## 2. Payload byte code ✅

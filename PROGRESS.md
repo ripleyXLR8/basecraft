@@ -148,3 +148,12 @@ ApplicationArchitecture.
 | Layout mode, Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
 | Save from the app: Ctrl+S / Save a Copy As (desktop), download (web) | ✅ |
+
+## Automation (`crates/cli`)
+
+| Feature | State |
+|---------|-------|
+| `openmaker-cli`: info, records (find/omit/sort/limit), eval, new, set, delete, JSON output | ✅ |
+| Session mode (JSON-lines on stdin/stdout) with save | ✅ |
+| Run scripts from the CLI | ⏳ (after M5) |
+| MCP server for AI agents | ⏳ |

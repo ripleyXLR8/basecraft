@@ -51,6 +51,39 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 | M7 Write `.fmp12` | 10 | 65 % |
 | M8 Import/export, print, security… | 12 | 0 % |
 
+## Command line for scripts and AI agents
+
+`openmaker-cli` drives OpenMaker without a GUI. Every command prints **JSON**,
+so tools and AI agents can read the results directly. Nothing is written to disk unless
+you pass `-o <out.fmp12>` or `--in-place`; without them, writes are dry runs.
+
+```sh
+openmaker-cli info    Contacts.fmp12                       # tables, fields, relationships, layouts, value lists
+openmaker-cli records Contacts.fmp12 Contacts --find "First Name=ad" --sort "Last Name:desc" --limit 20
+openmaker-cli eval    Contacts.fmp12 'Upper ( ${Last Name} )' --table Contacts --record 2
+openmaker-cli new     Contacts.fmp12 Contacts "First Name=Ada" "Last Name=Lovelace" -o out.fmp12
+openmaker-cli set     Contacts.fmp12 Contacts 2 "Company=Navy" --in-place
+openmaker-cli delete  Contacts.fmp12 Contacts 2 --in-place
+```
+
+* `records` uses FileMaker's find syntax (`=`, `==`, `*`, `<`, `>`, ranges `a...b`,
+  `--omit` requests) and FileMaker's sort.
+* `new` applies auto-enter options (serials, UUIDs, timestamps). `new` and `set` report
+  validation failures in `validation_errors`.
+* In `eval`, field names that contain spaces go between `${…}`.
+* **Session mode** keeps a file open and reads one JSON command per line on stdin, replying
+  with one JSON line each:
+
+```sh
+openmaker-cli session Contacts.fmp12
+{"cmd":"records","args":["Contacts","--find","Company=Navy"]}
+{"cmd":"set","args":["Contacts","1","Company=Army"]}
+{"cmd":"save","args":["-o","out.fmp12"]}
+{"cmd":"quit"}
+```
+
+Files written by the CLI open in FileMaker Pro 26.
+
 ## Web version
 
 OpenMaker also runs in the browser (WebAssembly): **https://ripleyxlr8.github.io/openmaker/**.
@@ -62,6 +95,7 @@ locally in the page. To build it yourself: `cd crates/app && trunk serve`.
 ```
 crates/fmp12   .fmp12 (HBAM7) reader, later writer
 crates/app     the OpenMaker desktop application (egui)
+crates/cli     openmaker-cli: JSON command line for scripts and AI agents
 tools/fmdump   command-line inspector for .fmp12 files
 tools/oracle   scripts that drive a real FileMaker Pro to produce test oracles
 docs/          format specification and reference lists

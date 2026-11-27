@@ -62,7 +62,7 @@ numbers and the list of missing functions.
 
 | Item | Done / total |
 |------|-------------:|
-| Functions | 142 / 234 |
+| Functions | 234 / 234 |
 | `Get()` flags answered without a host | 10 / 139 |
 
 The 234 reference lines include `Status` twice. The 139 `Get()` flags exclude the
@@ -80,11 +80,19 @@ ApplicationArchitecture.
 | Text, value-list and word functions | ✅ |
 | Number, financial and math functions (decimal Exp/Ln/Sqrt/Pi; trig through f64) | ✅ |
 | Date, time and timestamp functions (en_US formats) | ✅ |
-| JSON (Set/Get/Delete/ListKeys/ListValues/Format/MakeArray/GetElementType) | ✅ |
+| JSON (Set/Get/Delete/ListKeys/ListValues/Format/MakeArray/GetElementType, Parse/ParsedState) | ✅ |
+| JSONValueExists/ValueCount/AnyValuesExist/RemoveValues/UniqueValues (undocumented; semantics inferred from the signatures) | 🚧 |
 | Base64, hex, URL encoding, CryptDigest, CryptAuthCode, TextEncode/Decode (UTF-8) | ✅ |
 | Aggregates over lists, repetitions and related records (through `Context`) | ✅ |
-| Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped | 🚧 |
-| Schema, design, layout, SQL, AI, sensor and encryption functions | ⏳ |
+| Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped; GetAsCSS/GetAsSVG of plain text | 🚧 |
+| Design functions (FieldNames, FieldType, RelationInfo, GetTableDDL, LayoutObjectNames…) on `Context::schema` | ✅ |
+| Record functions (GetNthRecord, Lookup, LookupNext, GetSummary, Self, Status, GetRecordIDsFromFoundSet) through `Context` | ✅ |
+| ExecuteSQL / ExecuteSQLe: single-table SELECT, WHERE, ORDER BY, DISTINCT, COUNT(*), OFFSET/FETCH, `?` arguments, over `Context::rows` | 🚧 no joins, GROUP BY or system tables |
+| Japanese: kana width and script, KanjiNumeral, NumToJText, YearName, MonthNameJ (formats partly unverified) | 🚧 |
+| CryptGenerateSignature / CryptVerifySignature (RSA PKCS #1 v1.5, plain and DES-EDE3/AES-encrypted PEM keys) | ✅ matches OpenSSL |
+| CryptEncrypt / CryptDecrypt (+Base64): PBKDF2 + AES-128-GCM with SHA-256 digest, own byte layout | 🚧 not FileMaker-compatible |
+| Embeddings (CosineSimilarity, Add/Subtract/NormalizeEmbedding, GetEmbeddingAsText/File), container size/attributes, path conversion | ✅ |
+| Location, sensors, Live Text, AI models, persistent data, layout-object attributes: `Context::host_function`, "not available" (error 3) by default | ✅ |
 | Custom functions, file-locale date/number formats | ⏳ |
 
 ## M7 — Writing `.fmp12`

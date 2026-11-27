@@ -424,14 +424,6 @@ fn shift(c: char, from: std::ops::RangeInclusive<u32>, delta: i64) -> char {
     }
 }
 
-pub fn hiragana(_: &mut Evaluator, a: &[Value]) -> R {
-    map_chars(a, |c| shift(c, 0x30A1..=0x30F6, -0x60))
-}
-
-pub fn katakana(_: &mut Evaluator, a: &[Value]) -> R {
-    map_chars(a, |c| shift(c, 0x3041..=0x3096, 0x60))
-}
-
 pub fn roman_zenkaku(_: &mut Evaluator, a: &[Value]) -> R {
     map_chars(a, |c| {
         if c == ' ' {
@@ -463,4 +455,42 @@ pub fn plain(_: &mut Evaluator, a: &[Value]) -> R {
 /// TextStyleAdd/Remove: the style argument (Bold + Italic...) is not evaluated.
 pub fn plain_lazy(ev: &mut Evaluator, a: &[Expr]) -> R {
     Ok(Value::Text(ev.eval(&a[0])?.to_text()))
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\r' => out.push_str("<br>"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// GetAsCSS: styled runs become `<span style="...">`; text without styles
+/// (all we keep) is just HTML-escaped, carriage returns as `<br>`.
+// ponytail: unstyled output, escaping and line breaks are undocumented;
+// check against FileMaker once styled text exists.
+pub fn get_as_css(_: &mut Evaluator, a: &[Value]) -> R {
+    Ok(Value::Text(html_escape(&txt(a, 0))))
+}
+
+/// GetAsSVG: a `<stylelist>` of runs and a `<data>` block of spans. Without
+/// style runs the whole text is one run with an empty style.
+// ponytail: same caveat as GetAsCSS.
+pub fn get_as_svg(_: &mut Evaluator, a: &[Value]) -> R {
+    let s = txt(a, 0);
+    if s.is_empty() {
+        return Ok(Value::empty());
+    }
+    let n = s.chars().count();
+    Ok(Value::Text(format!(
+        "<stylelist>\r<style#0>\"\", Begin: 1, End: {n}</style>\r</stylelist>\r<data>\r<span style=\"0\">{}</span>\r</data>",
+        html_escape(&s)
+    )))
 }

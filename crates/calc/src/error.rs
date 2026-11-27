@@ -4,7 +4,13 @@ use std::fmt;
 
 /// FileMaker error codes used by the calculation engine.
 pub mod code {
+    /// Command is unavailable (wrong platform or mode).
+    pub const UNAVAILABLE: u32 = 3;
+    pub const FILE_MISSING: u32 = 100;
     pub const FIELD_MISSING: u32 = 102;
+    pub const LAYOUT_MISSING: u32 = 105;
+    pub const TABLE_MISSING: u32 = 106;
+    pub const SQL_ERROR: u32 = 8310;
     pub const GENERIC: u32 = 1200;
     pub const TOO_FEW_PARAMS: u32 = 1201;
     pub const TOO_MANY_PARAMS: u32 = 1202;

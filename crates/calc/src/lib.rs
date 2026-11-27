@@ -13,6 +13,7 @@ pub mod functions;
 pub mod lexer;
 pub mod num;
 pub mod parser;
+pub mod schema;
 pub mod value;
 
 pub use ast::Expr;
@@ -34,5 +35,7 @@ pub fn eval_text(src: &str, ctx: &mut dyn Context) -> String {
         .unwrap_or_else(|_| "?".into())
 }
 
+#[cfg(test)]
+mod host_tests;
 #[cfg(test)]
 mod tests;

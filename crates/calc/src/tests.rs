@@ -131,10 +131,7 @@ fn logic_functions() {
         ("EvaluationError ( NoSuchField )", "102"),
         ("EvaluationError ( Left ( \"a\" ) )", "1201"),
         ("EvaluationError ( Left ( \"a\" ; 1 ; 2 ) )", "1202"),
-        (
-            "EvaluationError ( ExecuteSQL ( \"x\" ; \"\" ; \"\" ) )",
-            "1223",
-        ),
+        ("EvaluationError ( Location ( 1 ) )", "3"),
         ("EvaluationError ( NoSuchFunction ( 1 ) )", "1224"),
         ("EvaluationError ( Get ( NotAFlag ) )", "1215"),
         ("IsEmpty ( \"\" )", "1"),
@@ -721,11 +718,9 @@ fn errors_never_panic() {
         }
         let _ = evaluate(name, &mut ctx());
     }
-    assert_eq!(
-        error_code("ExecuteSQL ( \"x\" ; \"\" ; \"\" )"),
-        code::NOT_IMPLEMENTED
-    );
-    assert_eq!(error_code("Self"), code::NOT_IMPLEMENTED);
+    assert_eq!(eval("ExecuteSQL ( \"x\" ; \"\" ; \"\" )"), "?");
+    assert_eq!(error_code("Self"), code::UNAVAILABLE);
+    assert_eq!(error_code("FieldNames ( \"\" ; \"\" )"), code::FILE_MISSING);
     // Deep nesting and self-evaluating text fail cleanly.
     let deep = format!("{}1{}", "(".repeat(150), ")".repeat(150));
     assert_eq!(eval(&deep), "1");

@@ -1,10 +1,15 @@
 //! Function registry and the logic/aggregate functions that need
 //! unevaluated arguments.
 
+mod crypt;
 mod datetime;
+mod design;
 mod encode;
+mod host;
+mod jp;
 mod json;
 mod number;
+mod sql;
 mod text;
 
 pub use datetime::builtin_get;
@@ -126,8 +131,8 @@ pub static FUNCTIONS: &[Func] = &[
     e("Filter", 2, 2, text::filter),
     e("FilterValues", 2, 2, text::filter_values),
     e("GetValue", 2, 2, text::get_value),
-    e("Hiragana", 1, 1, text::hiragana),
-    e("Katakana", 1, 1, text::katakana),
+    e("Hiragana", 1, 1, jp::hiragana),
+    e("Katakana", 1, 1, jp::katakana),
     e("Left", 2, 2, text::left),
     e("LeftValues", 2, 2, text::left_values),
     e("LeftWords", 2, 2, text::left_words),
@@ -209,6 +214,140 @@ pub static FUNCTIONS: &[Func] = &[
     e("JSONListValues", 2, 2, json::list_values),
     e("JSONFormatElements", 1, 1, json::format_elements),
     e("JSONMakeArray", 3, 3, json::make_array),
+    e("JSONParse", 1, 1, json::json_parse),
+    e("JSONParsedState", 1, 1, json::json_parsed_state),
+    e("JSONValueExists", 3, 3, json::value_exists),
+    e("JSONValueCount", 3, 3, json::value_count),
+    e("JSONAnyValuesExist", 3, 3, json::any_values_exist),
+    e("JSONRemoveValues", 3, 3, json::remove_values),
+    e("JSONUniqueValues", 2, 2, json::unique_values),
+    // styled text as HTML/SVG
+    e("GetAsCSS", 1, 1, text::get_as_css),
+    e("GetAsSVG", 1, 1, text::get_as_svg),
+    // Japanese
+    e("KanaHankaku", 1, 1, jp::kana_hankaku),
+    e("KanaZenkaku", 1, 1, jp::kana_zenkaku),
+    e("KanjiNumeral", 1, 1, jp::kanji_numeral),
+    e("NumToJText", 3, 3, jp::num_to_j_text),
+    e("YearName", 2, 2, jp::year_name),
+    e("MonthNameJ", 1, 1, jp::month_name_j),
+    // encryption and signatures
+    e("CryptEncrypt", 2, 2, crypt::crypt_encrypt),
+    e("CryptDecrypt", 2, 2, crypt::crypt_decrypt),
+    e("CryptEncryptBase64", 2, 2, crypt::crypt_encrypt_base64),
+    e("CryptDecryptBase64", 2, 2, crypt::crypt_decrypt_base64),
+    e(
+        "CryptGenerateSignature",
+        4,
+        4,
+        crypt::crypt_generate_signature,
+    ),
+    e("CryptVerifySignature", 4, 4, crypt::crypt_verify_signature),
+    // SQL
+    e("ExecuteSQL", 3, N, sql::execute_sql),
+    e("ExecuteSQLe", 3, N, sql::execute_sql_e),
+    // design (schema through Context::schema)
+    e("BaseTableComment", 2, 2, design::base_table_comment),
+    e("BaseTableIDs", 1, 1, design::base_table_ids),
+    e("BaseTableNames", 1, 1, design::base_table_names),
+    e("FieldAnnotation", 2, 2, design::field_annotation),
+    e("FieldBounds", 3, 3, design::field_bounds),
+    e("FieldComment", 2, 2, design::field_comment),
+    e("FieldDisplayNames", 2, 2, design::field_display_names),
+    e("FieldIDs", 2, 2, design::field_ids),
+    e("FieldNames", 2, 2, design::field_names),
+    e("FieldRepetitions", 3, 3, design::field_repetitions),
+    e("FieldStyle", 3, 3, design::field_style),
+    e("FieldType", 2, 2, design::field_type),
+    l("GetBaseTableName", 1, 1, design::get_base_table_name),
+    e("GetFieldsOnLayout", 1, 1, design::get_fields_on_layout),
+    e("GetNextSerialValue", 2, 2, design::get_next_serial_value),
+    e("GetTableDDL", 2, 2, design::get_table_ddl),
+    e("LayoutIDs", 1, 1, design::layout_ids),
+    e("LayoutNames", 1, 1, design::layout_names),
+    e("LayoutObjectNames", 2, 2, design::layout_object_names),
+    e("RelationInfo", 2, 2, design::relation_info),
+    e("ScriptIDs", 1, 1, design::script_ids),
+    e("ScriptNames", 1, 1, design::script_names),
+    e("TableIDs", 1, 1, design::table_ids),
+    e("TableNames", 1, 1, design::table_names),
+    e("ValueListIDs", 1, 1, design::value_list_ids),
+    e("ValueListItems", 2, 2, design::value_list_items),
+    e("ValueListNames", 1, 1, design::value_list_names),
+    // records (through Context)
+    l("GetNthRecord", 2, 2, design::get_nth_record),
+    l("GetSummary", 2, 2, design::get_summary),
+    l("Lookup", 1, 2, design::lookup),
+    l("LookupNext", 2, 2, design::lookup_next),
+    e(
+        "GetRecordIDsFromFoundSet",
+        1,
+        2,
+        design::get_record_ids_from_found_set,
+    ),
+    e("Self", 0, 0, design::self_),
+    l("Status", 1, 1, design::status),
+    // containers, embeddings and paths
+    e("GetContainerAttribute", 2, 2, host::get_container_attribute),
+    e("GetHeight", 1, 1, host::get_height),
+    e("GetWidth", 1, 1, host::get_width),
+    e("VerifyContainer", 1, 1, host::verify_container),
+    e("CosineSimilarity", 2, 2, host::cosine_similarity),
+    e("AddEmbeddings", 2, 2, host::add_embeddings),
+    e("SubtractEmbeddings", 2, 2, host::subtract_embeddings),
+    e("NormalizeEmbedding", 1, 2, host::normalize_embedding),
+    e("GetEmbeddingAsText", 1, 1, host::get_embedding_as_text),
+    e("GetEmbeddingAsFile", 1, 2, host::get_embedding_as_file),
+    e(
+        "ConvertFromFileMakerPath",
+        2,
+        2,
+        host::convert_from_filemaker_path,
+    ),
+    e(
+        "ConvertToFileMakerPath",
+        2,
+        2,
+        host::convert_to_filemaker_path,
+    ),
+    // platform and services (Context::host_function; "not available" by default)
+    e("Location", 1, 2, host::location),
+    e("LocationValues", 1, 2, host::location_values),
+    e("GetSensor", 1, 3, host::get_sensor),
+    e("RangeBeacons", 1, 4, host::range_beacons),
+    e("Furigana", 1, 2, host::furigana),
+    e("GetLiveText", 2, 2, host::get_live_text),
+    e("GetLiveTextAsJSON", 2, 2, host::get_live_text_as_json),
+    e("ReadQRCode", 1, 1, host::read_qr_code),
+    e("GetTextFromPDF", 1, 1, host::get_text_from_pdf),
+    e("GetThumbnail", 3, 3, host::get_thumbnail),
+    e("GetAVPlayerAttribute", 1, 1, host::get_av_player_attribute),
+    e("GetAddonInfo", 1, 1, host::get_addon_info),
+    e("GetPersistentData", 2, 2, host::get_persistent_data),
+    e(
+        "ListPersistentDataIDs",
+        1,
+        1,
+        host::list_persistent_data_ids,
+    ),
+    e(
+        "GetLayoutObjectAttribute",
+        2,
+        4,
+        host::get_layout_object_attribute,
+    ),
+    e(
+        "GetLayoutObjectOwnerInfo",
+        1,
+        1,
+        host::get_layout_object_owner_info,
+    ),
+    e("GetEmbedding", 3, 3, host::get_embedding),
+    e("GetTokenCount", 1, 1, host::get_token_count),
+    e("ComputeModel", 1, N, host::compute_model),
+    e("PredictFromModel", 2, 2, host::predict_from_model),
+    e("GetModelAttributes", 1, 1, host::get_model_attributes),
+    e("GetRAGSpaceInfo", 1, 2, host::get_rag_space_info),
 ];
 
 /// The function signatures extracted from FileMaker Pro 26.
@@ -549,7 +688,7 @@ fn extreme(ev: &mut Evaluator, a: &[Expr], want: std::cmp::Ordering) -> R {
     }
     Ok(best
         .map(|(n, v)| {
-            if matches!(v, Value::Text(_)) {
+            if matches!(v, Value::Text(_) | Value::Json { .. }) {
                 Value::Number(n)
             } else {
                 v

@@ -1,0 +1,3 @@
+/target
+*.fmp12
+!tests/fixtures/*.fmp12

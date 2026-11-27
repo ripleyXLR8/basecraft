@@ -1,0 +1,10 @@
+[package]
+name = "fmdump"
+version = "0.1.0"
+description = "Dump the structure of .fmp12 files"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fmp12 = { path = "../../crates/fmp12" }

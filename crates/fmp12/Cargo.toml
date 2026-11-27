@@ -1,0 +1,7 @@
+[package]
+name = "fmp12"
+version = "0.1.0"
+description = "Reader for the FileMaker .fmp12 (HBAM7) file format"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true

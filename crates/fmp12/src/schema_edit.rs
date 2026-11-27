@@ -537,17 +537,21 @@ impl Editor {
     }
 
     /// Name index entry; left out when the name holds a character whose
-    /// collation weights are unknown or when the key is taken.
+    /// collation weights are unknown. A name already indexed (layouts may
+    /// share a name) gets the object's id appended to its key.
     fn index_name(&mut self, c: &Catalog, id: u32, name: &str) {
-        let Some(key) = collate::name_key(name) else {
+        let Some(mut key) = collate::name_key(name) else {
             return;
         };
         let p = c.sub(1);
-        let taken = self
-            .entries
-            .iter()
-            .any(|e| e.path == p && entry_kvlong(e).is_some_and(|(k, _)| k == key));
-        if !taken {
+        let taken = |es: &[Entry], key: &[u8]| {
+            es.iter()
+                .any(|e| e.path == p && entry_kvlong(e).is_some_and(|(k, _)| k == key))
+        };
+        if taken(&self.entries, &key) {
+            key.extend(path_elem(id));
+        }
+        if !taken(&self.entries, &key) {
             self.ensure(p.clone());
             self.entries.push(kvlong(p, key, c.refs.encode(id)));
         }
@@ -1274,20 +1278,45 @@ impl Editor {
         };
         let records = self.has_records(t);
         let mut options = option_block(spec, self.language);
+        // An existing field keeps its index language and the options
+        // BaseCraft does not model (lookups, value-list and size
+        // validation, strict data types, messages, furigana…).
+        if let Some(old) = self.get(&node, 2).filter(|o| o.len() == 26) {
+            const MANAGED: [u8; 26] = [
+                0xFF, 0xFF, 0, 0xFF, 0, 0, 0, 0, 0xE8, 0x03, 0x01, 0xAF, 0, 0, 0x04, 0x7D, 0, 0, 0,
+                0, 0, 0, 0, 0, 0xFF, 0xFF,
+            ];
+            for i in 0..26 {
+                options[i] = old[i] & !MANAGED[i] | options[i] & MANAGED[i];
+            }
+            // A serial generated on commit stays so.
+            if spec.auto_enter.serial.is_some() && old[10] & 0x02 != 0 {
+                options[11] &= !0x02;
+            } else if spec.auto_enter.serial.is_none() {
+                options[10] &= !0x02;
+            }
+        }
         if records && options[8] & 0xA8 != 0 {
             // An index FileMaker would read as empty: let it build one on demand.
             options[8] &= !0xA8;
         }
-        // Node: keep the UUID and metadata, rewrite the rest.
+        // Node: keep the keys BaseCraft does not write (UUIDs, tags,
+        // metadata…) and the sub-nodes other than the calculations.
         let uuid = self.get(&node, 216);
         let count = self
             .get(&node, 252)
             .and_then(|d| read_len_int(&d))
             .unwrap_or(0);
+        let calcs = [5u32, 25].map(|k| [node.clone(), vec![path_elem(k)]].concat());
         self.entries.retain(|e| {
-            !e.path.starts_with(&node)
-                || e.path.len() == node.len()
-                    && entry_kv(e).is_some_and(|(k, _)| k == 216 || k >= 31873)
+            if !e.path.starts_with(&node) {
+                return true;
+            }
+            if e.path.len() == node.len() {
+                return !entry_kv(e)
+                    .is_some_and(|(k, _)| matches!(k, 2 | 3 | 9 | 12 | 13 | 16 | 33 | 34 | 252));
+            }
+            !calcs.iter().any(|c| e.path.starts_with(c))
         });
         self.ensure(node.clone());
         self.set(node.clone(), 2, options.clone());

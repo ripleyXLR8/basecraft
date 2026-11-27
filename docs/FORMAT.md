@@ -400,13 +400,26 @@ FileMaker 26 on every Go to Layout (older templates: `0x8` alone).
 Show Custom Dialog writes the commit flag `[131 + i]` k3 only for the
 buttons it has. A new Perform Find writes `[6].[5]` key 0 = `00000006`.
 
-### Writing (`fmp12::scripts_save`) 🔍
+### Writing (`fmp12::scripts_save`) ✅ (existing scripts)
+
+Checked in FileMaker 26 (`tools/oracle/script_check.ps1`, example
+`scriptedit`): edited Set Field calculations, appended Show Custom
+Dialog, disabled steps, If/Else/End If, Set Variable (with repetition),
+Go to Layout, Perform Script with a parameter and a calculation with a
+multi-binding `Let`, a nested `Let`, `$v[2]`, `Case`, `Choose` and `List`
+open without warning, read back in Save a Copy as XML exactly as written
+and evaluate (the dialog shows `21|two|yes|two|x¶y`).
 
 * Step list: records of 28 bytes; FileMaker 26 writes the last one whole
   (older files trim its trailing zeros: the writer keeps the length it
-  read). Bytes 0–3 name the parameter node; a new step takes the next
-  number after `[S].[5]` key 0 (last node, len-int), which is updated.
-  Bytes 4–5 are `00 00` in new steps.
+  read). **FileMaker finds a step's parameters by the step's position**:
+  step *i* (0-based) uses node `[S].[5].[i + 1]` and bytes 0–3 say so;
+  `[S].[5]` key 0 = number of steps. A step whose parameters sit under
+  another number shows none. Bytes 4–5 are `00 00` in new steps.
+* Parameter nodes are spelled `00 xx` (= 128 + xx, e.g. `00 00` for
+  parameter 0) in every template and in what FileMaker 26 writes, also
+  for button parameters and trigger nodes; FileMaker does not find a
+  parameter spelled `80 xx`.
 * Bytes 22–23 of control steps: If and Else If point at the next branch
   (Else If / Else) or the End If, Else at the End If, Loop and Exit Loop
   If at the End Loop, End Loop at its Loop, End If 0 (checked on every
@@ -420,8 +433,19 @@ buttons it has. A new Perform Find writes `[6].[5]` key 0 = `00000006`.
   `[17].[1].[1]` (collation key → len-int id), `[17].[1]` key 0 = last
   id and key 4 = count; `[17].[5].[S]` keys 16, 19 (`00000000`), 216,
   252 (`01 01`) and 31873–31875 (account and timestamp, copied from
-  `[17].[1]`). ponytail: `[17].[1]` keys 8 and 252 (changed by FileMaker
-  on edits) are left as is.
+  `[17].[1]`); `[17].[1]` key 252 (change counter) is bumped.
+* **`[17].[1]` key 8** (16 bytes) is a digest that FileMaker checks when
+  it opens the file: when it does not match, FileMaker refuses the file
+  with "the file's access privileges have been damaged or altered". It
+  depends on the script names (renaming one breaks it), not on script
+  ids (one script "Nouveau script" gives `786c087f…62da` with id 1 or id
+  10), UUIDs, steps or the file (the same in a blank file and in an
+  emptied Tasks). A catalog with no scripts has no key 8 and opens. Not
+  MD5/SHA-1/SHA-256 of the names in any obvious encoding (UTF-8, UTF-16,
+  obfuscated, collation keys, with ids, separators or the catalog UUID);
+  `Support.dll` exports `Draco::unistringMD5`, a likely building block.
+  Until it is decoded, BaseCraft can edit the steps of existing scripts
+  but FileMaker rejects files where it added, deleted or renamed one.
 * Collation keys of the name index: 2-byte primary weights, case folded,
   then `00 00 00`; accented letters add secondary weights after `00 00`.
   Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`
@@ -433,23 +457,39 @@ buttons it has. A new Perform Find writes `[6].[5]` key 0 = `00000006`.
   or 10 (bit 1, XML `isFolder="Marker"`) closes it; the list is flat in
   `[17].[1].[3]` order.
 
-### Script triggers (`fmp12::triggers`) 🚧
+### Script triggers (`fmp12::triggers`) ✅
 
-A layout's triggers are in `[4].[5].[L].[48]`: key 4 `00 01`, then one
-node `[48].[5].[128 + event]` per trigger, key 1 =
-`u16 event | len 01 script | u32 modes | 6 zero bytes`. Seen: event 101
-(OnLayoutEnter, from the XML export) with modes `00000001` (Browse).
-ponytail: the other event ids follow the order of FileMaker's trigger
-name table (DBEngine): objects 1 OnObjectEnter, 2 OnObjectValidate, 3
-OnObjectExit, 4 OnObjectModify, 5 OnObjectSave, 6 OnObjectKeystroke, 7
-OnPanelSwitch; layouts 101 OnLayoutEnter, 102 OnLayoutExit, 103
-OnLayoutKeystroke, 104 OnRecordLoad, 105 OnRecordCommit, 106
-OnRecordRevert, 107 OnModeEnter, 108 OnModeExit, 109 OnViewChange; file
-201 OnFirstWindowOpen, 202 OnLastWindowClose. Mode bits 2 (Find) and 4
-(Preview), object triggers in `[4].[5].[L].[5].[obj].[48]`, file
-triggers elsewhere and the parameter calculation in
-`[…].[128 + event].[5]` are guesses: no template has them.
+Decoded by setting every trigger in FileMaker 26 (Layout Setup, Format ›
+Set Script Triggers, File Options) on copies of Tasks and diffing; the
+XML export of those files matches (`tests/triggers.rs`).
 
+A layout's triggers are in `[4].[5].[L].[48]`, an object's in
+`[4].[5].[L].[5].[obj].[48]`: key 4 = u16 number of triggers, then one
+node `[48].[5].[128 + event]` per trigger (spelled `00 xx`). Key 1 is
+`u16 event | len 01 script | 00 | u32 modes | 6 zero bytes` (older files
+lack the `00` slot); the parameter is a calculation in
+`[128 + event].[49]` (keys 4, 5, 6). Modes: 1 Browse, 2 Find, 4 Preview.
+FileMaker also changes field 3 of the layout's protobuf `[4].[5].[L].[7]`
+key 1 when a trigger is added (not decoded).
+
+Event ids (XML `ScriptTrigger id`): objects 1 OnObjectEnter, 2
+OnObjectExit, 3 OnObjectModify, 4 OnObjectSave, 5 OnObjectKeystroke, 6
+OnObjectValidate, 7 OnPanelSwitch (by elimination), 8
+OnObjectAVPlayerChange; layouts 101 OnLayoutEnter, 102
+OnLayoutKeystroke, 103 OnRecordLoad, 104 OnRecordCommit, 105
+OnRecordRevert, 106 OnModeEnter, 107 OnModeExit, 109 OnLayoutExit, 110
+OnViewChange, 111 OnLayoutSizeChange, 112 OnGestureTap, 113
+OnExternalCommandReceived; file 201 OnFirstWindowOpen, 202
+OnLastWindowClose, 204 OnWindowOpen, 205 OnWindowClose, 206
+OnFileAVPlayerChange, 209 OnWindowTransaction.
+
+File triggers are script slots (`len 01 script`, `00` when empty) of the
+file options record `[2]` key 24: u32, two bytes, OnFirstWindowOpen,
+OnLastWindowClose, the layout shown on open, u16, u32, u16, two bytes,
+OnWindowOpen, OnWindowClose, u32, OnFileAVPlayerChange, u16, u16,
+OnWindowTransaction (absent in older files), `00`. Where a file
+trigger's parameter goes was not seen (the UI driver found no parameter
+box in that dialog).
 ### Button actions
 
 A layout object's field 16 is the button. Its field 3 is the step as a
@@ -626,8 +666,11 @@ token comes before its operands, which are compiled the same way.
 
 `calc::compile` reproduces FileMaker's keys 5 and 6 for the 1,890
 calculations of `crates/fmp12/tests/fixtures/compiled.tsv` (Set Variable
-steps pasted with `tools/oracle/compile_snippet.py`) and for all 341 field
-calculations of the templates. Exception: FileMaker's SCSU uses dynamic
+steps pasted with `tools/oracle/compile_snippet.py`) and for all 5,214
+calculations of the templates (fields, scripts, layouts, comments
+included). The same parser derives key 6 from a stored key 5
+(`calc::compiled`, used by the script writer, which keeps only key 5 in
+memory). A calculation that holds only comments has key 6 = `00`. Exception: FileMaker's SCSU uses dynamic
 windows and Unicode mode for non-Latin text where BaseCraft quotes each
 character; both decode alike.
 

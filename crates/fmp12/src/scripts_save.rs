@@ -740,6 +740,11 @@ fn entry_kvl(e: &Entry) -> Option<(Vec<u8>, Vec<u8>)> {
 /// collation key is known) and a script node `[17].[5].[S]` modelled on
 /// what FileMaker writes for a new script; scripts missing from the list
 /// are deleted.
+///
+/// ponytail: FileMaker refuses a file whose script names changed (new,
+/// deleted or renamed scripts) unless `[17].[1]` key 8, a digest of the
+/// names, matches; the digest is not decoded (FORMAT.md §8), so only step
+/// edits of existing scripts give a file FileMaker opens.
 pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
     let old = crate::scripts::scripts(file)?;
     let mut entries = write::entries(file)?;

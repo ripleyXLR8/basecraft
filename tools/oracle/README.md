@@ -43,6 +43,13 @@ from files we authored ourselves.
   (screenshots too), creates records on the table's layout and optionally
   saves the copy as XML. `schema_demo.sh <out.fmp12> [basecraft-cli]` builds
   the file used for the check with `basecraft-cli new-file` and `schema`.
+* `script_check.ps1`: `Test-FmScripts <file> [-Xml out.xml] [-Click x,y]`
+  checks a file whose scripts BaseCraft wrote: opens a copy, reports the
+  damage dialog if any, lists every step as FileMaker prints it (Save a
+  Copy as XML, `StepText`), and after a click (a button, or a layout
+  change that fires a trigger) reads the custom dialog a script showed.
+  `cargo run -p fmp12 --example scriptedit -- <Tasks en.fmp12> <out> edit,flow,calc,inplace`
+  builds the file it was written for (`-Click 50,160`).
 * `compile_snippet.py exprs out_prefix` + `compile_exprs.txt`: compiled-form
   oracle. Builds scripts of Set Variable steps; pasted with `Add-FmScriptSteps`
   into a file, FileMaker stores each calculation's key 5 and key 6, listed by

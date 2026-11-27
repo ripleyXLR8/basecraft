@@ -143,9 +143,10 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | `perform` / `run_step` run to the end (dialogs through `Host::dialog`, button 1 by default): CLI and MCP unchanged | ✅ |
 | `Get ( LastErrorLocation / LastErrorDetail / ScriptAnimationState / Trigger… )` (trigger values set by the host) | ✅ |
 | Step text as in the Script Workspace (`script::text`), block indentation | ✅ |
-| Script triggers: layouts decoded (`fmp12::triggers`, 8/8 OnLayoutEnter of the oracle files match the XML); object and file triggers, event ids other than 101 guessed | 🚧 |
-| Calculation compiler (`fmp12::calc_compile`): source tokens (key 5) and prefix form (key 6); all 5,200 template calculations: key 6 derived from key 5 identical, key 5 round-trips through decompile | ✅ |
-| Writing scripts (`fmp12::scripts_save::save_scripts`): step lists, parameter trees, new/renamed/deleted scripts; 224 template and oracle scripts (1,138 steps) re-encode byte for byte, 886 typed steps encode back from their typed parameters | ✅ tested by re-reading; 🔍 to verify in FileMaker |
+| Script triggers (`fmp12::triggers`): layout, object and file triggers, 26 event ids, modes (Browse 1, Find 2, Preview 4) and parameters decoded from triggers set in FileMaker 26; 25 triggers of the oracle files match the XML (event, script, modes, parameter) | ✅ read; writing ⏳ |
+| Calculation compiler (`fmp12::calc_compile`, one compiler for fields and scripts): source tokens (key 5) and prefix form (key 6); all 5,214 template calculations, comments included: key 6 derived from key 5 identical, decompiled text compiles back to both keys | ✅ |
+| Writing scripts (`fmp12::scripts_save::save_scripts`): step lists and parameter trees of existing scripts; 224 template and oracle scripts re-encode byte for byte, 886 typed steps encode back from their typed parameters | ✅ verified in FileMaker (`tools/oracle/script_check.ps1`): edited, added and disabled steps, If/Else, Set Variable, Go to Layout, Perform Script, Show Custom Dialog, Let/Case/Choose/List/`$v[2]` show as written and evaluate |
+| New, deleted and renamed scripts | 🚧 written, but FileMaker reports damaged access privileges: `[17].[1]` key 8 is a digest of the script names, not decoded |
 | Script debugger, Pause/Resume duration storage, script folders created in the workspace, script order changes by dragging | ⏳ |
 | Builds for `wasm32-unknown-unknown` | ✅ |
 ## M6 — Layout mode (`crates/app/src/design.rs`, `fmp12::save::save_layouts`)
@@ -183,7 +184,9 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Files saved by BaseCraft, edited and saved again by FileMaker, read back | ✅ verified |
 | Auto-enter values (serials, UUIDs, stamps) on records created by BaseCraft | ⏳ |
 | Repeating fields, container data | ⏳ |
-| Calculation compiler: source text → token stream (key 5) and compiled form (key 6) FileMaker evaluates (`fmp12::calc::compile`) | ✅ 1,890 FileMaker-compiled calculations and 341 template field calculations byte for byte |
+| Calculation compiler: source text → token stream (key 5) and compiled form (key 6) FileMaker evaluates (`fmp12::calc::compile`) | ✅ 1,890 FileMaker-compiled calculations and all 5,214 template calculations (fields, scripts, layouts, comments included) byte for byte; one compiler for schema and scripts |
+| Scripts (`fmp12::scripts_save`): edited step lists and parameters | ✅ verified in FileMaker: opens without warning, Save a Copy as XML shows the steps as written, the calculations evaluate |
+| New, deleted, renamed scripts | 🚧 FileMaker checks a digest of the script names (`[17].[1]` key 8) on open; not decoded |
 | Name indexes: collation keys of names (423 characters; `fmp12::collate`) | ✅ all 4,097 template name-index keys |
 | Schema editing (`fmp12::schema_edit`): add, rename, delete tables (with occurrence and layout) and fields; every data type; calculated and summary fields; auto-enter (serial, stamps, constant, calculation), validation (not empty, unique, existing, range, calculation), storage (global, repetitions, indexing) | ✅ verified in FileMaker: opens without warning, Manage Database and Save a Copy as XML show the tables, fields and options, records created in FileMaker get serials, stamps, constants and calculated values |
 | New empty file (`schema_edit::new_file`, from `assets/blank.fmp12` with BaseCraft's own theme) | ✅ verified in FileMaker |

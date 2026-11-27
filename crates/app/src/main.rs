@@ -4,8 +4,9 @@
 //! coordinates, editable fields, new/delete record, find requests, sort.
 //! Changes live in memory (saving to `.fmp12` is milestone M7).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::rc::Rc;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use engine::{Database, Order, Request};
@@ -23,7 +24,8 @@ enum Mode {
 }
 
 struct Doc {
-    path: PathBuf,
+    /// File name shown in the title bar.
+    name: String,
     db: Database,
     /// Layouts that have a table occurrence (folders excluded).
     layouts: Vec<Layout>,
@@ -37,8 +39,12 @@ enum View {
     Table,
 }
 
+/// A file picked asynchronously (browser), waiting to be opened.
+type Incoming = Rc<RefCell<Option<(String, Vec<u8>)>>>;
+
 #[derive(Default)]
 struct App {
+    incoming: Incoming,
     view: View,
     doc: Option<Doc>,
     error: Option<String>,
@@ -59,17 +65,51 @@ impl App {
         self.mode.unwrap_or(Mode::Browse)
     }
 
-    fn open_dialog(&mut self) {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_dialog(&mut self, _ctx: &egui::Context) {
         if let Some(p) = rfd::FileDialog::new()
             .add_filter("FileMaker", &["fmp12"])
             .pick_file()
         {
-            self.open(p);
+            self.open_path(&p);
         }
     }
 
-    fn open(&mut self, path: PathBuf) {
-        match Database::open(&path) {
+    /// In the browser the picker is asynchronous: the file lands in
+    /// `incoming` and is opened on the next frame.
+    #[cfg(target_arch = "wasm32")]
+    fn open_dialog(&mut self, ctx: &egui::Context) {
+        let slot = self.incoming.clone();
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(h) = rfd::AsyncFileDialog::new()
+                .add_filter("FileMaker", &["fmp12"])
+                .pick_file()
+                .await
+            {
+                let data = h.read().await;
+                *slot.borrow_mut() = Some((h.file_name(), data));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_path(&mut self, p: &std::path::Path) {
+        match std::fs::read(p) {
+            Ok(b) => {
+                let name = p
+                    .file_stem()
+                    .map_or("OpenMaker".into(), |s| s.to_string_lossy().into_owned());
+                self.open(name, b);
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn open(&mut self, name: String, bytes: Vec<u8>) {
+        let name = name.trim_end_matches(".fmp12").to_string();
+        match fmp12::File::from_bytes(bytes).and_then(|f| Database::load(&f)) {
             Ok(db) => {
                 let layouts = db
                     .layouts
@@ -78,7 +118,8 @@ impl App {
                     .cloned()
                     .collect();
                 *self = App {
-                    doc: Some(Doc { path, db, layouts }),
+                    doc: Some(Doc { name, db, layouts }),
+                    incoming: self.incoming.clone(),
                     ..Default::default()
                 };
             }
@@ -193,15 +234,21 @@ impl App {
             ui.menu_button(tr("File"), |ui| {
                 if ui.button(tr("Open…")).clicked() {
                     ui.close();
-                    self.open_dialog();
+                    self.open_dialog(&ui.ctx().clone());
                 }
                 if ui.button(tr("Close")).clicked() {
                     ui.close();
-                    *self = App::default();
+                    *self = App {
+                        incoming: self.incoming.clone(),
+                        ..Default::default()
+                    };
                 }
-                ui.separator();
-                if ui.button(tr("Exit")).clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    ui.separator();
+                    if ui.button(tr("Exit")).clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
             });
             ui.menu_button(tr("Edit"), |ui| {
@@ -636,6 +683,33 @@ fn table_view(
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let picked = self.incoming.borrow_mut().take();
+        if let Some((name, bytes)) = picked {
+            self.open(name, bytes);
+        }
+        // Drag and drop: read synchronously on desktop, asynchronously in the browser.
+        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+            let name = f
+                .path()
+                .file_name()
+                .map_or("OpenMaker".into(), |n| n.to_string_lossy().into_owned());
+            #[cfg(not(target_arch = "wasm32"))]
+            match f.bytes() {
+                Ok(b) => self.open(name, b),
+                Err(e) => self.error = Some(e),
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let slot = self.incoming.clone();
+                let ctx = ctx.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(b) = f.bytes_async().await {
+                        *slot.borrow_mut() = Some((name, b));
+                        ctx.request_repaint();
+                    }
+                });
+            }
+        }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         if self.doc.is_some() {
             egui::Panel::top("status").show(ui, |ui| {
@@ -649,27 +723,38 @@ impl eframe::App for App {
             }
             if self.doc.is_none() {
                 ui.centered_and_justified(|ui| {
-                    if ui.button(tr("Open…")).clicked() {
-                        self.open_dialog();
-                    }
+                    ui.vertical_centered(|ui| {
+                        if ui.button(tr("Open…")).clicked() {
+                            self.open_dialog(&ctx);
+                        }
+                        ui.label(tr("or drop a .fmp12 file here"));
+                    });
                 });
                 return;
             }
             egui::ScrollArea::both().show(ui, |ui| self.content(ui));
         });
-        let title = self.doc.as_ref().map_or("OpenMaker".into(), |d| {
-            d.path
-                .file_stem()
-                .map_or("OpenMaker".into(), |s| s.to_string_lossy().into_owned())
-        });
+        let title = self
+            .doc
+            .as_ref()
+            .map_or("OpenMaker".to_string(), |d| d.name.clone());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 }
 
+fn creator(app: App) -> eframe::AppCreator<'static> {
+    Box::new(|cc| {
+        // FileMaker's desktop UI is light.
+        cc.egui_ctx.set_visuals(egui::Visuals::light());
+        Ok(Box::new(app))
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let mut app = App::default();
     if let Some(p) = std::env::args_os().nth(1) {
-        app.open(p.into());
+        app.open_path(std::path::Path::new(&p));
     }
     eframe::run_native(
         "OpenMaker",
@@ -677,10 +762,27 @@ fn main() -> eframe::Result {
             viewport: egui::ViewportBuilder::default().with_inner_size([1060.0, 980.0]),
             ..Default::default()
         },
-        Box::new(|cc| {
-            // FileMaker's desktop UI is light.
-            cc.egui_ctx.set_visuals(egui::Visuals::light());
-            Ok(Box::new(app))
-        }),
+        creator(app),
     )
+}
+
+/// Browser entry point: runs in the `<canvas id="openmaker">` of index.html.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use wasm_bindgen::JsCast;
+    wasm_bindgen_futures::spawn_local(async {
+        let canvas = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("openmaker"))
+            .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            .expect("canvas #openmaker");
+        eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                creator(App::default()),
+            )
+            .await
+            .expect("failed to start OpenMaker");
+    });
 }

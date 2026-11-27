@@ -54,6 +54,7 @@ pub fn tr(key: &'static str) -> &'static str {
         "Perform Find" => "Lancer la recherche",
         "Cancel" => "Annuler",
         "Unsaved changes (in memory)" => "Modifications non enregistrées (en mémoire)",
+        "or drop a .fmp12 file here" => "ou déposez un fichier .fmp12 ici",
         other => other,
     }
 }

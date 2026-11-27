@@ -1,5 +1,7 @@
 # Progress
 
+**Estimated progress to 1.0: ~34 %**, weighted by milestone (see the README table).
+
 Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 
 ## Milestones
@@ -119,3 +121,5 @@ ApplicationArchitecture.
 | Form, List (body repeated per record) and Table views | ✅ |
 | Portals, tab controls, popups, value lists | ⏳ |
 | Layout mode, Preview mode | ⏳ |
+| Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
+| Web: save (download, or File System Access API) | ⏳ |

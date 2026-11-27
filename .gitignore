@@ -2,3 +2,4 @@
 *.fmp12
 !tests/fixtures/*.fmp12
 /.claude/
+/crates/app/dist

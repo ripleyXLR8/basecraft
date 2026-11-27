@@ -272,7 +272,9 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Script triggers run: OnLayoutEnter/Exit, OnRecordLoad, OnModeEnter, OnRecordCommit (user actions and layout changes by scripts), OnObjectEnter/Modify/Exit on fields, OnFirstWindowOpen; queued, one at a time, no trigger loops | ✅ (Contacts sorts by name when opened) |
 | Script Workspace (Scripts › Script Workspace…, Ctrl+Shift+S): script list with folders, step text with indentation and greyed disabled steps, palette by category with search, add / delete / duplicate / disable / move (drag or buttons), new / rename / delete script, Run | ✅ |
 | Workspace step editors: Set Field, Set Variable, If / Else If / Exit Loop If, Go to Layout, Go to Record, Perform Script, Show Custom Dialog, Sort, Perform Find, Enter Find Mode, Comment, Commit, Insert Text, Go to Field/Object, Pause/Resume, Refresh Window; calculation editor with fields, functions and Get flags | ✅ |
-| Script debugger, Data Viewer | ⏳ |
+| Data Viewer (Tools menu): watch expressions evaluated in the window's context (Get functions, $$ globals) | ✅ |
+| UI driven headless through `egui_kittest` (`crates/app/src/ui_tests.rs`): workspace edit / run / save, dialog and pause, Data Viewer, Preview, open trigger; `BASECRAFT_SHOTS=<dir>` also renders PNGs | ✅ |
+| Script debugger | ⏳ |
 
 Layout writing check (2026-11-27): a file whose "Contact List" layout BaseCraft
 edited (object moved, text changed, object deleted, body taller, new text,

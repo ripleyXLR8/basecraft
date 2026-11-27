@@ -20,6 +20,8 @@ mod design;
 mod i18n;
 mod look;
 mod preview;
+#[cfg(test)]
+mod ui_tests;
 mod workspace;
 use fmp12::triggers::event;
 use i18n::tr;
@@ -280,9 +282,7 @@ impl App {
                 return;
             }
         }
-        if list_changed {
-            self.error = Some(tr("Saved. Scripts were added, renamed or deleted: BaseCraft opens this file, but FileMaker Pro will report it as damaged.").to_string());
-        }
+
         let file_name = format!("{}.fmp12", d.name);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -319,6 +319,9 @@ impl App {
         }
         self.dirty = false;
         self.error = None;
+        if list_changed {
+            self.messages.push((String::new(), tr("Saved. Scripts were added, renamed or deleted: BaseCraft opens this file, but FileMaker Pro will report it as damaged.").to_string()));
+        }
     }
 
     /// Commits the record being edited: runs field validation like
@@ -356,36 +359,33 @@ impl App {
         false
     }
 
+    /// The window as scripts see it: layout, mode, found set, record.
+    fn script_window(&mut self) -> Option<script::Window> {
+        let t = self.table()?;
+        let found = self.found(t).clone();
+        let d = self.doc.as_ref()?;
+        let mut window = script::Window::new(&d.db, d.layouts.get(self.layout)?.id);
+        window.found = found;
+        window.current = *self.current.get(&t).unwrap_or(&0);
+        window.sorted = self.sorted.get(&t).copied().unwrap_or(false);
+        window.mode = match self.mode() {
+            Mode::Find => script::Mode::Find,
+            Mode::Browse | Mode::Layout => script::Mode::Browse,
+            Mode::Preview => script::Mode::Preview,
+        };
+        Some(window)
+    }
+
     /// Runs `f` with the app as script host: the window state (layout,
     /// mode, found set, record) goes in, and comes back out changed.
     fn with_host<R>(
         &mut self,
         f: impl FnOnce(&mut script::Engine, &mut AppHost) -> R,
     ) -> Option<R> {
-        let t = self.table()?;
-        let mut engine = self.engine.take()?;
-        let found = self.found(t).clone();
-        let pos = *self.current.get(&t).unwrap_or(&0);
         let mode = self.mode();
-        let sorted = self.sorted.get(&t).copied().unwrap_or(false);
-        let layout_id = self
-            .doc
-            .as_ref()
-            .and_then(|d| d.layouts.get(self.layout))
-            .map(|l| l.id);
-        let (Some(d), Some(layout_id)) = (self.doc.as_mut(), layout_id) else {
-            self.engine = Some(engine);
-            return None;
-        };
-        let mut window = script::Window::new(&d.db, layout_id);
-        window.found = found;
-        window.current = pos;
-        window.sorted = sorted;
-        window.mode = match mode {
-            Mode::Find => script::Mode::Find,
-            Mode::Browse | Mode::Layout => script::Mode::Browse,
-            Mode::Preview => script::Mode::Preview,
-        };
+        let window = self.script_window()?;
+        let d = self.doc.as_mut()?;
+        let mut engine = self.engine.take()?;
         let before = data_fingerprint(&d.db);
         let mut host = AppHost {
             db: &mut d.db,
@@ -601,18 +601,41 @@ impl App {
         if !self.data_viewer {
             return;
         }
-        let table = self.table();
-        let record = self.current_record();
-        let layout_to = self
-            .doc
-            .as_ref()
-            .and_then(|d| d.layouts.get(self.layout))
-            .map_or(0, |l| (l.table_occurrence & 0xFFF) as u32);
+        // Evaluated like FileMaker's: in the window's context (Get
+        // functions see the found set and record) with the script globals.
+        let window = self.script_window();
+        let values: Vec<String> = match (self.doc.as_mut(), self.engine.as_mut(), window) {
+            (Some(d), Some(e), Some(window)) => {
+                let mut host = AppHost {
+                    db: &mut d.db,
+                    window,
+                };
+                self.watches
+                    .iter()
+                    .map(|w| {
+                        let names = script::text::Names {
+                            db: host.db,
+                            scripts: &e.scripts,
+                        };
+                        match names.compile(w) {
+                            Ok(c) => e.evaluate(&mut host, &c).map_or_else(
+                                |code| format!("{} {code}", tr("Error")),
+                                |v| v.to_text(),
+                            ),
+                            Err(err) => err.to_string(),
+                        }
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let mut open = true;
         let mut remove = None;
         egui::Window::new(tr("Data Viewer"))
             .open(&mut open)
             .default_width(520.0)
+            // Below the status toolbar, not over it.
+            .default_pos([500.0, 120.0])
             .show(ctx, |ui| {
                 egui::Grid::new("watches")
                     .striped(true)
@@ -623,12 +646,7 @@ impl App {
                         ui.label("");
                         ui.end_row();
                         for (i, w) in self.watches.iter().enumerate() {
-                            let value = match (self.doc.as_ref(), table) {
-                                (Some(d), Some(t)) => {
-                                    d.db.eval_source(w, t, layout_to, record).to_text()
-                                }
-                                _ => String::new(),
-                            };
+                            let value = values.get(i).cloned().unwrap_or_default();
                             ui.monospace(w);
                             // FileMaker shows paragraph returns as the pilcrow.
                             ui.label(value.replace('\r', "\u{b6}"));
@@ -2152,12 +2170,12 @@ fn main() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use fmp12::scripts::{Calc, DialogButton, Script, Step, StepParams, id};
 
-    fn template(name: &str) -> Option<App> {
+    pub(crate) fn template(name: &str) -> Option<App> {
         let p =
             std::path::PathBuf::from(r"C:\Program Files\FileMaker\FileMaker Pro\DynamicTemplates")
                 .join(name)

@@ -495,6 +495,20 @@ impl Engine {
             .map(|s| s.id)
     }
 
+    /// Evaluates a calculation outside any script, in the window's context
+    /// (Data Viewer): Get functions see the window, `$$` variables the
+    /// engine's globals.
+    pub fn evaluate(&mut self, host: &mut dyn Host, c: &Calc) -> Result<Value, u32> {
+        let mut frame = Frame {
+            name: String::new(),
+            locals: HashMap::new(),
+            parameter: Value::empty(),
+            result: Value::empty(),
+            original_layout: host.window().layout,
+        };
+        self.eval(host, &mut frame, c)
+    }
+
     /// Runs one step outside a script to the end (button actions).
     pub fn run_step(&mut self, host: &mut dyn Host, step: &Step) -> Outcome {
         self.start_step(host, step).finish(self, host)

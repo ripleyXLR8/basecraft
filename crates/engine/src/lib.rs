@@ -233,6 +233,35 @@ impl Database {
         }
     }
 
+    /// Evaluates a calculation stored as a token stream (layout labels,
+    /// script parameters…) for `record` of `table`, from occurrence `to`.
+    pub fn eval_tokens(&self, tokens: &[u8], table: u32, to: u32, record: Option<usize>) -> Value {
+        let schema: Vec<fmp12::schema::Table> = self
+            .tables
+            .iter()
+            .map(|t| fmp12::schema::Table {
+                id: t.id,
+                name: t.name.clone(),
+                fields: t.fields.iter().map(|f| (f.id, f.def.clone())).collect(),
+            })
+            .collect();
+        let names = EvalNames {
+            tables: &schema,
+            tos: &self.occurrences,
+        };
+        let Ok(src) = fmp12::calc::decompile(tokens, to, &names) else {
+            return Value::text("?");
+        };
+        let mut ctx = RecordContext {
+            db: self,
+            table,
+            to,
+            record: record.unwrap_or(usize::MAX),
+            vars: BTreeMap::new(),
+        };
+        calc::evaluate(&src, &mut ctx).unwrap_or_else(|_| Value::text("?"))
+    }
+
     fn to_named(&self, name: &str) -> Option<&fmp12::graph::TableOccurrence> {
         self.occurrences
             .iter()

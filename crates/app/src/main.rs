@@ -689,6 +689,12 @@ impl App {
                         }
                     }
                     _ => {
+                        if let Some(l) = &o.label {
+                            let text = doc.db.eval_tokens(l, t, layout_to, rec).to_text();
+                            lk.paint_box(&painter, r);
+                            lk.paint_text(&painter, r, &text);
+                            continue;
+                        }
                         let owner = owner_of(doc, o, t, layout_to, rec);
                         draw_object(
                             ui,

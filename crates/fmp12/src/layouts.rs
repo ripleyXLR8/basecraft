@@ -56,6 +56,8 @@ pub struct LayoutObject {
     pub display: u64,
     /// Value list id attached to a field object (field 8.6).
     pub value_list: Option<u32>,
+    /// Button label calculation (token stream, `crate::calc::decompile`).
+    pub label: Option<Vec<u8>>,
     /// Portal: (table occurrence as in XML, rows shown, first row).
     pub portal: Option<(u64, u32, u32)>,
 }
@@ -151,13 +153,14 @@ struct Raw {
     parts: BTreeMap<u32, Vec<u8>>,
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
+    labels: BTreeMap<u32, Vec<u8>>,
 }
 
 fn style_name(m: &Msg) -> String {
     m.str(2).unwrap_or_default().to_string()
 }
 
-fn object(m: &Msg, texts: &BTreeMap<u32, String>) -> LayoutObject {
+fn object(m: &Msg, texts: &BTreeMap<u32, String>, labels: &BTreeMap<u32, Vec<u8>>) -> LayoutObject {
     let b = m.msg(4).unwrap_or_default();
     let id = m.uint(2).unwrap_or(0);
     LayoutObject {
@@ -181,6 +184,7 @@ fn object(m: &Msg, texts: &BTreeMap<u32, String>) -> LayoutObject {
         }),
         text: u32::try_from(id).ok().and_then(|i| texts.get(&i).cloned()),
         parent: None,
+        label: u32::try_from(id).ok().and_then(|i| labels.get(&i).cloned()),
         display: m.msg(8).and_then(|f| f.uint(5)).unwrap_or(0),
         value_list: m.msg(8).and_then(|f| f.uint(6)).map(|v| v as u32),
         active_child: m.uint(6),
@@ -226,6 +230,15 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     .objects
                     .insert(*key, data.to_vec());
             }
+            // Button label calculation: token stream (see `crate::calc`).
+            [4, 5, l, 5, obj, 3] if *key == 5 => {
+                raw.entry(*l)
+                    .or_default()
+                    .labels
+                    .entry(*obj)
+                    .or_default()
+                    .extend_from_slice(data);
+            }
             [4, 5, l, 5, obj] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
             }
@@ -250,7 +263,7 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 .collect();
             let blob: Vec<u8> = r.objects.into_values().flatten().collect();
             let mut objects: Vec<LayoutObject> = Msg::parse(&blob)
-                .map(|m| m.msgs(2).map(|o| object(&o, &r.texts)).collect())
+                .map(|m| m.msgs(2).map(|o| object(&o, &r.texts, &r.labels)).collect())
                 .unwrap_or_default();
             link_parents(&mut objects);
             Layout {

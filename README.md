@@ -1,7 +1,7 @@
 # OpenMaker
 
 [![CI](https://github.com/ripleyXLR8/openmaker/actions/workflows/ci.yml/badge.svg)](https://github.com/ripleyXLR8/openmaker/actions/workflows/ci.yml)
-[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-34%25-orange)](#progress-to-10)
+[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-39%25-orange)](#progress-to-10)
 [![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-blue)](https://ripleyxlr8.github.io/openmaker/)
 
 **OpenMaker is an open-source, from-scratch reimplementation, in Rust, of the
@@ -26,14 +26,14 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 |------|-------|
 | `.fmp12` reading: sectors, byte code, text, tables, fields, records | ✅ |
 | `.fmp12` reading: field options, relationships, scripts, value lists, layouts, calculations | ✅ (verified against FileMaker's XML) |
-| Calculation engine (`crates/calc`): 142 of 234 functions | 🚧 |
+| Calculation engine (`crates/calc`): all 234 functions present; behaviour being checked against FileMaker | 🚧 |
 | Data engine (`crates/engine`): records, find, sort, calculated fields | 🚧 |
 | GUI (egui): read-only viewer, layouts drawn in form view | 🚧 |
 | `.fmp12` writing | ⏳ |
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~34 %** (▓▓▓▓▓▓▓░░░░░░░░░░░░░)
+**Estimated overall progress: ~39 %** (▓▓▓▓▓▓▓▓░░░░░░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is
@@ -42,10 +42,10 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 | Milestone | Weight | Done |
 |-----------|-------:|-----:|
 | M0 Bootstrap | 2 | 100 % |
-| M1 Read `.fmp12` | 15 | 75 % |
-| M2 Calculation engine | 12 | 55 % |
-| M3 Data engine | 12 | 40 % |
-| M4 GUI (browse/find/views) | 15 | 30 % |
+| M1 Read `.fmp12` | 15 | 78 % |
+| M2 Calculation engine | 12 | 70 % |
+| M3 Data engine | 12 | 45 % |
+| M4 GUI (browse/find/views) | 15 | 45 % |
 | M5 Script engine | 12 | 5 % |
 | M6 Layout mode | 10 | 0 % |
 | M7 Write `.fmp12` | 10 | 45 % |

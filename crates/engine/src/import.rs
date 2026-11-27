@@ -266,8 +266,13 @@ pub fn import(
                     db.tables[ti].records[r].values.insert(*f, v.clone());
                 }
             }
-            if opts.auto_enter && !new {
-                db.touch(table, r);
+            if opts.auto_enter {
+                // Lookups whose match fields were imported, as FileMaker does.
+                let changed: Vec<u32> = values.iter().map(|(f, _)| *f).collect();
+                db.apply_lookups(table, r, Some(&changed));
+                if !new {
+                    db.touch(table, r);
+                }
             }
             let mut rejected = false;
             for e in db.validate(table, r) {

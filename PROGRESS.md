@@ -205,7 +205,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Find requests: words, `=`, `==`, `*`, `@`, `#`, `<` `>` `<=` `>=`, ranges, phrases, omit | ✅ |
 | Sort ascending/descending by several fields | ✅ |
 | Related records through the relationship graph (multi-hop, every join operator, relationship sort order); related fields and aggregates in calculations | ✅ |
-| Lookups applied when a match field changes and on new records (`Database::set_values`, `apply_lookups`), next lower/higher value | ✅ |
+| Lookups applied when a match field changes, on new records and on import (`Database::set_values`, `apply_lookups`), next lower/higher value; not yet from Set Field in the script engine or from the GUI | ✅ |
 | Cascade delete of related records (`Database::delete_record`); serial increments | ✅ |
 | Value lists from fields: second field sort, related values only (`value_list_values_from`) | ✅ |
 | Running and restarting summaries, weighted average, subtotaled fraction in the engine | ⏳ (options read and written, computed as plain summaries) |

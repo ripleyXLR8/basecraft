@@ -46,6 +46,14 @@ pub fn tr(key: &'static str) -> &'static str {
         "Table" => "Tableau",
         "Preview" => "Prévisualisation",
         "Edit Layout" => "Modifier modèle",
+        "Browse Mode" => "Mode Utilisation",
+        "Find Mode" => "Mode Recherche",
+        "Delete Record…" => "Supprimer l'enregistrement…",
+        "Show All Records" => "Afficher tous les enregistrements",
+        "Sorted" => "Triés",
+        "Perform Find" => "Lancer la recherche",
+        "Cancel" => "Annuler",
+        "Unsaved changes (in memory)" => "Modifications non enregistrées (en mémoire)",
         other => other,
     }
 }

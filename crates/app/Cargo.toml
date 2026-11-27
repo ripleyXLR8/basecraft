@@ -7,5 +7,6 @@ repository.workspace = true
 
 [dependencies]
 eframe = "0.37"
+engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
 rfd = "0.18.0"

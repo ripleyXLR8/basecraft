@@ -10,7 +10,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M1 | Read `.fmp12`: schema, data, layouts, scripts | 🚧 |
 | M2 | Calculation engine | 🚧 |
 | M3 | Data engine: CRUD, find, sort, relationships, calc and summary fields | 🚧 |
-| M4 | GUI: Browse / Find / List / Table views | ⏳ |
+| M4 | GUI: Browse / Find / List / Table views | 🚧 |
 | M5 | Script engine and Script Workspace | ⏳ |
 | M6 | Layout mode | ⏳ |
 | M7 | Write `.fmp12` files that FileMaker Pro opens | 🚧 |
@@ -102,3 +102,16 @@ ApplicationArchitecture.
 | Related records (portals, related fields beyond the first record) | ⏳ |
 | Summary fields, auto-enter, validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records (no sample data yet) | ⏳ |
+
+## M4 — GUI (`crates/app`)
+
+| Feature | State |
+|---------|-------|
+| Menu bar, status toolbar, layout bar (English/French) | ✅ |
+| Layout drawn at stored coordinates: parts, fields, text, buttons | ✅ |
+| Browse mode: navigate, edit fields, new/delete record, show all | ✅ |
+| Find mode (one request), sort by one field ascending/descending | ✅ |
+| Calculated fields displayed live | ✅ |
+| Theme styles (fonts, colours, borders from the embedded theme) | ⏳ |
+| List and Table views, portals, tab controls, popups, value lists | ⏳ |
+| Layout mode, Preview mode | ⏳ |

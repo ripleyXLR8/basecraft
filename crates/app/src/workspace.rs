@@ -20,7 +20,20 @@ use fmp12::scripts::{
 use script::text::{self, Names};
 
 use crate::Doc;
-use crate::i18n::tr;
+use crate::i18n::{french, tr};
+
+/// Viewport / window key of the workspace.
+pub const KEY: &str = "script_workspace";
+
+/// A step's name as the palette and the step list show it (French in the
+/// French UI).
+pub fn step_label(id: u16) -> Option<&'static str> {
+    if french() {
+        text::step_name_fr(id)
+    } else {
+        step_name(id)
+    }
+}
 
 /// Step categories of the palette (FileMaker's names), with the step ids
 /// they hold; steps not listed go to "Miscellaneous".
@@ -218,19 +231,26 @@ impl Workspace {
         self.dirty = true;
     }
 
-    /// Draws the workspace window.
+    /// Draws the workspace window (its own OS window on desktop).
     pub fn ui(&mut self, ctx: &egui::Context, doc: &Doc) {
         if !self.open {
             return;
         }
         let mut open = true;
-        egui::Window::new(tr("Script Workspace"))
-            .id(egui::Id::NULL.with("script_workspace"))
-            .open(&mut open)
-            .default_size([980.0, 620.0])
-            .resizable(true)
-            .collapsible(false)
-            .show(ctx, |ui| {
+        crate::tool_window(
+            ctx,
+            KEY,
+            tr("Script Workspace"),
+            [980.0, 620.0],
+            None,
+            &mut open,
+            |ui| {
+                // Ctrl+S in the workspace's own window saves the scripts.
+                if self.dirty
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+                {
+                    self.save = true;
+                }
                 self.toolbar(ui);
                 ui.separator();
                 egui::Panel::left("ws_scripts")
@@ -254,8 +274,10 @@ impl Workspace {
                         .show(ui, |ui| self.params(ui, doc));
                     egui::CentralPanel::default().show(ui, |ui| self.steps(ui, &texts));
                 });
-            });
-        self.calc_dialog(ctx, doc);
+                // In the workspace's window.
+                self.calc_dialog(ui.ctx(), doc);
+            },
+        );
         if !open {
             self.open = false;
         }
@@ -465,7 +487,7 @@ impl Workspace {
             .map(|(st, i)| {
                 (
                     i,
-                    text::step_text(st, names),
+                    text::step_text_in(st, names, french()),
                     st.enabled,
                     st.id == id::COMMENT,
                 )
@@ -626,7 +648,7 @@ impl Workspace {
             .show(ui, |ui| {
                 let mut show = |ui: &mut egui::Ui, ids: &mut dyn Iterator<Item = u16>| {
                     for i in ids {
-                        let Some(n) = step_name(i) else { continue };
+                        let Some(n) = step_label(i) else { continue };
                         if !q.is_empty() && !n.to_lowercase().contains(&q) {
                             continue;
                         }
@@ -638,7 +660,7 @@ impl Workspace {
                 for (cat, ids) in CATEGORIES {
                     let has = ids
                         .iter()
-                        .filter_map(|i| step_name(*i))
+                        .filter_map(|i| step_label(*i))
                         .any(|n| q.is_empty() || n.to_lowercase().contains(&q));
                     if !has {
                         continue;
@@ -651,7 +673,8 @@ impl Workspace {
                 let rest: Vec<u16> = (1..=247u16)
                     .filter(|i| !listed.contains(i))
                     .filter(|i| {
-                        step_name(*i).is_some_and(|n| q.is_empty() || n.to_lowercase().contains(&q))
+                        step_label(*i)
+                            .is_some_and(|n| q.is_empty() || n.to_lowercase().contains(&q))
                     })
                     .collect();
                 if rest.is_empty() {
@@ -724,7 +747,7 @@ impl Workspace {
         else {
             return;
         };
-        ui.strong(st.name().unwrap_or("?"));
+        ui.strong(step_label(st.id).unwrap_or("?"));
         let before = st.clone();
         egui::ScrollArea::vertical()
             .id_salt("ws_params_scroll")

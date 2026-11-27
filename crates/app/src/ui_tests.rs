@@ -59,12 +59,12 @@ fn script_workspace_flow() {
     // Pick a script and one of its steps.
     h.get_by_label("Sort by Name").click();
     h.run_steps(2);
-    h.get_by_label_contains("Sort Records").click();
+    h.get_by_label_contains(step(39)).click();
     h.run_steps(2);
     shot(&mut h, "11_ws_step_selected");
 
     // Add Set Variable from the palette, after the selected step.
-    h.get_by_label("Set Variable").click();
+    h.get_by_label(step(id::SET_VARIABLE)).click();
     h.run_steps(2);
     shot(&mut h, "12_ws_step_added");
     let steps = |h: &Harness<'_, App>| -> Vec<Step> {
@@ -120,10 +120,10 @@ fn script_workspace_flow() {
     // Beep is in a closed category: search for it.
     palette_search(&h).focus();
     h.run_steps(1);
-    palette_search(&h).type_text("beep");
+    palette_search(&h).type_text(&step(id::BEEP).to_lowercase());
     h.run_steps(2);
     shot(&mut h, "15b_ws_palette_search");
-    h.get_by_label("Beep").click();
+    h.get_by_label(step(id::BEEP)).click();
     h.run_steps(2);
     h.get_by_label(tr("Run")).click();
     h.run_steps(3);
@@ -170,6 +170,11 @@ fn contacts_opens_sorted() {
     let t = app.table().unwrap();
     assert_eq!(app.sorted.get(&t), Some(&true));
     h.get_by_label_contains(tr("Sorted"));
+}
+
+/// A step's name in the UI language.
+fn step(id: u16) -> &'static str {
+    workspace::step_label(id).unwrap()
 }
 
 /// The search field of the step palette (right column of the workspace).

@@ -631,12 +631,15 @@ impl App {
         };
         let mut open = true;
         let mut remove = None;
-        egui::Window::new(tr("Data Viewer"))
-            .open(&mut open)
-            .default_width(520.0)
+        tool_window(
+            ctx,
+            DATA_VIEWER,
+            tr("Data Viewer"),
+            [520.0, 240.0],
             // Below the status toolbar, not over it.
-            .default_pos([500.0, 120.0])
-            .show(ctx, |ui| {
+            Some([500.0, 120.0]),
+            &mut open,
+            |ui| {
                 egui::Grid::new("watches")
                     .striped(true)
                     .num_columns(3)
@@ -670,7 +673,8 @@ impl App {
                         self.watches.push(std::mem::take(&mut self.watch_input));
                     }
                 });
-            });
+            },
+        );
         if let Some(i) = remove {
             self.watches.remove(i);
         }
@@ -1041,6 +1045,7 @@ impl App {
                 let ws = egui::Button::new(tr("Script Workspace…")).shortcut_text("Ctrl+Shift+S");
                 if ui.add_enabled(self.engine.is_some(), ws).clicked() {
                     self.open_workspace();
+                    focus_tool_window(ui.ctx(), workspace::KEY);
                     ui.close();
                 }
                 ui.separator();
@@ -1068,6 +1073,7 @@ impl App {
             ui.menu_button(tr("Tools"), |ui| {
                 if ui.button(tr("Data Viewer")).clicked() {
                     self.data_viewer = true;
+                    focus_tool_window(ui.ctx(), DATA_VIEWER);
                     ui.close();
                 }
             });
@@ -1983,6 +1989,7 @@ impl eframe::App for App {
             })
         {
             self.open_workspace();
+            focus_tool_window(&ctx, workspace::KEY);
         }
         if self.doc.is_some()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
@@ -2111,6 +2118,88 @@ impl eframe::App for App {
     }
 }
 
+/// The BaseCraft icon, for the main window and the tool windows.
+#[cfg(not(target_arch = "wasm32"))]
+fn icon() -> Option<std::sync::Arc<egui::IconData>> {
+    static ICON: std::sync::OnceLock<Option<std::sync::Arc<egui::IconData>>> =
+        std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon/basecraft-256.png"))
+            .ok()
+            .map(std::sync::Arc::new)
+    })
+    .clone()
+}
+
+/// A tool window (Script Workspace, Data Viewer). FileMaker shows them as
+/// separate OS windows: an egui viewport on desktop, with the BaseCraft
+/// icon and the size it had when last closed. Where viewports are embedded
+/// (the browser, the UI tests) it is an `egui::Window` in the main window.
+/// Clearing `open` closes it; closing the OS window clears `open`.
+pub fn tool_window(
+    ctx: &egui::Context,
+    key: &'static str,
+    title: &str,
+    size: [f32; 2],
+    pos: Option<[f32; 2]>,
+    open: &mut bool,
+    mut add: impl FnMut(&mut egui::Ui),
+) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !ctx.embed_viewports() {
+        let saved = egui::Id::NULL.with((key, "size"));
+        let live = egui::Id::NULL.with((key, "live"));
+        let size = ctx
+            .data(|d| d.get_temp::<egui::Vec2>(saved))
+            .unwrap_or(size.into());
+        let mut b = egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_inner_size(size)
+            .with_app_id("basecraft");
+        if let Some(i) = icon() {
+            b = b.with_icon(i);
+        }
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(key), b, |ui, _| {
+            let (close, rect) =
+                ui.input(|i| (i.viewport().close_requested(), i.viewport().inner_rect));
+            if let Some(r) = rect {
+                ui.ctx().data_mut(|d| d.insert_temp(live, r.size()));
+            }
+            if close {
+                *open = false;
+            }
+            egui::CentralPanel::default().show(ui, |ui| add(ui));
+        });
+        if !*open && let Some(s) = ctx.data(|d| d.get_temp::<egui::Vec2>(live)) {
+            ctx.data_mut(|d| d.insert_temp(saved, s));
+        }
+        return;
+    }
+    let mut w = egui::Window::new(title)
+        .id(egui::Id::NULL.with(key))
+        .open(open)
+        .default_size(size)
+        .resizable(true)
+        .collapsible(false);
+    if let Some(p) = pos {
+        w = w.default_pos(p);
+    }
+    w.show(ctx, |ui| add(ui));
+}
+
+/// Brings an open tool window's OS window to the front.
+fn focus_tool_window(ctx: &egui::Context, key: &'static str) {
+    if !ctx.embed_viewports() {
+        ctx.send_viewport_cmd_to(
+            egui::ViewportId::from_hash_of(key),
+            egui::ViewportCommand::Focus,
+        );
+    }
+}
+
+/// Viewport / window key of the Data Viewer.
+const DATA_VIEWER: &str = "data_viewer";
+
 fn creator(app: App) -> eframe::AppCreator<'static> {
     Box::new(|cc| {
         // FileMaker's desktop UI is light.
@@ -2128,9 +2217,7 @@ fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1060.0, 980.0])
         .with_app_id("basecraft");
-    if let Ok(icon) =
-        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon/basecraft-256.png"))
-    {
+    if let Some(icon) = icon() {
         viewport = viewport.with_icon(icon);
     }
     eframe::run_native(

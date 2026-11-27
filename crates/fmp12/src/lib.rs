@@ -15,7 +15,6 @@ pub mod pb;
 pub mod save;
 pub mod schema;
 pub mod schema_edit;
-pub mod script_calc;
 pub mod scripts;
 pub mod scripts_save;
 pub mod scsu;

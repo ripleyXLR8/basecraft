@@ -64,6 +64,7 @@ pub fn tr(key: &'static str) -> &'static str {
             "Enregistré. Des scripts ont été ajoutés, renommés ou supprimés : BaseCraft ouvre ce fichier, mais FileMaker Pro le signalera comme endommagé."
         }
         "Data Viewer" => "Visualiseur de données",
+        "Error" => "Erreur",
         "Expression" => "Expression",
         "Value" => "Valeur",
         "Add" => "Ajouter",

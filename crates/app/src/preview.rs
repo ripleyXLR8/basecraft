@@ -53,7 +53,13 @@ pub fn draw(
         Stroke::new(0.5, Color32::from_gray(140)),
         egui::StrokeKind::Inside,
     );
-    let [mt, _, _, ml] = paper.margins;
+    let [mt, mr, mb, ml] = paper.margins;
+    // Objects past the printable area are cut, as on paper.
+    // ponytail: FileMaker prints them on extra pages across; not done yet.
+    let painter = painter.with_clip_rect(Rect::from_min_max(
+        page_rect.min + Vec2::new(ml as f32, mt as f32),
+        page_rect.max - Vec2::new(mr as f32, mb as f32),
+    ));
     // Front panel of each tab control: field 6, else its first panel.
     let front = |tc: u64| {
         let t = layout.objects.iter().find(|o| o.id == tc)?;

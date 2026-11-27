@@ -173,6 +173,8 @@ pub struct Workspace {
     step: Option<usize>,
     search: String,
     rename: Option<(u32, String)>,
+    /// The rename field takes the focus once, when renaming starts.
+    rename_focus: bool,
     collapsed: BTreeSet<u32>,
     /// Text of each calculation field of the selected step, and errors.
     bufs: BTreeMap<Slot, String>,
@@ -248,6 +250,7 @@ impl Workspace {
                     egui::Panel::bottom("ws_params")
                         .resizable(true)
                         .default_size(220.0)
+                        .min_size(160.0)
                         .show(ui, |ui| self.params(ui, doc));
                     egui::CentralPanel::default().show(ui, |ui| self.steps(ui, &texts));
                 });
@@ -271,6 +274,7 @@ impl Workspace {
             {
                 let r = (s.id, s.name.clone());
                 self.rename = Some(r);
+                self.rename_focus = true;
             }
             if ui
                 .add_enabled(has, egui::Button::new(tr("Delete Script")))
@@ -318,6 +322,7 @@ impl Workspace {
         self.selected = Some(id);
         self.select_step(None);
         self.rename = Some((id, name));
+        self.rename_focus = true;
         self.changed();
     }
 
@@ -381,7 +386,9 @@ impl Workspace {
                         ui.add_space(depth as f32 * 14.0);
                         if let Some((rid, buf)) = self.rename.as_mut().filter(|r| r.0 == s.id) {
                             let r = ui.text_edit_singleline(buf);
-                            r.request_focus();
+                            if std::mem::take(&mut self.rename_focus) {
+                                r.request_focus();
+                            }
                             if r.lost_focus() {
                                 renamed = Some((*rid, buf.clone()));
                             }
@@ -407,6 +414,8 @@ impl Workspace {
                             pick = Some(s.id);
                         }
                         if r.double_clicked() && !s.is_folder() {
+                            // Like Run: the edited version runs.
+                            self.save = self.dirty;
                             self.run = Some(s.id);
                         }
                     });
@@ -551,12 +560,13 @@ impl Workspace {
                         text = text.color(Color32::from_rgb(40, 120, 40));
                     }
                     let id = egui::Id::NULL.with(("ws_step", sel, i));
-                    let r = ui
-                        .dnd_drag_source(id, i, |ui| {
-                            ui.add(egui::Button::selectable(cur == Some(i), text).frame(false))
-                        })
-                        .response;
-                    if r.clicked() {
+                    // The click lands on the button inside; the drag source
+                    // around it only senses drags.
+                    let egui::InnerResponse { inner, response: r } =
+                        ui.dnd_drag_source(id, i, |ui| {
+                            ui.add(egui::Button::selectable(cur == Some(i), text))
+                        });
+                    if inner.clicked() {
                         clicked = Some(i);
                     }
                     if let Some(from) = r.dnd_release_payload::<usize>() {
@@ -602,8 +612,9 @@ impl Workspace {
     }
 
     fn palette(&mut self, ui: &mut egui::Ui) {
-        ui.strong(tr("Steps"));
-        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(tr("Search")));
+        let l = ui.strong(tr("Steps"));
+        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text(tr("Search")))
+            .labelled_by(l.id);
         let q = self.search.to_lowercase();
         let mut add = None;
         let listed: BTreeSet<u16> = CATEGORIES
@@ -637,7 +648,15 @@ impl Workspace {
                         .open((!q.is_empty()).then_some(true))
                         .show(ui, |ui| show(ui, &mut ids.iter().copied()));
                 }
-                let rest: Vec<u16> = (1..=247u16).filter(|i| !listed.contains(i)).collect();
+                let rest: Vec<u16> = (1..=247u16)
+                    .filter(|i| !listed.contains(i))
+                    .filter(|i| {
+                        step_name(*i).is_some_and(|n| q.is_empty() || n.to_lowercase().contains(&q))
+                    })
+                    .collect();
+                if rest.is_empty() {
+                    return;
+                }
                 egui::CollapsingHeader::new(tr("Other"))
                     .open((!q.is_empty()).then_some(true))
                     .show(ui, |ui| show(ui, &mut rest.iter().copied()));
@@ -740,9 +759,10 @@ impl Workspace {
             .or_insert_with(|| current.clone().unwrap_or_default());
         let mut apply = None;
         ui.horizontal(|ui| {
-            ui.label(label);
-            let r =
-                ui.add(egui::TextEdit::singleline(buf).desired_width(ui.available_width() - 40.0));
+            let l = ui.label(label);
+            let r = ui
+                .add(egui::TextEdit::singleline(buf).desired_width(ui.available_width() - 40.0))
+                .labelled_by(l.id);
             if r.lost_focus() && Some(buf.as_str()) != current.as_deref() {
                 apply = Some(buf.clone());
             }
@@ -817,8 +837,8 @@ impl Workspace {
             }
             StepParams::SetVariable { name, .. } => {
                 ui.horizontal(|ui| {
-                    ui.label(tr("Name:"));
-                    ui.text_edit_singleline(name);
+                    let l = ui.label(tr("Name:"));
+                    ui.text_edit_singleline(name).labelled_by(l.id);
                 });
                 if !name.starts_with('$') {
                     ui.colored_label(Color32::RED, tr("Variable names start with $ or $$"));

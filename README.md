@@ -26,14 +26,16 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 | `.fmp12` reading: layouts, scripts, relationships, field options | 🚧 |
 | Calculation engine | ⏳ |
 | Data engine (find, sort, relationships) | ⏳ |
-| GUI (egui) | ⏳ |
+| GUI (egui): read-only viewer, layouts drawn in form view | 🚧 |
 | `.fmp12` writing | ⏳ |
 
 ## Layout of the repository
 
 ```
 crates/fmp12   .fmp12 (HBAM7) reader, later writer
+crates/app     the OpenMaker desktop application (egui)
 tools/fmdump   command-line inspector for .fmp12 files
+tools/oracle   scripts that drive a real FileMaker Pro to produce test oracles
 docs/          format specification and reference lists
 ```
 
@@ -42,6 +44,10 @@ sets, relationships), `script` (script engine), `layout`, and `app` (the
 egui desktop application).
 
 ## Try it
+
+```sh
+cargo run -p openmaker -- MyDatabase.fmp12   # GUI (set OPENMAKER_LANG=fr for French)
+```
 
 ```sh
 cargo run -p fmdump -- MyDatabase.fmp12 tables

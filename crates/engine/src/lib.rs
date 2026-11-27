@@ -2,8 +2,12 @@
 //! file, with FileMaker's record, found-set, find, sort and calculation
 //! semantics.
 
+pub mod export;
 mod find;
 mod host;
+pub mod import;
+pub mod summary;
+mod xlsx;
 
 use std::collections::BTreeMap;
 
@@ -11,6 +15,7 @@ use calc::Value;
 use fmp12::schema::{DataType, FieldKind};
 
 pub use find::{Request, find};
+pub use summary::{groups, summarize};
 
 #[derive(Debug, Clone)]
 pub struct Field {
@@ -249,6 +254,12 @@ impl Database {
         let Some(f) = t.field(field) else {
             return Value::empty();
         };
+        if f.kind == FieldKind::Summary {
+            // ponytail: the engine has no found set, so a summary field
+            // summarizes the whole table (Show All Records); O(n) per call.
+            let all: Vec<usize> = (0..t.records.len()).collect();
+            return summarize(self, table, field, &all, &all);
+        }
         if let Some(src) = &f.calc {
             let mut ctx = RecordContext {
                 db: self,
@@ -870,9 +881,110 @@ pub fn sort(db: &Database, table: u32, found: &mut [usize], keys: &[(u32, Order)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use fmp12::schema::{DateOrder, Locale};
+
+    pub const T: u32 = 130;
+    pub const PETS: u32 = 131;
+    pub const NAME: u32 = 1;
+    pub const AMOUNT: u32 = 2;
+    pub const CITY: u32 = 3;
+    pub const BORN: u32 = 4;
+    pub const NOTE: u32 = 5;
+
+    /// `options` byte 0 = kind, 1 = data type.
+    pub fn field(id: u32, name: &str, kind: u8, dt: u8) -> Field {
+        let def = fmp12::schema::Field {
+            name: name.into(),
+            options: vec![kind, dt],
+            ..Default::default()
+        };
+        Field {
+            id,
+            name: name.into(),
+            kind: def.kind(),
+            data_type: def.data_type(),
+            calc: None,
+            auto_calc: None,
+            context: 0,
+            def,
+        }
+    }
+
+    /// People (Name, Amount, City, Born, Note) and their Pets, related by name.
+    pub fn sample() -> Database {
+        let mut t = Table::new(
+            T,
+            "People",
+            vec![
+                field(NAME, "Name", 1, 1),
+                field(AMOUNT, "Amount", 1, 2),
+                field(CITY, "City", 1, 1),
+                field(BORN, "Born", 1, 3),
+                field(NOTE, "Note", 1, 1),
+            ],
+        );
+        let rows = [
+            ["Ada", "10", "Rome", "12/10/1815", "line 1\rline 2"],
+            ["Bob \"B\"", "20", "Paris", "", ""],
+            ["Cy", "30", "Rome", "", "a,b"],
+            ["Di", "40", "Oslo", "", "tab\there"],
+            ["Ed", "", "Rome", "", ""],
+        ];
+        for row in rows {
+            let r = t.new_record();
+            for (i, v) in row.iter().enumerate() {
+                if !v.is_empty() {
+                    t.records[r].values.insert(i as u32 + 1, v.to_string());
+                }
+            }
+        }
+        let mut pets = Table::new(
+            PETS,
+            "Pets",
+            vec![field(1, "Owner", 1, 1), field(2, "Pet", 1, 1)],
+        );
+        for (o, p) in [("Ada", "Cat"), ("Ada", "Dog"), ("Cy", "Fish")] {
+            let r = pets.new_record();
+            pets.records[r].values = [(1, o.to_string()), (2, p.to_string())].into();
+        }
+        let to = |id: u32, name: &str| fmp12::graph::TableOccurrence {
+            id,
+            name: name.into(),
+            base_table: id,
+            ..Default::default()
+        };
+        Database {
+            tables: vec![t, pets],
+            occurrences: vec![to(T, "People"), to(PETS, "Pets")],
+            relationships: vec![fmp12::graph::Relationship {
+                left: T,
+                right: PETS,
+                predicates: vec![fmp12::graph::Predicate {
+                    op: fmp12::graph::JoinOp::Equal,
+                    left_field: NAME,
+                    right_field: 1,
+                }],
+                ..Default::default()
+            }],
+            layouts: vec![],
+            themes: vec![],
+            value_lists: vec![],
+            locale: Locale::default(),
+        }
+    }
+
+    /// Adds a summary field of `op` over `target` to People; returns its id.
+    pub fn summary_field(db: &mut Database, op: fmp12::schema::SummaryOp, target: u32) -> u32 {
+        let t = &mut db.tables[0];
+        let id = t.fields.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+        let mut f = field(id, &format!("{op:?}"), 3, 2);
+        f.def.summary_raw =
+            fmp12::schema::Field::summary_bytes(fmp12::schema::Summary { op, field: target });
+        t.fields.push(f);
+        id
+    }
 
     #[test]
     fn stored_text_follows_file_formats() {

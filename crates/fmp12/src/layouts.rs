@@ -15,15 +15,41 @@ use std::collections::BTreeMap;
 
 use crate::{Chunk, Error, File, int_path, pb::Msg, text};
 
+/// Part kinds (field 1). Header, leading sub-summary, body, footer and top
+/// navigation are seen in the templates; the others follow FileMaker's
+/// part order and are unverified.
+pub mod part {
+    pub const HEADER: u64 = 1;
+    pub const LEADING_GRAND_SUMMARY: u64 = 2;
+    pub const LEADING_SUB_SUMMARY: u64 = 3;
+    pub const BODY: u64 = 4;
+    pub const TRAILING_SUB_SUMMARY: u64 = 5;
+    pub const TRAILING_GRAND_SUMMARY: u64 = 6;
+    pub const FOOTER: u64 = 7;
+    pub const TITLE_HEADER: u64 = 8;
+    pub const TITLE_FOOTER: u64 = 9;
+    pub const TOP_NAVIGATION: u64 = 12;
+    pub const BOTTOM_NAVIGATION: u64 = 13;
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Part {
-    /// 1 Header, 2 Footer?, 3 Leading sub-summary, 4 Body, 12 Top navigation…
+    /// See [`part`].
     pub kind: u64,
     pub top: f64,
     pub height: f64,
     pub style: String,
     /// Raw style message (field 10), see [`crate::theme::ObjectStyle`].
     pub style_raw: Vec<u8>,
+    /// Break field of a sub-summary: (table occurrence id, field id).
+    pub break_field: Option<(u32, u32)>,
+}
+
+/// Part field 6: `08 len 00 <TO ref> len <path-int field>`.
+fn break_field(b: &[u8]) -> Option<(u32, u32)> {
+    let to = crate::graph::to_ref(b.get(3..7)?)?;
+    let n = *b.get(7)? as usize;
+    Some((to, crate::path_int(b.get(8..8 + n)?)?))
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -279,6 +305,7 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     height: m.f64(5).unwrap_or(0.0),
                     style: m.msg(10).map(|s| style_name(&s)).unwrap_or_default(),
                     style_raw: m.bytes(10).unwrap_or_default().to_vec(),
+                    break_field: m.bytes(6).and_then(break_field),
                 })
                 .collect();
             let blob: Vec<u8> = r.objects.values().flatten().copied().collect();

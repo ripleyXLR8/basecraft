@@ -183,3 +183,89 @@ fn validation_on_commit() {
     db.tables[ti].records[b].values.insert(pk, String::new());
     assert_eq!(db.validate(tid, b)[0].rule, engine::Rule::NotEmpty);
 }
+
+#[test]
+fn export_import_round_trip_and_summaries() {
+    use engine::export::{Export, Format, columns};
+    use engine::import::{Mapping, Mode, Options, import, read_rows};
+    let Some(d) = dir() else { return };
+    let mut db = Database::open(d.join("Assets").join("en.fmp12")).unwrap();
+    let ti = db.tables.iter().position(|t| t.name == "Assets").unwrap();
+    let tid = db.tables[ti].id;
+    let to = db
+        .occurrences
+        .iter()
+        .find(|o| o.base_table == tid)
+        .unwrap()
+        .id;
+    let f = |db: &Database, n: &str| db.tables[ti].field_by_name(n).unwrap().id;
+    let (name, price, total) = (f(&db, "Name"), f(&db, "Price"), f(&db, "Total"));
+    for (n, p) in [
+        ("Laptop", "1200"),
+        ("Desk", "300.5"),
+        ("Chair, \"red\"", ""),
+    ] {
+        let r = db.new_record(tid).unwrap();
+        db.tables[ti].records[r].values.insert(name, n.into());
+        if !p.is_empty() {
+            db.tables[ti].records[r].values.insert(price, p.into());
+        }
+    }
+    let all: Vec<usize> = (0..3).collect();
+    assert_eq!(
+        engine::summarize(&db, tid, total, &all, &all).to_text(),
+        "1500.5"
+    );
+    assert_eq!(db.value(tid, 0, total).to_text(), "1500.5");
+
+    let cols = columns(&db, to, &["Name".into(), "Price".into(), "Total".into()]).unwrap();
+    for format in [Format::Csv, Format::Tab, Format::Merge, Format::Xlsx] {
+        let bytes = Export {
+            db: &db,
+            to,
+            found: &all,
+            columns: &cols,
+            formatted: false,
+            file_name: "Assets.fmp12",
+        }
+        .write(format);
+        let mut copy = db.clone();
+        copy.tables[ti].records.clear();
+        let header = matches!(format, Format::Merge | Format::Xlsx);
+        let o = Options {
+            format,
+            first_row_names: header,
+            mapping: if header {
+                Mapping::ByName
+            } else {
+                Mapping::ByOrder(vec!["Name".into(), "Price".into(), String::new()])
+            },
+            mode: Mode::Add,
+            auto_enter: true,
+        };
+        let r = import(&mut copy, tid, &[], read_rows(format, &bytes).unwrap(), &o).unwrap();
+        assert_eq!(r.added.len(), 3, "{format:?}");
+        assert!(r.errors.is_empty(), "{format:?}: {:?}", r.errors);
+        for i in 0..3 {
+            for fid in [name, price] {
+                assert_eq!(
+                    copy.tables[ti].records[i].values.get(&fid),
+                    db.tables[ti].records[i].values.get(&fid),
+                    "{format:?}"
+                );
+            }
+        }
+    }
+    let xml = Export {
+        db: &db,
+        to,
+        found: &all,
+        columns: &cols,
+        formatted: true,
+        file_name: "Assets.fmp12",
+    }
+    .write(Format::Xml);
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains("NAME=\"Total\" TYPE=\"NUMBER\""));
+    assert!(xml.contains("<DATA>1500.5</DATA>"));
+}

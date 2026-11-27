@@ -12,6 +12,13 @@
 //! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place)
 //! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)
+//! basecraft-cli export  <file> <table> [-o out.csv|.tab|.mer|.xml|.xlsx|.json] [--format F]
+//!                       [--field F]… [--formatted] [--find…] [--omit…] [--sort…]
+//! basecraft-cli import  <file> <table> <source> [--format F] [--names] [--by-name | --map F…]
+//!                       [--mode add|update|replace] [--match F]… [--add-remaining]
+//!                       [--no-auto-enter] [--find…] (-o out | --in-place)
+//! basecraft-cli print-pdf <file> <layout> -o out.pdf [--paper letter|a4] [--landscape]
+//!                       [--margin PT] [--find…] [--omit…] [--sort…]
 //! basecraft-cli scripts <file>                                 list scripts and their steps
 //! basecraft-cli run-script <file> <name|id> [--param P] [--layout L] [--answer N] [-o out | --in-place]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
@@ -20,6 +27,7 @@
 
 use std::io::{BufRead, Write};
 
+mod io;
 mod mcp;
 mod scripting;
 
@@ -185,6 +193,26 @@ struct Query {
 
 fn records(d: &Doc, table: &str, q: &Query) -> Res<Json> {
     let t = d.table(table)?;
+    let mut found = found_set(d, t, q)?;
+    let total = found.len();
+    found.truncate(q.limit.unwrap_or(usize::MAX));
+    Ok(json!({
+        "table": t.name,
+        "found": total,
+        "records": found.iter().map(|&i| d.record_json(t, i)).collect::<Vec<_>>(),
+    }))
+}
+
+/// Sort keys of `--sort` options.
+fn sort_keys(d: &Doc, t: &engine::Table, q: &Query) -> Res<Vec<(u32, Order)>> {
+    q.sort
+        .iter()
+        .map(|(f, o)| Ok((d.field_id(t, f)?, *o)))
+        .collect()
+}
+
+/// Records matching `--find`/`--omit` (all records without them), in `--sort` order.
+fn found_set(d: &Doc, t: &engine::Table, q: &Query) -> Res<Vec<usize>> {
     let crit = |list: &[(String, String)]| -> Res<Vec<(u32, String)>> {
         list.iter()
             .map(|(f, c)| Ok((d.field_id(t, f)?, c.clone())))
@@ -205,21 +233,11 @@ fn records(d: &Doc, table: &str, q: &Query) -> Res<Json> {
         }
         engine::find(&d.db, t.id, &reqs)
     };
-    let keys: Vec<(u32, Order)> = q
-        .sort
-        .iter()
-        .map(|(f, o)| Ok((d.field_id(t, f)?, *o)))
-        .collect::<Res<_>>()?;
+    let keys = sort_keys(d, t, q)?;
     if !keys.is_empty() {
         engine::sort(&d.db, t.id, &mut found, &keys);
     }
-    let total = found.len();
-    found.truncate(q.limit.unwrap_or(usize::MAX));
-    Ok(json!({
-        "table": t.name,
-        "found": total,
-        "records": found.iter().map(|&i| d.record_json(t, i)).collect::<Vec<_>>(),
-    }))
+    Ok(found)
 }
 
 fn eval(d: &Doc, src: &str, table: Option<&str>, record: Option<u32>) -> Res<Json> {
@@ -311,6 +329,20 @@ struct Opts {
     answer: usize,
     out: Option<String>,
     in_place: bool,
+    // export / import / print-pdf
+    format: Option<String>,
+    fields: Vec<String>,
+    formatted: bool,
+    names: bool,
+    by_name: bool,
+    map: Vec<String>,
+    mode: Option<String>,
+    matches: Vec<String>,
+    add_remaining: bool,
+    no_auto_enter: bool,
+    paper: Option<String>,
+    landscape: bool,
+    margin: Option<f64>,
 }
 
 fn opts(args: &[String]) -> Res<Opts> {
@@ -329,6 +361,19 @@ fn opts(args: &[String]) -> Res<Opts> {
         answer: 1,
         out: None,
         in_place: false,
+        format: None,
+        fields: Vec::new(),
+        formatted: false,
+        names: false,
+        by_name: false,
+        map: Vec::new(),
+        mode: None,
+        matches: Vec::new(),
+        add_remaining: false,
+        no_auto_enter: false,
+        paper: None,
+        landscape: false,
+        margin: None,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -357,6 +402,19 @@ fn opts(args: &[String]) -> Res<Opts> {
             "--layout" => o.layout = Some(val("--layout")?),
             "--answer" => o.answer = val("--answer")?.parse().map_err(|_| "bad --answer")?,
             "--in-place" => o.in_place = true,
+            "--format" => o.format = Some(val("--format")?),
+            "--field" => o.fields.push(val("--field")?),
+            "--formatted" => o.formatted = true,
+            "--names" => o.names = true,
+            "--by-name" => o.by_name = true,
+            "--map" => o.map.push(val("--map")?),
+            "--mode" => o.mode = Some(val("--mode")?),
+            "--match" => o.matches.push(val("--match")?),
+            "--add-remaining" => o.add_remaining = true,
+            "--no-auto-enter" => o.no_auto_enter = true,
+            "--paper" => o.paper = Some(val("--paper")?.to_ascii_lowercase()),
+            "--landscape" => o.landscape = true,
+            "--margin" => o.margin = Some(val("--margin")?.parse().map_err(|_| "bad --margin")?),
             _ => o.rest.push(a.clone()),
         }
     }
@@ -388,6 +446,9 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
             &pairs(o.rest.get(2..).unwrap_or(&[]))?,
         ),
         "delete" => delete(d, &arg(0, "table")?, id(1)?),
+        "export" => io::export(d, &arg(0, "table")?, o),
+        "import" => io::import_file(d, &arg(0, "table")?, &arg(1, "source file")?, o),
+        "print-pdf" => io::print_pdf(d, &arg(0, "layout")?, o),
         "scripts" => scripting::list(d),
         "run-script" => scripting::run(
             d,
@@ -450,7 +511,7 @@ fn main_inner() -> Res<Json> {
         std::process::exit(0);
     }
     let [cmd, file, rest @ ..] = args.as_slice() else {
-        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|scripts|run-script|session|mcp> <file.fmp12> [args] (see README)".into());
+        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|export|import|print-pdf|scripts|run-script|session|mcp> <file.fmp12> [args] (see README)".into());
     };
     let mut d = Doc::open(file)?;
     if cmd == "session" {
@@ -458,7 +519,10 @@ fn main_inner() -> Res<Json> {
     }
     let o = opts(rest)?;
     let result = run(&mut d, cmd, &o)?;
-    if matches!(cmd.as_str(), "new" | "set" | "delete" | "run-script") {
+    if matches!(
+        cmd.as_str(),
+        "new" | "set" | "delete" | "run-script" | "import"
+    ) {
         let target = match (&o.out, o.in_place) {
             (Some(p), _) => p.clone(),
             (None, true) => file.clone(),

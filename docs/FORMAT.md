@@ -252,6 +252,18 @@ FileMaker export XML. All 214 template fields match the export (`tests/oracle.rs
 
 Bytes 2, 12–13 and 16–23 changed nothing visible in the XML.
 
+**Summary fields** keep their definition in key 9 of the field node, e.g.
+`01 00 02 01 00 00 FE 7F 02 01 05 BE BF EF 00 01 02 01 00 00 FF 1F 02 01 00 00 BF EF 00 01`:
+
+| Byte | Meaning |
+|-----:|---------|
+| 0 | operation: 1 Total, 3 Count (seen in the templates); 2 Average, 4 Minimum, 5 Maximum, 6 Standard Deviation, 7 Fraction of Total, 8 List assumed from the dialog order |
+| 9 | length *n* of the summarized field id |
+| 10… | summarized field id (path integer, *n* bytes) |
+
+The other bytes (running total, by population, restart per sort group,
+the "subtotaled" field of Fraction of Total) are not decoded.
+
 ## 6. Long values
 
 A value longer than ~1000 bytes is moved from key *K* of a node into the
@@ -376,6 +388,14 @@ Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
   5 style {1 local rules, 2 style name, 3 theme object type, 4 display name} (§12), 7 text options,
   8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);
 * `[4].[5].[L].[5].[obj]` key 1 = static text, `.[3]` = button label calculation.
+
+Part kinds (field 1): 1 Header, 3 Leading sub-summary, 4 Body, 7 Footer,
+12 Top navigation are seen in the templates (a new layout has 1, 4, 7).
+2 Leading grand summary, 5 Trailing sub-summary, 6 Trailing grand summary,
+8 Title header, 9 Title footer and 13 Bottom navigation are assumed from
+FileMaker's part order and not verified. The break field of a sub-summary
+(field 6) is `08 len 00 <TO ref 03 D0 hi lo> len <path-int field>`, e.g.
+`08 07 00 03 D0 00 02 01 08` = field 8 of occurrence 130.
 
 ## 11. Calculations ✅
 

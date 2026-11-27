@@ -482,6 +482,7 @@ dependencies = [
  "calc",
  "engine",
  "fmp12",
+ "print",
  "script",
  "serde_json",
 ]
@@ -1191,6 +1192,8 @@ dependencies = [
  "bigdecimal",
  "calc",
  "fmp12",
+ "miniz_oxide 0.8.9",
+ "roxmltree",
 ]
 
 [[package]]
@@ -2952,6 +2955,15 @@ name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
+name = "print"
+version = "0.1.0"
+dependencies = [
+ "calc",
+ "engine",
+ "fmp12",
+]
 
 [[package]]
 name = "proc-macro-crate"

@@ -70,6 +70,51 @@ fn contacts_schema_en() {
 }
 
 #[test]
+fn summary_fields_and_break_fields() {
+    use fmp12::schema::{Summary, SummaryOp};
+    let Some(dir) = template_dir() else { return };
+    let summary = |tpl: &str, table: &str, field: &str| {
+        let file = fmp12::File::open(dir.join(tpl).join("en.fmp12")).unwrap();
+        let tables = fmp12::schema::tables(&file).unwrap();
+        let t = tables.iter().find(|t| t.name == table).unwrap();
+        let f = t.fields.values().find(|f| f.name == field).unwrap();
+        let s = f.summary().unwrap();
+        (s, t.fields[&s.field].name.clone())
+    };
+    let (s, target) = summary("Assets", "Assets", "Total");
+    assert_eq!((s.op, target.as_str()), (SummaryOp::Total, "Price"));
+    let (s, target) = summary("Meetings", "Topics", "Number of Topics");
+    assert_eq!((s.op, target.as_str()), (SummaryOp::Count, "Subject"));
+    let bytes = fmp12::schema::Field::summary_bytes(Summary {
+        op: SummaryOp::Maximum,
+        field: 5,
+    });
+    let f = fmp12::schema::Field {
+        options: vec![3, 2],
+        summary_raw: bytes,
+        ..Default::default()
+    };
+    assert_eq!(f.summary().unwrap().op, SummaryOp::Maximum);
+
+    // Contact List: leading sub-summary by Contacts::Initial.
+    let file = fmp12::File::open(dir.join("Contacts").join("en.fmp12")).unwrap();
+    let tables = fmp12::schema::tables(&file).unwrap();
+    let l = fmp12::layouts::layouts(&file)
+        .unwrap()
+        .into_iter()
+        .find(|l| l.name == "Contact List")
+        .unwrap();
+    let p = l
+        .parts
+        .iter()
+        .find(|p| p.kind == fmp12::layouts::part::LEADING_SUB_SUMMARY)
+        .unwrap();
+    let (to, field) = p.break_field.unwrap();
+    assert_eq!(to as u64, l.table_occurrence & 0xFFF);
+    assert_eq!(tables[0].fields[&field].name, "Initial");
+}
+
+#[test]
 fn rewrite_preserves_content() {
     let Some(dir) = template_dir() else { return };
     for name in ["Contacts", "Tasks", "Assets"] {

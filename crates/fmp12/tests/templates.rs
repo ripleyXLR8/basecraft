@@ -58,3 +58,27 @@ fn contacts_schema_en() {
     assert_eq!(tables[0].fields[&1].name, "First Name");
     assert_eq!(file.creator(), "Pro 12.0");
 }
+
+#[test]
+fn rewrite_preserves_content() {
+    let Some(dir) = template_dir() else { return };
+    for name in ["Contacts", "Tasks", "Assets"] {
+        let file = fmp12::File::open(dir.join(name).join("en.fmp12")).unwrap();
+        let before = fmp12::write::entries(&file).unwrap();
+        let bytes = fmp12::write::rewrite(&file).unwrap();
+        let again = fmp12::File::from_bytes(bytes).unwrap();
+        let after = fmp12::write::entries(&again).unwrap();
+        assert_eq!(before.len(), after.len(), "{name}");
+        assert!(before == after, "{name}: content differs after rewrite");
+        assert_eq!(
+            fmp12::schema::tables(&again).unwrap(),
+            fmp12::schema::tables(&file).unwrap()
+        );
+        eprintln!(
+            "{name}: {} entries, {} → {} sectors",
+            before.len(),
+            file.sector_count(),
+            again.sector_count()
+        );
+    }
+}

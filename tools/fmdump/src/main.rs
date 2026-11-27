@@ -5,6 +5,7 @@
 //! fmdump <file> raw            tab-separated path, kind, key, hex value, file offset
 //! fmdump <file> tables         tables and fields
 //! fmdump <file> graph          table occurrences and relationships
+//! fmdump <file> rewrite <out>   re-serialise the file with OpenMaker's writer
 //! fmdump <file> records <tbl>  records of a table (by name)
 
 use fmp12::{Chunk, File, schema};
@@ -112,6 +113,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
+        }
+        "rewrite" => {
+            let out = rest.first().ok_or("output path required")?;
+            std::fs::write(out, fmp12::write::rewrite(&f)?)?;
         }
         "graph" => {
             for to in fmp12::graph::table_occurrences(&f)? {

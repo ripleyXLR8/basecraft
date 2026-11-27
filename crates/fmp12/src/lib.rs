@@ -12,6 +12,7 @@ pub mod schema;
 pub mod scripts;
 pub mod scsu;
 pub mod valuelists;
+pub mod write;
 
 pub use chunk::{Chunk, path_int};
 

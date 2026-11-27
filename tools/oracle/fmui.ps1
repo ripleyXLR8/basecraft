@@ -68,6 +68,16 @@ function Save-FmShot([string]$name) {
   }
 }
 
+# Screenshot of one FileMaker window or dialog (an automation element).
+function Save-FmWindowShot($el, [string]$name) {
+  $h = [IntPtr]$el.Current.NativeWindowHandle
+  $r = New-Object W32+RECT; [void][W32]::GetWindowRect($h, [ref]$r)
+  $bmp = New-Object Drawing.Bitmap ([Math]::Max(1,$r.R - $r.L)), ([Math]::Max(1,$r.B - $r.T))
+  $g = [Drawing.Graphics]::FromImage($bmp); $hdc = $g.GetHdc()
+  [void][W32]::PrintWindow($h, $hdc, 2); $g.ReleaseHdc($hdc)
+  $f = "$Shot\$name.png"; $bmp.Save($f); $f
+}
+
 function Send-FmKeys([string]$keys) {
   $w = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' -or $_.Current.ClassName -eq '#32770' } | Select -First 1
   [W32]::Front([IntPtr]$w.Current.NativeWindowHandle)
@@ -191,4 +201,43 @@ function Close-Fm {
   if ($m) { $m.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close() }
   $p = Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue
   if ($p -and -not $p.WaitForExit(30000)) { Stop-Fm }
+}
+
+# File > Manage > Database… of the frontmost file; returns the dialog.
+function Open-FmManageDb {
+  for ($try = 0; $try -lt 4; $try++) {
+    $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+    [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
+    Click-Fm 32 40; Start-Sleep -Milliseconds 700; Click-Fm 50 243; Start-Sleep -Milliseconds 700; Click-Fm 305 243
+    for ($i = 0; $i -lt 10; $i++) {
+      Start-Sleep -Milliseconds 500
+      $d = Find-Fm "Gérer la base de données*" "Window"
+      if (-not $d) { $d = Get-FmWindows | % { $_.FindAll($TS::Children, [System.Windows.Automation.Condition]::TrueCondition) } | ? { $_.Current.Name -like 'Gérer la base de données*' } | Select -First 1 }
+      if ($d) { return $d }
+    }
+    [System.Windows.Forms.SendKeys]::SendWait("{ESC}{ESC}")
+  }
+  throw "Manage Database did not open"
+}
+
+function Select-FmTab([string]$name) {
+  (Find-Fm $name "TabItem").GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+  Start-Sleep 1
+}
+
+# Rows of the current Manage Database list (Tables or Fields tab), as shown:
+# name, type and options in one string each.
+function Get-FmDbRows {
+  $w = Get-FmWindows | Select -First 1
+  $c = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::DataItem)
+  $w.FindAll($TS::Descendants, $c) | % { $_.Current.Name -replace '^Réorganiser ', '' }
+}
+
+# Pastes the fields of an fmxmlsnippet (clipboard format Mac-XMFD) into the
+# table shown on the Fields tab of Manage Database, then closes it with OK.
+function Add-FmFields([string]$snippet) {
+  [void](Open-FmManageDb); Select-FmTab "Rubriques"
+  Set-FmClip "Mac-XMFD" (Get-Content $snippet -Raw -Encoding utf8)
+  Invoke-Fm "Coller"; Start-Sleep 3
+  Invoke-Fm "OK"; Start-Sleep 2
 }

@@ -23,6 +23,8 @@ pub trait Resolve {
 pub struct Compiled {
     pub tokens: Vec<u8>,
     pub compiled: Vec<u8>,
+    /// Fields referred to: (table occurrence, field id).
+    pub fields: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +71,21 @@ pub fn compile(src: &str, context: u32, names: &dyn Resolve) -> Result<Compiled,
         return err(0, "empty calculation");
     };
     let tokens = p.toks.iter().flat_map(|t| t.k5.iter().copied()).collect();
-    Ok(Compiled { tokens, compiled })
+    let mut fields: Vec<(u32, u32)> = p
+        .toks
+        .iter()
+        .filter_map(|t| match t.kind {
+            Kind::Field { to, field, .. } => Some((to, field)),
+            _ => None,
+        })
+        .collect();
+    fields.sort_unstable();
+    fields.dedup();
+    Ok(Compiled {
+        tokens,
+        compiled,
+        fields,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]

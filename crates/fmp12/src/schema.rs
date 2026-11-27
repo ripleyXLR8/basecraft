@@ -235,7 +235,8 @@ impl Field {
             8 => List,
             _ => return None,
         };
-        let n = *b.get(9)? as usize;
+        // Bytes 8… are a field reference: length, 01, path integer.
+        let n = (*b.get(8)? as usize).checked_sub(1)?;
         let field = crate::path_int(b.get(10..10 + n)?)?;
         Some(Summary { op, field })
     }

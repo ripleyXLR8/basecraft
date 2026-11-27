@@ -1,5 +1,6 @@
 /target
 *.fmp12
 !tests/fixtures/*.fmp12
+!crates/fmp12/assets/blank.fmp12
 /.claude/
 /crates/app/dist

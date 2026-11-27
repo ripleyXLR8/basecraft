@@ -338,7 +338,7 @@ fn ipath(e: &Entry) -> Option<Vec<u32>> {
 }
 
 /// (key, value) of a Kv entry; `00 k` (key k, empty value) included.
-fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
+pub(crate) fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
     match crate::chunk::parse(&e.item).ok()?.first()? {
         crate::Chunk::Kv { key, data } => Some((*key, data.to_vec())),
         crate::Chunk::Data([k]) if e.item.first() == Some(&0) => Some((*k as u32, Vec::new())),
@@ -379,7 +379,7 @@ pub fn text_literal_tokens(s: &str) -> Vec<u8> {
 }
 
 /// A random version-4 UUID for a new object (keys 216/217).
-fn fresh_uuid(seed: u64) -> Vec<u8> {
+pub(crate) fn fresh_uuid(seed: u64) -> Vec<u8> {
     use std::hash::{BuildHasher, Hasher};
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -30,7 +30,8 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Record values (plain and long) | ✅ |
 | Repeating fields | ⏳ |
 | Field types and options (type, data type, storage, index, auto-enter, validation) | ✅ |
-| Compiled calculations (auto-enter, validation, calc fields) | 🚧 |
+| Calculation token streams → source text (253 functions, 140 `Get()` flags, operators, literals, field refs, Let) | ✅ |
+| Calculations in scripts and layouts (contexts other than a table occurrence) | 🚧 |
 | Table occurrences (base table, position, colour) and relationships (TOs, join fields, cascade create) | ✅ |
 | Relationship options: join operators other than `=`, cascade delete, sorting | 🚧 |
 | Layouts: name, table occurrence, width, parts (kind, position, height, style) | ✅ |
@@ -42,7 +43,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Custom functions, accounts and privileges, themes | ⏳ |
 | Container data | ⏳ |
 
-Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts and 504 layout objects match FileMaker's XML export.
+Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 

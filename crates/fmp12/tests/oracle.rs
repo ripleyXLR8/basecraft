@@ -434,3 +434,100 @@ fn layouts_match_xml() {
     }
     eprintln!("{layouts_checked} layouts, {objects_checked} layout objects checked against XML");
 }
+
+struct FileNames {
+    tables: Vec<schema::Table>,
+    tos: Vec<fmp12::graph::TableOccurrence>,
+}
+
+impl fmp12::calc::Names for FileNames {
+    fn field(&self, to: u32, field: u32) -> Option<String> {
+        let bt = self.tos.iter().find(|t| t.id == to)?.base_table;
+        Some(
+            self.tables
+                .iter()
+                .find(|t| t.id == bt)?
+                .fields
+                .get(&field)?
+                .name
+                .clone(),
+        )
+    }
+    fn occurrence(&self, to: u32) -> Option<String> {
+        Some(self.tos.iter().find(|t| t.id == to)?.name.clone())
+    }
+}
+
+#[test]
+fn field_calculations_match_xml() {
+    use std::collections::BTreeMap;
+    let (mut ok, mut total) = (0, 0);
+    let mut failures = Vec::new();
+    for (fmp, xml) in pairs() {
+        let file = fmp12::File::open(&fmp).unwrap();
+        let names = FileNames {
+            tables: schema::tables(&file).unwrap(),
+            tos: fmp12::graph::table_occurrences(&file).unwrap(),
+        };
+        // (table, field) -> (key4, key5)
+        let mut calcs: BTreeMap<(u32, u32), (Vec<u8>, Vec<u8>)> = BTreeMap::new();
+        file.walk(|path, c| {
+            let (Some(p), fmp12::Chunk::Kv { key, data }) = (fmp12::int_path(path), c) else {
+                return;
+            };
+            if let [t, 3, 5, f, 5] = p.as_slice() {
+                let e = calcs.entry((*t, *f)).or_default();
+                match key {
+                    4 => e.0 = data.to_vec(),
+                    5 => e.1.extend_from_slice(data),
+                    _ => {}
+                }
+            }
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&xml).unwrap();
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        for cat in doc.descendants().filter(|n| n.has_tag_name("FieldCatalog")) {
+            let tid: u32 = cat
+                .children()
+                .find(|n| n.has_tag_name("BaseTableReference"))
+                .unwrap()
+                .attribute("id")
+                .unwrap()
+                .parse()
+                .unwrap();
+            for x in cat
+                .descendants()
+                .filter(|n| n.has_tag_name("Field") && n.attribute("datatype").is_some())
+            {
+                let fid: u32 = x.attribute("id").unwrap().parse().unwrap();
+                let Some(want) = x
+                    .descendants()
+                    .find(|n| {
+                        n.has_tag_name("Text")
+                            && n.parent().is_some_and(|p| p.has_tag_name("Calculation"))
+                    })
+                    .and_then(|n| n.text())
+                else {
+                    continue;
+                };
+                let Some((k4, k5)) = calcs.get(&(tid, fid)) else {
+                    continue;
+                };
+                total += 1;
+                let ctx = fmp12::calc::context(k4).unwrap_or(0);
+                let got = fmp12::calc::decompile(k5, ctx, &names).map(|s| s.replace('\r', "\n"));
+                if got.as_deref() == Ok(want) {
+                    ok += 1;
+                } else {
+                    failures.push(format!("{}: want {want:?}\n   got {got:?}", xml.display()));
+                }
+            }
+        }
+    }
+    for f in failures.iter().take(8) {
+        eprintln!("{f}");
+    }
+    eprintln!("{ok}/{total} field calculations decompiled exactly");
+    assert_eq!(ok, total);
+}

@@ -234,10 +234,27 @@ Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
   8 field {2 {1 TO, 2 field, 3 repetition}}, 16 button);
 * `[4].[5].[L].[5].[obj]` key 1 = static text, `.[3]` = button label calculation.
 
-## 11. Calculations 🔍
+## 11. Calculations ✅
 
-Stored next to their owner as keys 4 (context TO ref), 5 (token stream that
-keeps the source text, including whitespace) and 6 (compiled form).
-Known tokens: `03` `;`, `04` `(`, `05` `)`, `0C` whitespace (followed by a
-text literal), `13 len text 00` text literal, `16 … ` field reference,
-`9B` Get, `9C xx` Get flag, `4C` Case, `4E` IsEmpty, `1E` not, `50` `&`.
+Stored next to their owner as keys 4 (context: a TO ref `03 D0 hi lo`, or
+`01 00` in scripts and layouts), 5 (token stream that keeps the source text,
+whitespace included) and 6 (compiled form, not needed for display).
+
+The token table was recovered by overwriting token bytes in copies of real
+files and reading FileMaker's XML rendering. Full table:
+`crates/fmp12/src/calc_tables.rs` (operators, 162 one-byte functions, 91
+two-byte functions behind prefixes F8–FE, 140 `Get` flags after `9C`).
+
+| Token | Meaning |
+|-------|---------|
+| `03` `04` `05` `06` `07` | `;` `(` `)` `[` `]` |
+| `0B len name 00 xx` | Let variable name |
+| `0C 13 len text 00` | whitespace or comment, emitted verbatim |
+| `10` + 19 bytes | number: `02 00 01 00 10`, u32 integer, u32 ×1e-9, u32 ×1e-18, u16 flags |
+| `13 len text 00` | text literal; `len` counts UTF-16 units, not bytes |
+| `16 flags 04 TOref len 01 field u16 rep` | field reference (shown as `TO::Field` outside the context TO) |
+| `1E`–`23` | not, and, or, xor, True, False |
+| `25`–`29`, `2C` | + − × ÷ ^, unary minus |
+| `41`–`49`, `50` | comparisons, `&` |
+| `9B` / `9C xx` | `Get` / its flag |
+| `F8`–`FE xx` | two-byte functions (`F8 00` = While, `FA 00` = Self, …) |

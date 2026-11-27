@@ -4,6 +4,8 @@
 //! form a B-tree. Leaf sectors hold a byte-code stream ([`chunk`]) that builds
 //! a hierarchical key/value store addressed by paths. See `docs/FORMAT.md`.
 
+pub mod calc;
+mod calc_tables;
 pub mod chunk;
 pub mod graph;
 pub mod layouts;

@@ -20,7 +20,7 @@ use crate::{App, i18n, tr};
 pub const KEY: &str = "script_debugger";
 
 /// UI strings: English keys, French as FileMaker 26 shows them.
-fn t(key: &'static str) -> &'static str {
+pub fn t(key: &'static str) -> &'static str {
     if !i18n::french() {
         return tr(key);
     }

@@ -53,6 +53,9 @@ pub fn t(key: &'static str) -> &'static str {
     }
 }
 
+/// Find requests as the app keeps them: criteria by field, omit.
+type Requests = Vec<(BTreeMap<u32, String>, bool)>;
+
 /// One sort key of the dialog: field and order.
 type Key = (u32, SortOrder);
 
@@ -74,7 +77,7 @@ pub struct Dialogs {
     goto: Option<String>,
     revert: bool,
     /// Saved Finds of the session: name and requests.
-    saved: Vec<(String, Vec<(BTreeMap<u32, String>, bool)>)>,
+    saved: Vec<(String, Requests)>,
     save_name: Option<String>,
     /// Last sort (Sort Records dialog), re-applied when "keep records in
     /// sorted order" is on.

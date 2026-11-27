@@ -885,3 +885,236 @@ fn layout_mode_flow() {
     );
     shot(&mut h, "l10_new_layout_open");
 }
+
+/// Clicks a top menu, then an item whose label contains `item`.
+fn menu5(h: &mut Harness<'_, App>, top: &'static str, item: &str) {
+    h.get_by_label(tr(top)).click();
+    h.run_steps(2);
+    h.get_by_label_contains(item).click();
+    h.run_steps(3);
+}
+
+/// Shop on the Clients layout (Ada, Bob): (table, Name field).
+fn clients(h: &mut Harness<'_, App>) -> (u32, u32) {
+    let app = h.state_mut();
+    let d = app.doc.as_ref().unwrap();
+    app.layout = d.layouts.iter().position(|l| l.name == "Clients").unwrap();
+    let t = app.table().unwrap();
+    let d = app.doc.as_ref().unwrap();
+    let name = d.db.table(t).unwrap().field_by_name("Name").unwrap().id;
+    (t, name)
+}
+
+fn client_names(h: &mut Harness<'_, App>) -> Vec<String> {
+    let app = h.state_mut();
+    let t = app.table().unwrap();
+    let found = app.found(t).clone();
+    let d = app.doc.as_ref().unwrap();
+    let f = d.db.table(t).unwrap().field_by_name("Name").unwrap().id;
+    found
+        .iter()
+        .map(|&r| d.db.value(t, r, f).to_text())
+        .collect()
+}
+
+/// Records › Sort Records… (descending by Name), Unsort, Go to Record…,
+/// Saved Finds, Revert Record…; View › View as Table, Zoom In / Out.
+#[test]
+fn records_and_view_menus_m5() {
+    let t = browse::t;
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    let (tbl, name) = clients(&mut h);
+    h.run_steps(2);
+    menu5(&mut h, "Records", t("Sort Records…"));
+    assert!(h.state().m5.sort.is_some());
+    shot(&mut h, "m5_01_sort_dialog");
+    h.get_all_by_label("Name").last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(t("Descending order")).click();
+    h.run_steps(1);
+    h.get_by_label(t("Move")).click();
+    h.run_steps(2);
+    h.get_by_label(t("Keep records in sorted order")).click();
+    h.run_steps(1);
+    h.get_by_label(t("Sort")).click();
+    h.run_steps(3);
+    assert_eq!(client_names(&mut h), ["Bob", "Ada"]);
+    assert_eq!(h.state().sorted.get(&tbl), Some(&true));
+    menu5(&mut h, "Records", t("Unsort Records"));
+    assert_eq!(client_names(&mut h), ["Ada", "Bob"]);
+
+    // Go to Record… 2.
+    menu5(&mut h, "Records", t("Go to Record…"));
+    h.get_by_label(t("Go to record number:")).type_text("2");
+    h.run_steps(1);
+    h.get_by_label(t("OK")).click();
+    h.run_steps(3);
+    assert_eq!(h.state().current.get(&tbl), Some(&1));
+
+    // Saved Finds: a find for Bob, saved, run again after Show All.
+    {
+        let app = h.state_mut();
+        app.requests = vec![([(name, "Bob".to_string())].into_iter().collect(), false)];
+        app.save_find("Bob only");
+        app.show_all();
+    }
+    h.run_steps(2);
+    h.get_by_label(tr("Records")).click();
+    h.run_steps(2);
+    h.get_by_label(t("Saved Finds")).click();
+    h.run_steps(2);
+    h.get_by_label("Bob only").click();
+    h.run_steps(3);
+    assert_eq!(client_names(&mut h), ["Bob"]);
+
+    // Revert Record…: the value before the first change comes back.
+    let r = h.state_mut().current_record().unwrap();
+    {
+        let app = h.state_mut();
+        let d = app.doc.as_mut().unwrap();
+        let x = d.db.tables.iter_mut().find(|x| x.id == tbl).unwrap();
+        x.records[r].values.insert(name, "Robert".into());
+        app.editing = Some((tbl, r));
+    }
+    menu5(&mut h, "Records", t("Revert Record…"));
+    h.get_by_label(t("Revert")).click();
+    h.run_steps(3);
+    assert_eq!(client_names(&mut h), ["Bob"]);
+    assert!(h.state().editing.is_none());
+
+    // View menu.
+    menu5(&mut h, "View", t("View as Table"));
+    assert_eq!(h.state().view, View::Table);
+    menu5(&mut h, "View", t("Zoom In"));
+    assert_eq!(h.state().win.zoom, 150);
+    menu5(&mut h, "View", t("Zoom Out"));
+    assert_eq!(h.state().win.zoom, 100);
+}
+
+/// A script with steps the app does: Open URL behind a confirmation, Sort
+/// Records with dialog (cancelled: error 1), Set Zoom Level, View As.
+#[test]
+fn script_steps_done_by_the_app() {
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    clients(&mut h);
+    let app = h.state_mut();
+    let d = app.doc.as_ref().unwrap();
+    let names = script::text::Names {
+        db: &d.db,
+        scripts: &[],
+    };
+    let mut url = Step::new(111);
+    url.raw_params.kv.insert(
+        (vec![128, 5], 5),
+        names.compile("\"https://example.com\"").unwrap().0,
+    );
+    let mut sort = Step::new(id::SORT);
+    if let StepParams::Sort { dialog, .. } = &mut sort.params {
+        *dialog = true;
+    }
+    let mut zoom = Step::new(97);
+    zoom.arg = 5;
+    let mut view = Step::new(30);
+    view.arg = 2;
+    let mut err = Step::new(id::SET_VARIABLE);
+    err.params = StepParams::SetVariable {
+        name: "$$err".into(),
+        value: Some(names.compile("Get ( LastError )").unwrap()),
+        repetition: None,
+    };
+    app.engine
+        .as_mut()
+        .unwrap()
+        .scripts
+        .push(fmp12::scripts::Script {
+            id: 901,
+            name: "App steps".into(),
+            options: 8,
+            steps: vec![url, sort, err, zoom, view],
+        });
+    app.pending_script = Some(901);
+    h.run_steps(3);
+    shot(&mut h, "m5_02_open_url");
+    let open = if i18n::french() { "Ouvrir" } else { "Open" };
+    h.get_by_label(open).click();
+    h.run_steps(3);
+    assert_eq!(
+        h.state().steps_ui.opened.as_deref(),
+        Some("https://example.com")
+    );
+    // Sort Records [With dialog]: the dialog, cancelled.
+    assert!(h.state().m5.sort.is_some());
+    h.run_steps(2);
+    shot(&mut h, "m5_02b_sort_from_script");
+    h.get_by_label(browse::t("Cancel")).click();
+    h.run_steps(4);
+    assert_eq!(global(&h, "$$err").as_deref(), Some("1"));
+    assert!(h.state().active.is_none());
+    assert_eq!(h.state().win.zoom, 150);
+    assert_eq!(h.state().view, View::List);
+}
+
+/// Tools › Script Debugger: the script stops at its first step; Step,
+/// the Data Viewer's Current tab, Run; a breakpoint, Run to it, Halt.
+#[test]
+fn script_debugger_flow() {
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    add_script(
+        &mut h,
+        902,
+        "Debug me",
+        &[
+            (id::SET_VARIABLE, "$a", "1"),
+            (id::SET_VARIABLE, "$b", "$a + 1"),
+            (id::SET_VARIABLE, "$$done", "$b"),
+        ],
+    );
+    h.get_by_label(tr("Tools")).click();
+    h.run_steps(2);
+    h.get_by_label(tr("Script Debugger")).click();
+    h.run_steps(3);
+    assert!(h.state().debugger.open);
+    h.state_mut().pending_script = Some(902);
+    h.run_steps(3);
+    let at = |h: &Harness<'_, App>| {
+        h.state()
+            .active
+            .as_ref()
+            .filter(|a| a.wait == script::Suspend::Breakpoint)
+            .and_then(|a| a.run.current())
+    };
+    assert_eq!(at(&h), Some((902, 0)));
+    shot(&mut h, "m5_03_debugger");
+    h.get_by_label(debugger::t("Step")).click();
+    h.run_steps(3);
+    assert_eq!(at(&h), Some((902, 1)));
+    // Data Viewer › Current: the local variable $a.
+    {
+        let app = h.state_mut();
+        app.data_viewer = true;
+        app.debugger.current_tab = true;
+    }
+    h.run_steps(3);
+    h.get_by_label("$a");
+    shot(&mut h, "m5_04_data_viewer_current");
+    h.get_by_label(debugger::t("Run")).click();
+    h.run_steps(3);
+    assert!(h.state().active.is_none());
+    assert_eq!(global(&h, "$$done").as_deref(), Some("2"));
+
+    // A breakpoint on the last step, Run to it, then Halt.
+    h.state_mut().workspace.breakpoints.insert((902, 2));
+    h.state_mut().engine.as_mut().unwrap().globals.clear();
+    h.state_mut().pending_script = Some(902);
+    h.run_steps(3);
+    h.get_by_label(debugger::t("Run")).click();
+    h.run_steps(3);
+    assert_eq!(at(&h), Some((902, 2)));
+    h.get_by_label(debugger::t("Halt Script")).click();
+    h.run_steps(3);
+    assert!(h.state().active.is_none());
+    assert_eq!(global(&h, "$$done"), None);
+}

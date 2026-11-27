@@ -306,6 +306,7 @@ impl App {
 
 /// `file:out.pdf` → `out.pdf`; `None` for absolute paths, other kinds
 /// (`filewin:`…) and paths leaving the file's folder.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn relative_path(stored: &str) -> Option<&str> {
     let rel = stored.strip_prefix("file:")?;
     let bad = rel.is_empty()
@@ -363,5 +364,24 @@ fn open_url(url: &str) {
 fn open_url(url: &str) {
     if let Some(w) = web_sys::window() {
         let _ = w.open_with_url_and_target(url, "_blank");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn output_paths_stay_next_to_the_file() {
+        use super::relative_path as r;
+        assert_eq!(r("file:out.pdf"), Some("out.pdf"));
+        assert_eq!(r("file:sub/out.pdf"), Some("sub/out.pdf"));
+        for bad in [
+            "file:../x",
+            "file:/etc/x",
+            "filewin:/C:/x",
+            "file:C:/x",
+            "file:",
+        ] {
+            assert_eq!(r(bad), None, "{bad}");
+        }
     }
 }

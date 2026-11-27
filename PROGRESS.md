@@ -99,7 +99,8 @@ ApplicationArchitecture.
 | New record, edit, in memory | ✅ |
 | Find requests: words, `=`, `==`, `*`, `@`, `#`, `<` `>` `<=` `>=`, ranges, phrases, omit | ✅ |
 | Sort ascending/descending by several fields | ✅ |
-| Related records (portals, related fields beyond the first record) | ⏳ |
+| Related records through the relationship graph (multi-hop, `=` joins); related fields and aggregates in calculations | ✅ |
+| Portals in the GUI, sorted relationships, other join operators | ⏳ |
 | Summary fields, auto-enter, validation enforcement | ⏳ |
 | Storage formats of dates/times/numbers in records (no sample data yet) | ⏳ |
 

@@ -20,6 +20,8 @@ pub struct Field {
     /// Calculation source for calculated fields, in a form `calc` parses
     /// (field names wrapped as `${…}`).
     pub calc: Option<String>,
+    /// Table occurrence a calculation is evaluated from (0 if none).
+    pub context: u32,
     pub def: fmp12::schema::Field,
 }
 
@@ -122,19 +124,21 @@ impl Database {
                 .fields
                 .iter()
                 .map(|(id, f)| {
-                    let calc = (f.kind() == FieldKind::Calculated)
+                    let stream = (f.kind() == FieldKind::Calculated)
                         .then(|| streams.get(&(t.id, *id)))
-                        .flatten()
-                        .and_then(|(k4, k5)| {
-                            let ctx = fmp12::calc::context(k4).unwrap_or(0);
-                            fmp12::calc::decompile(k5, ctx, &names).ok()
-                        });
+                        .flatten();
+                    let context = stream
+                        .and_then(|(k4, _)| fmp12::calc::context(k4))
+                        .unwrap_or(0);
+                    let calc =
+                        stream.and_then(|(_, k5)| fmp12::calc::decompile(k5, context, &names).ok());
                     Field {
                         id: *id,
                         name: f.name.clone(),
                         kind: f.kind(),
                         data_type: f.data_type(),
                         calc,
+                        context,
                         def: f.clone(),
                     }
                 })
@@ -180,6 +184,7 @@ impl Database {
             let mut ctx = RecordContext {
                 db: self,
                 table,
+                to: f.context,
                 record,
                 vars: BTreeMap::new(),
             };
@@ -191,6 +196,91 @@ impl Database {
             .and_then(|r| r.values.get(&field))
             .map_or("", |s| s.as_str());
         typed(raw, f.data_type)
+    }
+}
+
+impl Database {
+    fn to_named(&self, name: &str) -> Option<&fmp12::graph::TableOccurrence> {
+        self.occurrences
+            .iter()
+            .find(|o| o.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Records related to record `record` of table occurrence `from`, seen
+    /// through table occurrence `to` (following the shortest relationship path).
+    pub fn related(&self, from: u32, record: usize, to: u32) -> Vec<usize> {
+        // Breadth-first search over the relationship graph.
+        let mut prev: BTreeMap<u32, (u32, usize)> = BTreeMap::new();
+        let mut queue = std::collections::VecDeque::from([from]);
+        while let Some(a) = queue.pop_front() {
+            if a == to {
+                break;
+            }
+            for (i, r) in self.relationships.iter().enumerate() {
+                let b = if r.left == a {
+                    r.right
+                } else if r.right == a {
+                    r.left
+                } else {
+                    continue;
+                };
+                if b != from && !prev.contains_key(&b) {
+                    prev.insert(b, (a, i));
+                    queue.push_back(b);
+                }
+            }
+        }
+        let mut hops = Vec::new();
+        let mut cur = to;
+        while cur != from {
+            let Some(&(a, i)) = prev.get(&cur) else {
+                return Vec::new();
+            };
+            hops.push((a, cur, i));
+            cur = a;
+        }
+        let mut set = vec![record];
+        for (a, b, i) in hops.into_iter().rev() {
+            set = self.hop(a, &set, b, &self.relationships[i]);
+        }
+        set
+    }
+
+    fn hop(
+        &self,
+        a: u32,
+        records: &[usize],
+        b: u32,
+        rel: &fmp12::graph::Relationship,
+    ) -> Vec<usize> {
+        let (Some(ta), Some(tb)) = (self.table_of(a), self.table_of(b)) else {
+            return Vec::new();
+        };
+        // Predicate fields oriented from a to b.
+        let preds: Vec<(u32, u32)> = rel
+            .predicates
+            .iter()
+            .map(|p| {
+                if rel.left == a {
+                    (p.left_field, p.right_field)
+                } else {
+                    (p.right_field, p.left_field)
+                }
+            })
+            .collect();
+        (0..tb.records.len())
+            .filter(|&j| {
+                records.iter().any(|&r| {
+                    preds.iter().all(|(fa, fb)| {
+                        let (va, vb) = (self.value(ta.id, r, *fa), self.value(tb.id, j, *fb));
+                        // ponytail: only `=` joins; other operators need relationship option decoding.
+                        !va.is_empty()
+                            && !vb.is_empty()
+                            && calc::eval::compare(&va, &vb) == std::cmp::Ordering::Equal
+                    })
+                })
+            })
+            .collect()
     }
 }
 
@@ -220,6 +310,8 @@ pub fn typed(raw: &str, dt: DataType) -> Value {
 struct RecordContext<'a> {
     db: &'a Database,
     table: u32,
+    /// Context table occurrence of the calculation.
+    to: u32,
     record: usize,
     vars: BTreeMap<(String, usize), Value>,
 }
@@ -231,28 +323,36 @@ impl calc::Context for RecordContext<'_> {
         name: &str,
         _repetition: usize,
     ) -> Result<Value, calc::EvalError> {
-        // ponytail: related fields (other TOs) resolve to the first related record only.
-        let t = match table {
+        Ok(self
+            .field_values(table, name)?
+            .into_iter()
+            .next()
+            .unwrap_or_else(Value::empty))
+    }
+
+    fn field_values(
+        &mut self,
+        table: Option<&str>,
+        name: &str,
+    ) -> Result<Vec<Value>, calc::EvalError> {
+        let missing = |what: &str| calc::EvalError::new(102, format!("{what} missing"));
+        let (t, records) = match table {
             Some(to_name) => {
-                let to = self
-                    .db
-                    .occurrences
-                    .iter()
-                    .find(|o| o.name.eq_ignore_ascii_case(to_name))
-                    .ok_or_else(|| calc::EvalError::new(102, "table missing"))?;
-                to.base_table
+                let to = self.db.to_named(to_name).ok_or_else(|| missing(to_name))?;
+                if to.id == self.to || (self.to == 0 && to.base_table == self.table) {
+                    (to.base_table, vec![self.record])
+                } else {
+                    (to.base_table, self.db.related(self.to, self.record, to.id))
+                }
             }
-            None => self.table,
+            None => (self.table, vec![self.record]),
         };
-        let tbl = self
-            .db
-            .table(t)
-            .ok_or_else(|| calc::EvalError::new(102, "table missing"))?;
-        let f = tbl
-            .field_by_name(name)
-            .ok_or_else(|| calc::EvalError::new(102, format!("field {name} missing")))?;
-        let rec = if t == self.table { self.record } else { 0 };
-        Ok(self.db.value(t, rec, f.id))
+        let tbl = self.db.table(t).ok_or_else(|| missing("table"))?;
+        let f = tbl.field_by_name(name).ok_or_else(|| missing(name))?;
+        Ok(records
+            .into_iter()
+            .map(|r| self.db.value(t, r, f.id))
+            .collect())
     }
 
     fn variable(&mut self, name: &str, repetition: usize) -> Value {

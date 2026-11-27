@@ -64,3 +64,28 @@ fn records_find_sort_and_calculate() {
     sort(&db, tid, &mut found, &[(last, Order::Descending)]);
     assert_eq!(found, vec![1, 0]);
 }
+
+#[test]
+fn related_records_follow_relationships() {
+    let Some(d) = dir() else { return };
+    let mut db = Database::open(d.join("Contacts").join("en.fmp12")).unwrap();
+    let ti = |db: &Database, n: &str| db.tables.iter().position(|t| t.name == n).unwrap();
+    let (c, p) = (ti(&db, "Contacts"), ti(&db, "Phone Numbers"));
+    let pk = db.tables[c].field_by_name("PrimaryKey").unwrap().id;
+    let fk = db.tables[p].field_by_name("ForeignKey").unwrap().id;
+    let num = db.tables[p].field_by_name("Number").unwrap().id;
+    for key in ["A", "B"] {
+        let r = db.tables[c].new_record();
+        db.tables[c].records[r].values.insert(pk, key.into());
+    }
+    for (key, n) in [("A", "111"), ("B", "222"), ("a", "333")] {
+        let r = db.tables[p].new_record();
+        db.tables[p].records[r].values.insert(fk, key.into());
+        db.tables[p].records[r].values.insert(num, n.into());
+    }
+    let to = |db: &Database, n: &str| db.occurrences.iter().find(|o| o.name == n).unwrap().id;
+    let (cto, pto) = (to(&db, "Contacts"), to(&db, "Phone Numbers"));
+    // Text joins are case-insensitive, like FileMaker's English index.
+    assert_eq!(db.related(cto, 0, pto), vec![0, 2]);
+    assert_eq!(db.related(cto, 1, pto), vec![1]);
+}

@@ -51,6 +51,7 @@ pub mod id {
     pub const REVERT_RECORD: u16 = 51;
     pub const ENTER_BROWSE_MODE: u16 = 55;
     pub const INSERT_TEXT: u16 = 61;
+    pub const PAUSE_RESUME: u16 = 62;
     pub const IF: u16 = 68;
     pub const ELSE: u16 = 69;
     pub const END_IF: u16 = 70;
@@ -313,6 +314,10 @@ pub enum StepParams {
         flush_joins: bool,
         flush_external: bool,
     },
+    /// Pause/Resume Script: indefinitely (`None`) or for a duration in
+    /// seconds. ponytail: storage not seen in a sample; the duration is
+    /// read as the calculation of parameter 0 like other steps.
+    Pause(Option<Calc>),
     Other,
 }
 
@@ -467,6 +472,7 @@ impl Step {
                 restore: o & opt::RESTORE != 0,
                 keys: p.get(&[], 10).map(|b| sort_spec(&b)).unwrap_or_default(),
             },
+            id::PAUSE_RESUME => StepParams::Pause(p.calc(0)),
             id::REFRESH_WINDOW => StepParams::RefreshWindow {
                 flush_joins: o & opt::FLUSH_JOINS != 0,
                 flush_external: o & opt::FLUSH_EXTERNAL != 0,

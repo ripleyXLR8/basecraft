@@ -528,6 +528,10 @@ impl Step {
                 }
             }
             StepParams::Mode { pause } => set_bit(&mut o, opt::PAUSE, *pause),
+            StepParams::Pause(c) => {
+                p.set_calc(0, c.as_ref());
+                calc = c.is_some();
+            }
             StepParams::Sort {
                 dialog,
                 restore,

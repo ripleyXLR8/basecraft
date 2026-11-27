@@ -468,6 +468,7 @@ dependencies = [
  "eframe",
  "engine",
  "fmp12",
+ "print",
  "rfd",
  "script",
  "wasm-bindgen",

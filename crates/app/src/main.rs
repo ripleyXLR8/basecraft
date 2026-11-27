@@ -16,6 +16,7 @@ use fmp12::layouts::Layout;
 mod design;
 mod i18n;
 mod look;
+mod preview;
 use i18n::tr;
 use look::Look;
 
@@ -24,6 +25,7 @@ enum Mode {
     Browse,
     Find,
     Layout,
+    Preview,
 }
 
 struct Doc {
@@ -84,6 +86,11 @@ struct App {
     pending_script: Option<u32>,
     /// Custom dialogs shown by the last script (title, message).
     messages: Vec<(String, String)>,
+    /// Sort applied to the found set (for sub-summaries in Preview).
+    last_sort: Vec<(u32, Order)>,
+    /// Preview mode: current page and page count.
+    page: usize,
+    pages: usize,
     /// Front panel chosen by the user, per tab control id.
     tabs: BTreeMap<u64, u64>,
     /// Layout mode state (the layout being edited).
@@ -300,6 +307,7 @@ impl App {
         window.mode = match mode {
             Mode::Find => script::Mode::Find,
             Mode::Browse | Mode::Layout => script::Mode::Browse,
+            Mode::Preview => script::Mode::Preview,
         };
         let mut host = AppHost {
             db: &mut d.db,
@@ -501,6 +509,7 @@ impl App {
         if let Some(d) = &self.doc {
             engine::sort(&d.db, t, &mut found, &[(f, order)]);
         }
+        self.last_sort = vec![(f, order)];
         self.found.insert(t, found);
         self.sorted.insert(t, true);
         self.current.insert(t, 0);
@@ -794,6 +803,23 @@ impl App {
                     }
                 }
                 Mode::Layout => {}
+                Mode::Preview => {
+                    if ui.button("◀").clicked() && self.page > 0 {
+                        self.page -= 1;
+                    }
+                    ui.label(format!(
+                        "{} {}/{}",
+                        tr("Page"),
+                        self.page + 1,
+                        self.pages.max(1)
+                    ));
+                    if ui.button("▶").clicked() && self.page + 1 < self.pages {
+                        self.page += 1;
+                    }
+                    if ui.button(tr("Exit Preview")).clicked() {
+                        self.mode = Some(Mode::Browse);
+                    }
+                }
                 Mode::Find => {
                     if ui.button(tr("Perform Find")).clicked() {
                         self.perform_find();
@@ -891,7 +917,21 @@ impl App {
                     self.view = v;
                 }
             }
-            ui.add_enabled(false, egui::Button::new(tr("Preview")));
+            let in_preview = self.mode() == Mode::Preview;
+            if ui
+                .add_enabled(
+                    self.mode() != Mode::Layout,
+                    egui::Button::selectable(in_preview, tr("Preview")),
+                )
+                .clicked()
+            {
+                if in_preview {
+                    self.mode = Some(Mode::Browse);
+                } else if self.commit() {
+                    self.mode = Some(Mode::Preview);
+                    self.page = 0;
+                }
+            }
             let mut edit = false;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 edit = ui.button(tr("Edit Layout")).clicked();
@@ -918,6 +958,11 @@ impl App {
         let Some(layout) = doc.layouts.get(self.layout).cloned() else {
             return;
         };
+        if mode == Mode::Preview {
+            self.pages = preview::draw(ui, doc, &layout, &found, &self.last_sort, self.page);
+            self.page = self.page.min(self.pages.saturating_sub(1));
+            return;
+        }
         let theme = doc
             .db
             .themes
@@ -1385,7 +1430,7 @@ fn draw_object(
             let s = request.entry(field).or_default();
             ui.put(inner, lk.edit(s));
         }
-        (Mode::Find | Mode::Layout, _) | (Mode::Browse, None) => {}
+        (Mode::Find | Mode::Layout | Mode::Preview, _) | (Mode::Browse, None) => {}
         (Mode::Browse, Some(rec)) if is_calc => {
             let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
             lk.paint_text(painter, r, &v);

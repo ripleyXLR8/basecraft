@@ -9,6 +9,7 @@ repository.workspace = true
 eframe = "0.37"
 engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
+print = { version = "0.1.0", path = "../print" }
 rfd = "0.18.0"
 script = { version = "0.1.0", path = "../script" }
 

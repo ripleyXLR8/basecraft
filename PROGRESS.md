@@ -50,7 +50,8 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Script step parameters: other steps (windows, import/export, files…) | ⏳ |
 | Value lists (custom values, from field: second field, related only, sort by second field) | ✅ |
 | Themes: compiled styles, named styles, local object styles, fonts (`theme.rs`) | ✅ |
-| Custom functions, accounts and privileges | ⏳ |
+| Accounts (name, active, privilege set, authentication type, must change password, password data), privilege sets (records per table with limiting calculations, fields, layouts, scripts, value lists, other privileges, menus, print, export), extended privileges, and their MD5 digests (FORMAT.md §15) | ✅ every digest of the 66 templates recomputed |
+| Custom functions | ⏳ |
 | Container data | ⏳ |
 
 Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export. Step parameters: 203 steps (319 parameter values) and 108 button actions match, templates plus a 57-step script pasted into a copy of Tasks.
@@ -197,7 +198,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Repeating fields, container data | ⏳ |
 | Calculation compiler: source text → token stream (key 5) and compiled form (key 6) FileMaker evaluates (`fmp12::calc::compile`) | ✅ 1,890 FileMaker-compiled calculations and all 5,214 template calculations (fields, scripts, layouts, comments included) byte for byte; one compiler for schema and scripts |
 | Scripts (`fmp12::scripts_save`): edited step lists and parameters | ✅ verified in FileMaker: opens without warning, Save a Copy as XML shows the steps as written, the calculations evaluate |
-| New, deleted, renamed scripts | ✅ verified in FileMaker: `[17].[1]` key 8 (MD5 over the catalog members' names in id order, FORMAT.md §8) written by `save_scripts`; non-Latin names in the long form. The accounts/privileges catalogs (`[23]`) carry their own digests and are not written by BaseCraft |
+| New, deleted, renamed scripts | ✅ verified in FileMaker: `[17].[1]` key 8 (MD5 over the catalog members' names in id order, FORMAT.md §8) written by `save_scripts`; non-Latin names in the long form |
 | Name indexes: collation keys of names (423 characters; `fmp12::collate`) | ✅ all 4,097 template name-index keys |
 | Schema editing (`fmp12::schema_edit`): add, rename, delete tables (with occurrence and layout) and fields; every data type; calculated and summary fields; auto-enter (serial, stamps, constant, calculation), validation (not empty, unique, existing, range, calculation), storage (global, repetitions, indexing) | ✅ verified in FileMaker: opens without warning, Manage Database and Save a Copy as XML show the tables, fields and options, records created in FileMaker get serials, stamps, constants and calculated values |
 | New empty file (`schema_edit::new_file`, from `assets/blank.fmp12` with BaseCraft's own theme) | ✅ verified in FileMaker |
@@ -256,7 +257,8 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Charts (`fmp12::charts`, FORMAT.md §10): object kind 13 (`CHRT`), title, axis titles, X data, Y series and names, bubble size, type (column, bar, line, area, pie, positive/negative, stacked column, stacked bar, bubble, scatter), data source (found set, current record delimited values, related records), legend, data points, colour scheme | ✅ 14 charts made in FileMaker 26 decoded (`tests/charts.rs`) |
 | Charts drawn in Browse, Preview (`app::chart`) and PDF (`print::chart`, one layout for both): all 10 types, title, legend, ticks, value labels, Earth and Bright palettes | ✅ compared with FileMaker screenshots |
 | Chart fonts, custom series colours, gridlines, legend position, axis ranges and formats, other colour schemes, "summary groups when sorted" | ⏳ |
-| Security (accounts, privileges) | ⏳ |
+| Security (`fmp12::security`, `engine::access`): login with FileMaker's salted password hash (`--account`/`--password` in the CLI and MCP, a login dialog in the app, "Log in using" honoured, "must change password" asks for a new one); privileges enforced (records with limiting calculations, read-only and hidden fields, hidden layouts, scripts, print, export; errors 9, 200, 201); `Get ( AccountName )`, `Get ( AccountPrivilegeSetName )`, `Get ( AccountExtendedPrivileges )`; script steps Add Account, Delete Account, Reset Account Password, Enable Account, Change Password, Re-Login (`script::accounts`); writing accounts and privilege sets with full access (File › Manage › Security, `accounts`/`privileges` commands, MCP tools) | ✅ verified in FileMaker 26: files BaseCraft wrote open without warning and take its passwords (wrong password and inactive account refused with FileMaker's alert, a no-access layout shows « Accès refusé »); hashes FileMaker wrote for test passwords verify; the account steps store and fail as in FileMaker (`tools/oracle/security_check.ps1`) |
+| External-server and OAuth logins, "Run script with full access privileges", Re-Login/Change Password dialogs from scripts, encryption at rest | ⏳ |
 
 ## M4 — GUI (`crates/app`)
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |

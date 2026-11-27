@@ -206,4 +206,45 @@ fn password_vectors() {
         security::password_hash("caf\u{e9}", &salt),
         security::password_hash("cafe\u{301}", &salt)
     );
+
+    // Account key 6 as FileMaker Pro 26 wrote it for test passwords set by
+    // its own script steps (tools/oracle/account_steps.xml: Add Account,
+    // Reset Account Password, Change Password): version 1, salt, hash,
+    // then `hash[1] & 0x1F` check bytes.
+    let hex = |s: &str| -> Vec<u8> {
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    };
+    for (password, data) in [
+        (
+            "test789",
+            "018144805194b21fd5ab449adc82493af2f0db77e0b392ceb475d55f4b0b941b980218ae40ef0edca4294e4cfd4f27af907c74a80accacdb95b045",
+        ),
+        (
+            "Test-\u{e9}123",
+            "0190ccf619a8cc5d4ea0e61110e8b8bdaa1e276a1ec66c309ff4cc4617bc2681dc1ea115664369caf8d77cd8274966",
+        ),
+        (
+            "test123",
+            "011047c37758352c2355f514954a581fcbe458ab9a5614e71cc78f3fc3496604d2892f47fec87bfe6f4281ad44d844db9be2fc52",
+        ),
+        (
+            "test456",
+            "01da12b9f01cb391dd85c0659790fb65b7e58bbadb85012e56652d9fa4b204bf85290b790474563f1be096bead009a7a2f08df3a8407",
+        ),
+    ] {
+        let d = hex(data);
+        assert_eq!(d[0], 1);
+        assert_eq!(
+            security::password_hash(password, &d[1..11])[..],
+            d[11..31],
+            "{password}"
+        );
+        assert_eq!(d.len(), 31 + (d[12] & 0x1F) as usize, "{password}");
+        for i in 31..d.len() {
+            assert_eq!(d[i], d[i - 20] ^ d[i - 30], "{password} check byte {i}");
+        }
+        assert_ne!(security::password_hash("test", &d[1..11])[..], d[11..31]);
+    }
 }

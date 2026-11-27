@@ -109,7 +109,8 @@ each `DDRREF` to the hash it points to, the diff is empty.
 (same length) open in FileMaker without complaint: there is no checksum on
 sectors or on the file as a whole. A few catalogs do carry digests of their
 own content, checked when the file opens: the script list (`[17].[1]` key 8,
-§8) and the accounts and privilege catalogs (`[23]`).
+§8) and the accounts and privilege catalogs (`[23]`, §15): plain MD5s
+that BaseCraft recomputes when it writes them.
 We use this to reverse-engineer field semantics (`tools/oracle`).
 
 ## 2. Payload byte code ✅
@@ -195,10 +196,10 @@ Every catalog follows the same pattern:
 | `[6]` | ThemeCatalog (§12) | ✅ styles |
 | `[25]` | font catalog (§12) | ✅ names |
 | `[17]` | ScriptCatalog; `[17].[5].[S].[5].[n]` = Step | 🔍 |
-| `[23].[1]` | AccountsCatalog | 🔍 |
-| `[23].[2]` | PrivilegeSetsCatalog | 🔍 |
-| `[23].[3]` | ExtendedPrivilegesCatalog | 🔍 |
-| `[23].[4]` | FileAccessCatalog | 🔍 |
+| `[23].[1]` | AccountsCatalog (§15) | ✅ read, written |
+| `[23].[2]` | PrivilegeSetsCatalog (§15) | ✅ read, written |
+| `[23].[3]` | ExtendedPrivilegesCatalog (§15) | ✅ read, written |
+| `[23].[4]` | FileAccessCatalog; `[23].[4].[1]` key 16 enters the account digests (§15) | 🔍 |
 | `[33]` | ValueListCatalog (§9) | ✅ read, written (§14) |
 | `[38]` | BaseDirectoryCatalog | 🔍 |
 | `[65]` | CustomMenuCatalog | 🔍 |
@@ -544,8 +545,8 @@ and evaluate (the dialog shows `21|two|yes|two|x¶y`).
   a digest seeded by the privilege set, and BaseCraft left the script list
   alone. That was wrong: for the scripts catalog there is no seed and no
   secret, and the same unkeyed MD5 reproduces every file we have. The
-  accounts and privilege catalogs (`[23]`) carry their own digests; they
-  are not written by BaseCraft.
+  accounts and privilege catalogs (`[23]`) carry their own MD5 digests,
+  one per member (§15).
 * Collation keys of the name index: 2-byte primary weights, case folded,
   then `00 00 00`; accented letters add secondary weights after `00 00`.
   Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`
@@ -1261,3 +1262,137 @@ see their related records through calculations (`Count`, `List`, a `×`
 relationship), lookups copy the related value (also the no-match
 constant and the next lower value), `ValueListItems` returns the custom
 and field values, serials step by the increment.
+
+## 15. Accounts and privileges (`fmp12::security`) ✅
+
+`[23].[1]` accounts, `[23].[2]` privilege sets, `[23].[3]` extended
+privileges, `[23].[4]` file access. Each catalog has the usual layout
+(§4): `[23].[c].[1]` key 0 last id, key 4 count, `[3]` display order,
+`[1]` name index, `[7]` member list; members at `[23].[c].[5].[id]` with
+keys 16 (name; long names in `[16]`), 216 (UUID) and 31873–31875 (copied
+from the catalog head when a member is added).
+
+### Accounts `[23].[1].[5].[A]`
+
+| Key | Meaning |
+|----:|---------|
+| 2 | authentication: absent/0 FileMaker, 1 external server, OAuth providers above (`k >> 3`: 2 Amazon, 3 Google, 4 Azure AD, 5 Claris ID, 6 Apple, 7 AD FS) |
+| 3 | description |
+| 4 | **digest** (below) |
+| 6 | password data: `01`, 10-byte salt, 20-byte hash, then `hash[1] & 0x1F` check bytes, byte `31 + i` = byte `11 + i` XOR byte `1 + i` |
+| 10 | status: when the password was set, a date (`0x800000 \| year << 10 \| month << 6 \| day`, 3 bytes) then the seconds as a number (`80`, count of integer digits, digits + 1 as nibbles, six fraction digits, trailing zeros dropped), after a length byte. The microseconds carry flags: `1 << 19` inactive, `1 << 18` must change password. No key: 1/1/1024 |
+| 11 | privilege set id (length-prefixed integer) |
+
+Account 1 is [Guest]: its name is stored `[` U+E002 `]` (U+E002 is
+shown as "Guest") and its password is that text. The catalog head
+`[23].[1].[1]` keys 16 and 6 hold File Options › "Log in using" (account
+name and password as text); key 6 alone, empty, when the option is off.
+
+**Password hash.** The password's UTF-16 code units, decomposed (é →
+e + U+0301; a leading combining mark gets a space first), each XOR-ed
+with two bytes of a fixed 30-byte pepper (`FileMaker, Inc.\0` and 14
+more bytes, `security::PEPPER`), then PBKDF2-HMAC-SHA1 with the 10-byte
+salt, one iteration, 20 bytes. Verified on hashes FileMaker 26 itself
+wrote when its own script steps (Add Account, Reset Account Password,
+Change Password) set test passwords (`test123`, `Test-é123`, `test456`,
+`test789`; `tools/oracle/account_steps.xml`, vectors in
+`tests/security.rs`), on the empty password of every starter
+template's Admin, and the other way round: FileMaker 26 opens files
+whose passwords BaseCraft hashed. BaseCraft checks passwords and writes
+new ones (new random salt); it has no way to read one back or to open a
+file without one.
+
+*Sources.* The hash construction (pepper, decomposition, one PBKDF2
+iteration) and the shape of the digests were suggested by the public
+notes of the OpenMaker project (github.com/OpenMaker-Dev/openmaker,
+`docs/re/local-files.md`, `network-protocol.md` §4.3–4.4); no code was
+taken from it. Every detail here was then checked on our own files and
+against FileMaker 26 as described.
+
+### Privilege sets `[23].[2].[5].[P]`
+
+Sets 1–3 are built in: [Full Access], [Data Entry Only], [Read-Only
+Access] (names stored in the file's language; `Get (
+AccountPrivilegeSetName )` gives the English ones, as FileMaker 26 does
+in a French file).
+
+| Key / node | Meaning |
+|-----------|---------|
+| 2 | records of tables without their own entry: byte 0 = create, view, edit, delete as 2-bit levels from the high bits (0 no, 1 yes, 2 limited), byte 1 = access of fields (1 no access, 2 view only, 3 modifiable) |
+| 3 | description |
+| 4 | **digest** |
+| 10 | other privileges, u16 XOR `0x6000`: `0x1` create value lists, `0x2` no idle disconnect, `0x4` change password, `0x8` manage extended privileges, `0x10` manage accounts, `0x20` manage database, `0x80` manage menus, `0x100` print, `0x200` export, `0x400` override validation, `0x800` create scripts, `0x1000` create layouts, `0x2000`/`0x4000` menus (both: all, `0x2000`: editing only, none: minimum), `0x8000` open quickly |
+| 12 | change password every N days |
+| 13 | minimum password length |
+| `[5].[T]` | custom record privileges of base table T: key 2 as above; `[5]` field id → access byte; `[6]`–`[9]` the calculation limiting create/view/edit/delete (keys 4 context `03 D0 hi lo`, 5 tokens, 6 compiled, §11) |
+| `[9]` | layouts, scripts, value lists: key = catalog byte (`04` layouts, `11` scripts, `21` value lists), alone for the default of every item or followed by the item's id; value = one byte `0xD0 \| records << 2 \| access` (layouts: records through the layout in bits 2–3) |
+
+`[23].[2].[1].[8]` indexes the sets by digest (a node named by the
+16-byte digest holding one empty key, the set id).
+
+### Extended privileges `[23].[3].[5].[E]`
+
+Key 16 keyword (`fmapp`, `fmwebdirect`, `fmreauthenticate10`…), 3
+description, 2 `01 xx` (xx enters the digest; 2 when absent), 4 digest,
+`[5]` one empty key per privilege set that has it.
+
+### Digests (key 4)
+
+Each member carries a plain MD5 of its content; FileMaker refuses the
+file ("access privileges damaged") when one does not match. Like the
+script list's key 8 (§8) they hold no secret: BaseCraft recomputes all
+of them for every account, set and extended privilege of the 66 starter
+templates, and for the accounts FileMaker 26 added by script
+(`Security::check`).
+
+* **Account**: MD5 of [the UUID `[23].[4].[1]` key 16 and `[2]` key
+  254, when the file version `[2]` key 5 is above 10], the account key
+  as a path (`len + 1, len, bytes`), the key 2 byte, the name in
+  UTF-16BE (as stored, `[` U+E002 `]` for Guest), the first 31 bytes of
+  key 6, the description in UTF-16BE, then keys 10 and 11, each after a
+  length byte.
+* **Privilege set**: MD5 of the record levels of key 2 (one byte each;
+  a limited level without a calculation counts as no; `0 0 0 0 1` when
+  key 2 is absent) and its field byte; key 10 as stored plus `[2]` key
+  254 (u32, wrapping); the description in UTF-16BE; keys 12 and 13
+  (u16); for each table its key as a path, its levels and field byte as
+  above, for each limited action the compiled calculation, the context
+  length and the context, then each field entry (key as a path, byte);
+  then each `[9]` entry (key as a path, byte). The name is not part of
+  it.
+* **Extended privilege**: MD5 of keyword and description (UTF-16BE), the
+  key 2 byte, then each set key as a path.
+
+### Writing (`security::save`)
+
+A login is required: `Security::login` checks the account name (not
+case-sensitive) and the password and returns a `Session`; `save` takes
+one. A full access session may change anything; otherwise only what
+FileMaker's script steps allow (a set with "manage accounts": accounts
+outside [Full Access]; any account: its own password). One active
+[Full Access] account must remain. Changed members are rewritten with
+their digest, the name index (§14 collation keys), display order, count
+and last id; untouched members keep their bytes. "Log in using" is
+turned off when its account's password or name changes.
+
+### Account script steps
+
+As FileMaker 26 stores them (steps it wrote from a pasted snippet, and
+copies with bytes changed in place, read back through Save a Copy as
+XML):
+
+| Step (id) | Storage |
+|-----------|---------|
+| Add Account (134) | `[128].[5]` name, `[129].[5]` password, privilege set inline at byte 6 (`02 01 id`), bytes 22–23 = 1 user must change password; options `0x4002` |
+| Delete Account (135) | `[128].[5]` name |
+| Reset Account Password (136) | `[128].[5]` name, `[129].[5]` password, bytes 22–23 must change |
+| Enable Account (137) | `[128].[5]` name, bytes 22–23 = 1 deactivate (XML `Deactivate`), 0 activate |
+| Change Password (83) | `[128].[5]` old password, `[129].[5]` new password, option `0x80` without dialog |
+| Re-Login (138) | `[128].[5]` account name, `[129].[5]` password, option `0x80` without dialog |
+
+Errors FileMaker 26 gave running them (and so does the engine): 212 for
+a missing account (Delete, Reset, Enable) and for a refused Re-Login (the
+account stays logged in), 12 for Add Account with a name in use, 9 for
+Add Account by an account that may not manage accounts. At open, a wrong
+password and an inactive account get the same alert: « Le nom de compte
+et le mot de passe fournis ne permettent pas d'accéder à ce fichier. »

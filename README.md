@@ -86,7 +86,11 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 ## Known limitations
 
 - **Encrypted files** (encryption at rest) cannot be opened.
-- **Accounts and privilege sets** are read, not written.
+- **Accounts and privilege sets** are read, enforced and written (File › Manage ›
+  Security, `accounts`/`privileges` commands); external-server and OAuth accounts
+  are listed but cannot log in, and "Run script with full access privileges" is
+  not honoured yet. Opening a protected file always needs its account name and
+  password: BaseCraft has no way around them.
 
 ## Command line for scripts and AI agents
 

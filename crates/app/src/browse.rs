@@ -91,6 +91,8 @@ pub struct Dialogs {
     /// Last text the engine copied, given to the OS clipboard.
     clip: Option<String>,
     zoom: u32,
+    /// Install OnTimer Script: when the timer last fired (egui time).
+    timer_at: Option<f64>,
 }
 
 impl App {
@@ -214,6 +216,23 @@ impl App {
         {
             ctx.copy_text(c.clone());
             self.m5.clip = Some(c);
+        }
+        // Install OnTimer Script: the script runs every interval while
+        // no other script runs (as FileMaker, it waits for idle).
+        match self.engine.as_ref().and_then(|e| e.timer.clone()) {
+            Some(tm) => {
+                let now = ctx.input(|i| i.time);
+                let since = *self.m5.timer_at.get_or_insert(now);
+                if now - since >= tm.interval {
+                    if self.active.is_none() && self.trigger_queue.is_empty() {
+                        self.trigger_queue.push_back((tm.script, tm.parameter));
+                    }
+                    self.m5.timer_at = Some(now);
+                }
+                let left = (since + tm.interval - now).max(0.05);
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+            }
+            None => self.m5.timer_at = None,
         }
         // Zoom (Set Zoom Level, View › Zoom).
         // ponytail: the whole UI zooms, menus included; zooming only the

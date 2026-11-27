@@ -146,7 +146,7 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Fields: Set Next Serial Value, Insert from Index (the app's picker), Insert from Last Visited, Export Field Contents; Insert from URL disabled (no HTTP client) | ✅ |
 | Records: Open Record, Revert Record, Copy Record, Copy All Records, Truncate Table, Import / Export Records (the app's dialogs; stored import/export options ⏳), Open / Commit / Revert Transaction | ✅ |
 | Found sets: Sort with stored order and with dialog, Sort Records by Field, Unsort, Find Matching Records, Constrain / Extend Found Set, Modify Last Find, Omit Multiple, Show Omitted Only, Perform Quick Find, Go to Record | ✅ |
-| Control: Perform Script by name, Install OnTimer Script (stored in `Engine::timer`; the app does not fire it yet ⏳), Set Error Logging, Set Layout Object Animation, Halt Script, Allow User Abort | ✅ |
+| Control: Perform Script by name, Install OnTimer Script (the app runs it every interval while no script runs), Set Error Logging, Set Layout Object Animation, Halt Script, Allow User Abort | ✅ |
 | Files: New / Open / Close File and Exit Application (after the script), Save a Copy as, Print (to PDF), Save Records as PDF / Excel (next to the file for a relative `file:` path, otherwise a save dialog); Set Multi-User does nothing; Recover File refused (error 3) | ✅ |
 | Misc: Beep, Open URL and Send Mail (`mailto:`) behind a confirmation, handed to the OS opener (http, https, mailto, ftp only); Flush Cache, Get Folder Path; Speak, Dial Phone, Execute SQL, Set Web Viewer return FileMaker's error | ✅ |
 | Steps that cannot apply (AI, server, plug-ins, iOS, design dialogs) return FileMaker's desktop error (`script::UNSUPPORTED`, table below) | ✅ |

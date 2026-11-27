@@ -1118,3 +1118,27 @@ fn script_debugger_flow() {
     assert!(h.state().active.is_none());
     assert_eq!(global(&h, "$$done"), None);
 }
+
+/// Install OnTimer Script: the app runs the script every interval.
+#[test]
+fn on_timer_script_runs() {
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    add_script(
+        &mut h,
+        903,
+        "Tick",
+        &[(id::SET_VARIABLE, "$$tick", "$$tick + 1")],
+    );
+    h.state_mut().engine.as_mut().unwrap().timer = Some(script::Timer {
+        script: 903,
+        parameter: None,
+        interval: 0.2,
+    });
+    for _ in 0..30 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let n: u32 = global(&h, "$$tick").unwrap().parse().unwrap();
+    assert!(n >= 2, "{n}");
+}

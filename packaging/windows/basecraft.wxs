@@ -1,0 +1,42 @@
+<!-- WiX v4+ source for the BaseCraft MSI. Built by .github/workflows/release.yml:
+     wix build -arch <x64|arm64> -d Version=<x.y.z> -d BinDir=<dir> basecraft.wxs -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="BaseCraft" Manufacturer="BaseCraft contributors" Version="$(var.Version)"
+           UpgradeCode="6B0D2E36-0B6A-4C55-9F2B-3B6A3B1C9E21" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of BaseCraft is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="BaseCraftIcon" SourceFile="$(var.BinDir)\basecraft.ico" />
+    <Property Id="ARPPRODUCTICON" Value="BaseCraftIcon" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="BaseCraft">
+        <Component Id="MainExe">
+          <File Id="BaseCraftExe" Source="$(var.BinDir)\basecraft.exe" KeyPath="yes" />
+          <ProgId Id="BaseCraft.fmp12" Description="Database file" Icon="BaseCraftIcon">
+            <Extension Id="fmp12">
+              <Verb Id="open" TargetFile="BaseCraftExe" Argument="&quot;%1&quot;" />
+            </Extension>
+          </ProgId>
+        </Component>
+        <Component Id="CliExe">
+          <File Source="$(var.BinDir)\basecraft-cli.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="License">
+          <File Source="$(var.BinDir)\LICENSE.txt" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="5E3B4E0A-2C8F-4F8E-9E61-0D7A1F3C2B44">
+        <Shortcut Id="BaseCraftShortcut" Name="BaseCraft" Target="[INSTALLFOLDER]basecraft.exe"
+                  WorkingDirectory="INSTALLFOLDER" Icon="BaseCraftIcon" />
+        <RegistryValue Root="HKCU" Key="Software\BaseCraft" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="Main">
+      <ComponentRef Id="MainExe" />
+      <ComponentRef Id="CliExe" />
+      <ComponentRef Id="License" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

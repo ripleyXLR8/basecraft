@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BaseCraft
+GenericName=Database
+Comment=Create, browse and script databases; opens .fmp12 files
+Exec=basecraft %f
+Icon=basecraft
+Terminal=false
+Categories=Office;Database;
+MimeType=application/x-fmp12;
+StartupWMClass=basecraft

@@ -1697,10 +1697,18 @@ fn main() -> eframe::Result {
     if let Some(p) = std::env::args_os().nth(1) {
         app.open_path(std::path::Path::new(&p));
     }
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1060.0, 980.0])
+        .with_app_id("basecraft");
+    if let Ok(icon) =
+        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon/basecraft-256.png"))
+    {
+        viewport = viewport.with_icon(icon);
+    }
     eframe::run_native(
         "BaseCraft",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([1060.0, 980.0]),
+            viewport,
             ..Default::default()
         },
         creator(app),

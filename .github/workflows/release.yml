@@ -1,0 +1,154 @@
+# Builds BaseCraft for every platform and publishes a GitHub release.
+# Files are named <app>-<version>-<os>-<arch>[-portable].<ext>, with a
+# SHA256SUMS.txt, as the ArtCraft launcher expects.
+# Trigger: push a tag `vX.Y.Z` (or run manually with a tag that exists).
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish, e.g. v0.1.0. Empty = dry run of the current branch (artifacts only, no release)."
+        required: false
+        default: ""
+permissions:
+  contents: write
+env:
+  # A dry run (manual run without a tag) builds the current commit as version 0.0.0-dev.
+  TAG: ${{ github.event_name == 'push' && github.ref_name || (github.event.inputs.tag != '' && github.event.inputs.tag || 'v0.0.0-dev') }}
+  REF: ${{ github.event_name == 'push' && github.ref_name || (github.event.inputs.tag != '' && github.event.inputs.tag || github.sha) }}
+jobs:
+  linux:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libfuse2
+      - run: cargo build --release --locked -p basecraft -p basecraft-cli
+      - name: Package tar.gz, .deb and AppImage
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"; A=${{ matrix.arch }}; N="basecraft-$V-linux-$A"
+          mkdir -p dist "$N"
+          cp target/release/basecraft target/release/basecraft-cli LICENSE README.md "$N/"
+          cp assets/icon/basecraft-256.png "$N/basecraft.png"
+          tar czf "dist/$N.tar.gz" "$N"
+          # .deb
+          cargo install cargo-deb --locked
+          cargo deb -p basecraft --no-build --no-strip -o "dist/$N.deb"
+          # AppImage
+          D=AppDir
+          mkdir -p $D/usr/bin $D/usr/share/applications $D/usr/share/icons/hicolor/256x256/apps
+          cp target/release/basecraft target/release/basecraft-cli $D/usr/bin/
+          cp packaging/linux/basecraft.desktop $D/usr/share/applications/ && cp packaging/linux/basecraft.desktop $D/
+          cp assets/icon/basecraft-256.png $D/usr/share/icons/hicolor/256x256/apps/basecraft.png
+          cp assets/icon/basecraft-256.png $D/basecraft.png
+          printf '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/basecraft" "$@"\n' > $D/AppRun && chmod +x $D/AppRun
+          curl -fsSL -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$A.AppImage"
+          chmod +x appimagetool
+          ARCH=$A ./appimagetool --appimage-extract-and-run $D "dist/$N.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+
+  windows:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p basecraft -p basecraft-cli
+      - name: Package portable zip and MSI
+        shell: pwsh
+        run: |
+          $V = $env:TAG.TrimStart('v'); $A = '${{ matrix.arch }}'; $N = "basecraft-$V-windows-$A"
+          $bin = "target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force dist, stage | Out-Null
+          Copy-Item "$bin/basecraft.exe", "$bin/basecraft-cli.exe", README.md stage/
+          Copy-Item LICENSE stage/LICENSE.txt
+          Copy-Item assets/icon/basecraft.ico stage/
+          Compress-Archive -Path stage/* -DestinationPath "dist/$N-portable.zip"
+          dotnet tool install --global wix
+          # MSI versions must be numeric: drop any -suffix.
+          wix build -arch $A -d Version=$($V.Split('-')[0]) -d BinDir=stage packaging/windows/basecraft.wxs -o "dist/$N.msi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: dist/*
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target $t -p basecraft -p basecraft-cli
+          done
+      - name: Universal .app and .dmg (unsigned)
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"; N="basecraft-$V-macos-universal"
+          APP=stage/BaseCraft.app
+          mkdir -p $APP/Contents/MacOS $APP/Contents/Resources dist
+          for b in basecraft basecraft-cli; do
+            lipo -create target/aarch64-apple-darwin/release/$b target/x86_64-apple-darwin/release/$b -output $APP/Contents/MacOS/$b
+          done
+          sed "s/VERSION/$V/g" packaging/macos/Info.plist > $APP/Contents/Info.plist
+          I=basecraft.iconset; mkdir $I
+          for s in 16 32 128 256 512; do
+            cp assets/icon/basecraft-$s.png $I/icon_${s}x${s}.png
+            cp assets/icon/basecraft-$((s*2)).png $I/icon_${s}x${s}@2x.png 2>/dev/null || true
+          done
+          iconutil -c icns $I -o $APP/Contents/Resources/basecraft.icns
+          ln -s /Applications stage/Applications
+          hdiutil create -volname BaseCraft -srcfolder stage -ov -format UDZO "dist/$N.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  publish:
+    needs: [linux, windows, macos]
+    # The env context is not available here: test the trigger instead.
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+          gh release create "$TAG" * --repo "$GITHUB_REPOSITORY" --title "BaseCraft ${TAG#v}" --generate-notes || \
+            gh release upload "$TAG" * --repo "$GITHUB_REPOSITORY" --clobber

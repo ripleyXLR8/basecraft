@@ -124,3 +124,52 @@ Every catalog follows the same pattern:
 | `[T].[5].[R]` | record R: key F = value of field F | ✅ |
 | `[T].[5].[R].[F]` | long value of field F, keys/segments 1…n (key 0 = style runs) | ✅ |
 | `[node].[16]` | long name split over keys 1…n when it does not fit inline | ✅ |
+
+## 5. Field definitions ✅
+
+`[T].[3].[5].[F]`: key 16 = name, key 3 = comment, key 218 = tag list,
+key 2 = a 26-byte **option block**. Sub-path `.[5]` holds the compiled
+auto-enter calculation (§6).
+
+Decoded by flipping single bits in copies of real files and letting
+FileMaker export XML. All 214 template fields match the export (`tests/oracle.rs`).
+
+| Byte | Bits | Meaning |
+|-----:|------|---------|
+| 0 | — | field type: 1 Normal, 2 Calculated, 3 Summary |
+| 1 | — | data type: 1 Text, 2 Number, 3 Date, 4 Time, 5 Timestamp, 6 Container |
+| 3 | — | auto-entered stamp: 0 Date, 1 Time, 2 Timestamp, 3 Name, 4 Account name; +5 = modification instead of creation |
+| 4–7 | — | index language id, u32 BE (21 = English; Unicode variants set high bits) |
+| 8 | 0 | shadow field (external SQL source) |
+| 8 | 3, 7 | index Minimal |
+| 8 | 5 | index All |
+| 8 | 6 | automatic indexing **off** |
+| 9 | 0 | global storage |
+| 9 | 1 | calculation result **not** stored |
+| 10 | 0 | prohibit modification of auto-entered value |
+| 10 | 1 | serial number, generated on commit |
+| 10 | 2 | looked-up value |
+| 11 | 0 | stamp of byte 3 enabled (needed for value 0) |
+| 11 | 1 | serial number, generated on creation |
+| 11 | 2 | constant data |
+| 11 | 3 | calculated value |
+| 11 | 4 | value from last visited record |
+| 11 | 5 | always evaluate (do not stop when referenced fields are empty) |
+| 11 | 6 | furigana |
+| 11 | 7 | replace existing value |
+| 14 | 0 | validate against a value list |
+| 14 | 1 | maximum size |
+| 14 | 2 | validate always (not only during data entry) |
+| 14 | 4, 5, 6 | strict data type: numeric, four-digit year, time |
+| 14 | 7 | custom error message |
+| 15 | 0 | validation by calculation |
+| 15 | 1 | `alwaysValidate` (validate even when not modified) |
+| 15 | 2 | user **cannot** override |
+| 15 | 3 | not empty |
+| 15 | 4 | unique |
+| 15 | 5 | existing value |
+| 15 | 6 | range |
+| 15 | 7 | custom message |
+| 24–25 | — | maximum repetitions, u16 BE |
+
+Bytes 2, 12–13 and 16–23 changed nothing visible in the XML.

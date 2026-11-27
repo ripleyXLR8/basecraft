@@ -97,6 +97,11 @@ impl File {
         &self.bytes
     }
 
+    /// File offset of a slice borrowed from this file (e.g. a chunk value).
+    pub fn offset_of(&self, part: &[u8]) -> usize {
+        part.as_ptr() as usize - self.bytes.as_ptr() as usize
+    }
+
     /// Name of the creating application, e.g. "Pro 12.0".
     pub fn creator(&self) -> String {
         let n = self.bytes[541] as usize;

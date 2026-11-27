@@ -55,6 +55,6 @@ fn contacts_schema_en() {
         names[..4],
         ["Contacts", "Addresses", "Phone Numbers", "Email Addresses"]
     );
-    assert_eq!(tables[0].fields[&1], "First Name");
+    assert_eq!(tables[0].fields[&1].name, "First Name");
     assert_eq!(file.creator(), "Pro 12.0");
 }

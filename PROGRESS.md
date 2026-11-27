@@ -29,12 +29,15 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Field names | ✅ |
 | Record values (plain and long) | ✅ |
 | Repeating fields | ⏳ |
-| Field types and options (auto-enter, validation, storage, calculations) | ⏳ |
+| Field types and options (type, data type, storage, index, auto-enter, validation) | ✅ |
+| Compiled calculations (auto-enter, validation, calc fields) | 🚧 |
 | Table occurrences and relationships | ⏳ |
 | Layouts: parts, objects, styles | ⏳ |
 | Scripts and script steps | ⏳ |
 | Value lists, custom functions, accounts and privileges | ⏳ |
 | Container data | ⏳ |
+
+Oracle: all 214 template fields match FileMaker's XML export.
 
 Corpus: all 66 FileMaker 26 starter templates (6 solutions × 11 languages) parse without error.
 

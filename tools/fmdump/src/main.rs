@@ -2,7 +2,7 @@
 //!
 //! fmdump <file> sectors        sector table
 //! fmdump <file> chunks         every chunk with its path (text-decoded)
-//! fmdump <file> raw            tab-separated path, kind, key, hex value
+//! fmdump <file> raw            tab-separated path, kind, key, hex value, file offset
 //! fmdump <file> tables         tables and fields
 //! fmdump <file> records <tbl>  records of a table (by name)
 
@@ -65,18 +65,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let p = path(p);
             let h = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
             match c {
-                Chunk::Data(d) => println!("{p}	data		{}", h(d)),
-                Chunk::Segment { index, data } => println!("{p}	seg	{index}	{}", h(data)),
-                Chunk::Kv { key, data } => println!("{p}	kv	{key}	{}", h(data)),
-                Chunk::KvLong { key, data } => println!("{p}	kvl	{}	{}", h(key), h(data)),
+                Chunk::Data(d) => println!("{p}	data		{}	{}", h(d), f.offset_of(d)),
+                Chunk::Segment { index, data } => {
+                    println!("{p}	seg	{index}	{}	{}", h(data), f.offset_of(data))
+                }
+                Chunk::Kv { key, data } => {
+                    println!("{p}	kv	{key}	{}	{}", h(data), f.offset_of(data))
+                }
+                Chunk::KvLong { key, data } => {
+                    println!("{p}	kvl	{}	{}	{}", h(key), h(data), f.offset_of(data))
+                }
                 Chunk::Push(_) | Chunk::Pop => {}
             }
         })?,
         "tables" => {
             for t in schema::tables(&f)? {
                 println!("{} (id {})", t.name, t.id);
-                for (id, name) in &t.fields {
-                    println!("  {id:4} {name}");
+                for (id, f) in &t.fields {
+                    let mut flags = Vec::new();
+                    if f.global() {
+                        flags.push("global".to_string());
+                    }
+                    if f.max_repetitions() > 1 {
+                        flags.push(format!("reps={}", f.max_repetitions()));
+                    }
+                    if let Some(a) = f.auto_stamp() {
+                        flags.push(format!("{a:?}"));
+                    }
+                    if f.auto_calculation() {
+                        flags.push("auto-calc".into());
+                    }
+                    if f.auto_serial() {
+                        flags.push("serial".into());
+                    }
+                    let v = f.validation();
+                    if v.not_empty {
+                        flags.push("not-empty".into());
+                    }
+                    if v.unique {
+                        flags.push("unique".into());
+                    }
+                    println!(
+                        "  {id:4} {:<28} {:?} {:?} {:?} {}",
+                        f.name,
+                        f.kind(),
+                        f.data_type(),
+                        f.indexing(),
+                        flags.join(" ")
+                    );
                 }
             }
         }
@@ -90,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (r, fields) in schema::records(&f, t)? {
                 let cells: Vec<String> = fields
                     .iter()
-                    .map(|(k, v)| format!("{}={v:?}", t.fields.get(k).map_or("?", |s| s)))
+                    .map(|(k, v)| format!("{}={v:?}", t.fields.get(k).map_or("?", |f| &f.name)))
                     .collect();
                 println!("#{r} {}", cells.join(" "));
             }

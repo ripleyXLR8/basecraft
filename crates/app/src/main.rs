@@ -154,10 +154,9 @@ impl App {
     fn new_record(&mut self) {
         let Some(t) = self.table() else { return };
         let Some(d) = self.doc.as_mut() else { return };
-        let Some(tbl) = d.db.tables.iter_mut().find(|x| x.id == t) else {
+        let Some(r) = d.db.new_record(t) else {
             return;
         };
-        let r = tbl.new_record();
         let f = self.found(t);
         f.push(r);
         let n = f.len();
@@ -835,6 +834,7 @@ fn draw_object(
                 (1 | 2, Some(vl)) => Some(doc.db.value_list_values(vl)),
                 _ => None,
             };
+            let mut changed = false;
             if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
                 let s = tbl.records[rec].values.entry(field).or_default();
                 match choices {
@@ -855,15 +855,19 @@ fn draw_object(
                         });
                         if let Some(v) = picked {
                             *s = v;
-                            *dirty = true;
+                            changed = true;
                         }
                     }
                     None => {
                         if ui.put(inner, lk.edit(s)).changed() {
-                            *dirty = true;
+                            changed = true;
                         }
                     }
                 }
+            }
+            if changed {
+                *dirty = true;
+                doc.db.touch(t, rec);
             }
         }
     }

@@ -135,3 +135,23 @@ fn design_functions_and_sql() {
     );
     assert_eq!(ev("GetNthRecord ( ${First Name} ; 2 )"), "Grace");
 }
+
+#[test]
+fn new_record_applies_auto_enter() {
+    let Some(d) = dir() else { return };
+    let mut db = Database::open(d.join("Contacts").join("en.fmp12")).unwrap();
+    let tid = db.tables.iter().find(|t| t.name == "Contacts").unwrap().id;
+    let r = db.new_record(tid).unwrap();
+    let t = db.table(tid).unwrap();
+    let get = |n: &str| {
+        t.records[r]
+            .values
+            .get(&t.field_by_name(n).unwrap().id)
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(get("PrimaryKey").len(), 36, "Get ( UUID ) auto-enter");
+    assert_eq!(get("CreatedBy"), "Admin");
+    assert!(!get("CreationTimestamp").is_empty());
+    assert!(!get("ModificationTimestamp").is_empty());
+}

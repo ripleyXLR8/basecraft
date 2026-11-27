@@ -21,6 +21,8 @@ pub struct Field {
     /// Calculation source for calculated fields, in a form `calc` parses
     /// (field names wrapped as `${…}`).
     pub calc: Option<String>,
+    /// Auto-enter calculation of a normal field.
+    pub auto_calc: Option<String>,
     /// Table occurrence a calculation is evaluated from (0 if none).
     pub context: u32,
     pub def: fmp12::schema::Field,
@@ -127,20 +129,25 @@ impl Database {
                 .fields
                 .iter()
                 .map(|(id, f)| {
-                    let stream = (f.kind() == FieldKind::Calculated)
-                        .then(|| streams.get(&(t.id, *id)))
-                        .flatten();
+                    let stream = streams.get(&(t.id, *id));
                     let context = stream
                         .and_then(|(k4, _)| fmp12::calc::context(k4))
                         .unwrap_or(0);
-                    let calc =
+                    let source =
                         stream.and_then(|(_, k5)| fmp12::calc::decompile(k5, context, &names).ok());
+                    // The same node holds a calculated field's formula or an auto-enter calculation.
+                    let (calc, auto_calc) = if f.kind() == FieldKind::Calculated {
+                        (source, None)
+                    } else {
+                        (None, source.filter(|_| f.auto_calculation()))
+                    };
                     Field {
                         id: *id,
                         name: f.name.clone(),
                         kind: f.kind(),
                         data_type: f.data_type(),
                         calc,
+                        auto_calc,
                         context,
                         def: f.clone(),
                     }
@@ -274,6 +281,80 @@ impl Database {
             vars: BTreeMap::new(),
         };
         calc::evaluate(&src, &mut ctx).unwrap_or_else(|_| Value::text("?"))
+    }
+
+    /// New Record with FileMaker's auto-enter options applied (creation
+    /// stamps, serial numbers, auto-enter calculations). Returns its index.
+    pub fn new_record(&mut self, table: u32) -> Option<usize> {
+        let ti = self.tables.iter().position(|t| t.id == table)?;
+        let r = self.tables[ti].new_record();
+        let fields = self.tables[ti].fields.clone();
+        for f in &fields {
+            if let Some(v) = self.auto_value(table, r, f, true) {
+                self.tables[ti].records[r].values.insert(f.id, v);
+            }
+        }
+        self.touch(table, r);
+        Some(r)
+    }
+
+    /// Applies modification stamps after a record changed.
+    pub fn touch(&mut self, table: u32, record: usize) {
+        let Some(ti) = self.tables.iter().position(|t| t.id == table) else {
+            return;
+        };
+        let fields = self.tables[ti].fields.clone();
+        for f in fields.iter().filter(|f| {
+            f.def
+                .auto_stamp()
+                .is_some_and(|s| (s as u8) >= fmp12::schema::AutoStamp::ModificationDate as u8)
+        }) {
+            if let Some(v) = self.auto_value(table, record, f, false) {
+                self.tables[ti].records[record].values.insert(f.id, v);
+            }
+        }
+    }
+
+    fn auto_value(&self, table: u32, record: usize, f: &Field, creating: bool) -> Option<String> {
+        use fmp12::schema::AutoStamp::*;
+        let now = |what: &str| {
+            self.eval_source(&format!("Get ( {what} )"), table, f.context, Some(record))
+                .to_text()
+        };
+        if let Some(stamp) = f.def.auto_stamp() {
+            let is_creation = (stamp as u8) < ModificationDate as u8;
+            if is_creation != creating {
+                return None;
+            }
+            return Some(match stamp {
+                CreationDate | ModificationDate => now("CurrentDate"),
+                CreationTime | ModificationTime => now("CurrentTime"),
+                CreationTimestamp | ModificationTimestamp => now("CurrentTimestamp"),
+                // ponytail: no accounts yet; FileMaker's default account is "Admin".
+                CreationName | ModificationName | CreationAccountName | ModificationAccountName => {
+                    "Admin".to_string()
+                }
+            });
+        }
+        if !creating {
+            return None;
+        }
+        if f.def.auto_serial() {
+            // ponytail: next serial = highest existing value + 1 (stored next value not decoded).
+            let t = self.table(table)?;
+            let max = t
+                .records
+                .iter()
+                .filter_map(|r| r.values.get(&f.id)?.trim().parse::<i64>().ok())
+                .max()
+                .unwrap_or(0);
+            return Some((max + 1).to_string());
+        }
+        let src = f.auto_calc.as_ref()?;
+        let v = self
+            .eval_source(src, table, f.context, Some(record))
+            .to_text();
+        Some(v)
     }
 
     fn to_named(&self, name: &str) -> Option<&fmp12::graph::TableOccurrence> {

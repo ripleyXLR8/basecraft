@@ -14,4 +14,4 @@ rfd = "0.18.0"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
-web-sys = { version = "0.3.107", features = ["Window", "Document", "HtmlCanvasElement"] }
+web-sys = { version = "0.3.107", features = ["Window", "Document", "HtmlCanvasElement", "Navigator"] }

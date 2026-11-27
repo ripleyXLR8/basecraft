@@ -1,10 +1,12 @@
 //! Calculations stored in a file: decompiles the token stream (key 5 of a
-//! calculation node) back to FileMaker source text.
+//! calculation node) back to FileMaker source text, and compiles source
+//! text into both stored forms ([`compile`]).
 //!
 //! A calculation node holds key 4 (context table occurrence), key 5 (token
 //! stream that keeps the source formatting) and key 6 (compiled form).
 
-use crate::calc_tables::{FUNCTIONS, FUNCTIONS2, GET_FLAGS, OPS};
+pub use crate::calc_compile::{CompileError, Compiled, Resolve, compile};
+use crate::calc_tables::{EXTERNAL, FUNCTIONS, FUNCTIONS2, GET_FLAGS, OPS};
 use crate::graph::to_ref;
 use crate::{path_int, text};
 
@@ -33,6 +35,17 @@ impl std::fmt::Display for CalcError {
 }
 
 impl std::error::Error for CalcError {}
+
+/// Length of a text run at `b[i]`: one byte, or two with the top bit set
+/// (from 128 UTF-16 units). Returns (length, bytes used).
+fn run_len(b: &[u8], i: usize) -> Option<(usize, usize)> {
+    let x = *b.get(i)? as usize;
+    if x < 0x80 {
+        Some((x, 1))
+    } else {
+        Some((((x & 0x7F) << 8) | *b.get(i + 1)? as usize, 2))
+    }
+}
 
 /// A text run in a token stream: `len` counts UTF-16 units, not bytes, and
 /// the run is followed by a 0x00 byte. Returns the text and the byte length.
@@ -63,6 +76,24 @@ fn number(v: &[u8]) -> String {
     }
 }
 
+/// `1000` → `1E3`, `0.01` → `1E-2`, `150` → `1.5E2`.
+fn scientific(plain: &str) -> String {
+    let (int, frac) = plain.split_once('.').unwrap_or((plain, ""));
+    let digits: String = format!("{int}{frac}");
+    let lead = digits.len() - digits.trim_start_matches('0').len();
+    let sig = digits.trim_matches('0');
+    if sig.is_empty() {
+        return "0".into();
+    }
+    let exp = int.len() as i64 - lead as i64 - 1;
+    let (a, b) = sig.split_at(1);
+    if b.is_empty() {
+        format!("{a}E{exp}")
+    } else {
+        format!("{a}.{b}E{exp}")
+    }
+}
+
 /// Decompiles a token stream. `context` is the calculation's table occurrence.
 pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, CalcError> {
     let mut out = String::new();
@@ -77,29 +108,62 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
         match t {
             // Text literal: 13 len text 00
             0x13 => {
-                let len = get(i + 1).ok_or_else(|| err(i))? as usize;
-                let (s, n) = run(b, i + 2, len).ok_or_else(|| err(i))?;
+                let (len, l) = run_len(b, i + 1).ok_or_else(|| err(i))?;
+                let (s, n) = run(b, i + 1 + l, len).ok_or_else(|| err(i))?;
                 out.push('"');
-                out.push_str(&s.replace('\\', "\\\\").replace('"', "\\\""));
+                // A pilcrow character is written `\¶` (a bare ¶ means a return).
+                let s = s.replace('\\', "\\\\").replace('"', "\\\"");
+                out.push_str(&s.replace('¶', "\\¶"));
                 out.push('"');
-                i += 3 + n;
+                i += 2 + l + n;
             }
-            // Whitespace or comment: 0C followed by a text literal, emitted verbatim.
-            0x0C => {
+            // Whitespace (0C), /* comment */ (0D), // comment (0E, with its
+            // line break): a text run, emitted verbatim.
+            0x0C..=0x0E => {
                 if get(i + 1) != Some(0x13) {
                     return Err(err(i));
                 }
-                let len = get(i + 2).ok_or_else(|| err(i))? as usize;
-                let (s, n) = run(b, i + 3, len).ok_or_else(|| err(i))?;
-                out.push_str(&s);
-                i += 4 + n;
+                let (len, l) = run_len(b, i + 2).ok_or_else(|| err(i))?;
+                let (s, n) = run(b, i + 2 + l, len).ok_or_else(|| err(i))?;
+                match t {
+                    0x0D => {
+                        out.push_str("/*");
+                        out.push_str(&s);
+                        out.push_str("*/");
+                    }
+                    0x0E => {
+                        out.push_str("//");
+                        out.push_str(&s);
+                    }
+                    _ => out.push_str(&s),
+                }
+                i += 3 + l + n;
             }
             // Let variable name: 0B len name 00 + 1 byte.
             0x0B => {
-                let len = get(i + 1).ok_or_else(|| err(i))? as usize;
-                let (s, n) = run(b, i + 2, len).ok_or_else(|| err(i))?;
+                let (len, l) = run_len(b, i + 1).ok_or_else(|| err(i))?;
+                let (s, n) = run(b, i + 1 + l, len).ok_or_else(|| err(i))?;
                 out.push_str(&s);
-                i += 4 + n;
+                i += 3 + l + n;
+            }
+            0x24 => {
+                out.push('¶');
+                i += 1;
+            }
+            // Library function: 1D 00 00 15, library name, u16 index.
+            0x1D => {
+                let lib = b.get(i + 4..i + 8).ok_or_else(|| err(i))?;
+                let idx = b
+                    .get(i + 8..i + 10)
+                    .map(|x| u16::from_be_bytes([x[0], x[1]]))
+                    .ok_or_else(|| err(i))?;
+                let name = EXTERNAL
+                    .iter()
+                    .find(|(l, x, _)| l.as_slice() == lib && *x == idx)
+                    .map(|(_, _, n)| *n)
+                    .ok_or_else(|| err(i))?;
+                out.push_str(name);
+                i += 10;
             }
             // Variable ($local, $$global): 1A len name, no terminator.
             0x1A => {
@@ -118,7 +182,13 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
                 let v = b.get(i + 6..i + 20).ok_or_else(|| err(i))?;
                 let mut full = v.to_vec();
                 full.resize(16, 0);
-                out.push_str(&number(&full));
+                let n = number(&full);
+                // Flags 0x40: the literal was written with an exponent.
+                out.push_str(&if v.get(13) == Some(&0x40) {
+                    scientific(&n)
+                } else {
+                    n
+                });
                 i += 20;
             }
             // Field reference: 16 flags | 04 TOref | len (01 field) | u16 repetition
@@ -132,7 +202,8 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
                 let fname = names
                     .field(to, field)
                     .unwrap_or_else(|| "<Field Missing>".into());
-                if to != context {
+                // Flag 04: written `TO::Field`.
+                if to != context || get(i + 1).is_some_and(|f| f & 4 != 0) {
                     let tname = names
                         .occurrence(to)
                         .unwrap_or_else(|| "<Table Missing>".into());
@@ -168,6 +239,50 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
         }
     }
     Ok(out)
+}
+
+/// The names of a file's schema, for [`decompile`] and [`compile`].
+#[derive(Debug, Clone, Default)]
+pub struct FileNames {
+    pub tables: Vec<crate::schema::Table>,
+    pub occurrences: Vec<crate::graph::TableOccurrence>,
+}
+
+impl FileNames {
+    pub fn load(file: &crate::File) -> Result<Self, crate::Error> {
+        Ok(FileNames {
+            tables: crate::schema::tables(file)?,
+            occurrences: crate::graph::table_occurrences(file)?,
+        })
+    }
+
+    fn table(&self, to: u32) -> Option<&crate::schema::Table> {
+        let bt = self.occurrences.iter().find(|t| t.id == to)?.base_table;
+        self.tables.iter().find(|t| t.id == bt)
+    }
+}
+
+impl Names for FileNames {
+    fn field(&self, to: u32, field: u32) -> Option<String> {
+        Some(self.table(to)?.fields.get(&field)?.name.clone())
+    }
+    fn occurrence(&self, to: u32) -> Option<String> {
+        Some(self.occurrences.iter().find(|t| t.id == to)?.name.clone())
+    }
+}
+
+impl Resolve for FileNames {
+    fn occurrences(&self) -> Vec<(u32, String)> {
+        self.occurrences
+            .iter()
+            .map(|t| (t.id, t.name.clone()))
+            .collect()
+    }
+    fn fields(&self, to: u32) -> Vec<(u32, String)> {
+        self.table(to).map_or_else(Vec::new, |t| {
+            t.fields.iter().map(|(i, f)| (*i, f.name.clone())).collect()
+        })
+    }
 }
 
 /// Context table occurrence of a calculation node (key 4), when it is a TO.

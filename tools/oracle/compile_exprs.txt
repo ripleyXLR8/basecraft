@@ -1,0 +1,125 @@
+# Expressions whose compiled form (fmp12 calc keys 5 and 6) is checked
+# against FileMaker: tools/oracle/compile_snippet.py builds the script, the
+# result is crates/fmp12/tests/fixtures/compiled.tsv. ⏎ = line break.
+1 + ¶
+"a" & ¶ & "b"
+1 /* c */ + 2
+1 /*c*/+ 2
+1 // c⏎+ 2
+/* lead */ 1
+1 /* a */ /* b */ + 2
+If ( 1 ; 2 )
+If ( 1 ; 2 ; 3 )
+Substitute ( "abc" ; [ "a" ; "b" ] ; [ "c" ; "d" ] )
+Substitute ( "abc" ; [ "a" ; "b" ] )
+Substitute ( "abc" ; "a" ; "b" )
+Evaluate ( "1" ; [ Get ( UUID ) ] )
+Evaluate ( "1" ; Get ( UUID ) )
+Evaluate ( "1" ; [ 1 ; 2 ] )
+Let ( [ x = 1 ; y = 2 ] ; x + y )
+Let ( x = 1 ; Let ( x = 2 ; x ) & x )
+Let ( x = 1 ; Let ( y = 2 ; x & y ) )
+Let ( [ x = 1 ; y = x ; x = y + 1 ] ; x )
+Let ( [ $a[2] = 5 ] ; $a[2] )
+$a[2]
+$$g
+$$g[3]
+Let ( ~x = 1 ; ~x )
+Let ( [ x = 1 ; $y = 2 ; z = x ] ; z )
+Let ( [ x = 1 ] ; Let ( [ y = x ] ; y ) ) & Let ( z = 2 ; z )
+Case ( 1 ; 2 ; 3 ; 4 ; 5 )
+Case ( 1 ; 2 ; 3 )
+Case ( 1 ; 2 )
+Sum ( 1 ; 2 )
+Max ( 1 ; 2 ; 3 )
+Min ( 3 )
+GetNthRecord ( 1 ; 1 )
+Last ( 1 )
+GetRepetition ( 1 ; 2 )
+ExecuteSQL ( "select 1" ; "" ; "" )
+ExecuteSQL ( "select ?" ; "" ; "" ; 1 ; 2 )
+JSONSetElement ( "{}" ; [ "a" ; 1 ; JSONNumber ] ; [ "b" ; 2 ; JSONNumber ] )
+Random
+Get ( CurrentDate ) + 1
+not 1
+not not 1
+- - 1
++ 1
+2 ^ 3 ^ 2
+1 - 2 - 3
+8 / 4 / 2
+1 = 1 = 1
+1 and 0 or 1
+1 or 0 and 1
+1 xor 0 and 1
+not 1 = 0
+- 2 ^ 2
+1 & 2 + 3
+1 + 2 & 3
+1 < 2 & 3
+"a" < "b"
+1 ≤ 2
+1 ≥ 2
+1 ≠ 2
+1 <= 2
+1 >= 2
+True
+False
+true + TRUE
+Self
+FieldNames ( "x" ; "" )
+TableNames ( "" )
+ValueListItems ( "" ; "x" )
+LayoutNames ( "" )
+Location ( 1 )
+LocationValues ( 1 )
+RangeBeacons ( "x" ; 1 ; 1 )
+GetAsTimestamp ( 1 )
+GetNextSerialValue ( "" ; "x" )
+SortValues ( "b¶a" )
+SortValues ( "b¶a" ; 1 )
+SortValues ( "b¶a" ; 1 ; "en" )
+UniqueValues ( "b¶a" )
+GetSensor ( "x" )
+GetSensor ( "x" ; "y" )
+JSONFormatElements ( "{}" )
+ExecuteSQLe ( "x" ; "" ; "" )
+Choose ( 0 ; "a" )
+List ( 1 )
+Average ( 1 )
+While ( [ i = 0 ] ; i < 3 ; [ i = i + 1 ] ; i )
+While ( i = 0 ; i < 3 ; i = i + 1 ; i )
+Let ( x = 1 ; While ( [ i = x ] ; i < 3 ; [ i = i + 1 ] ; i ) )
+abs ( -1 )
+ABS ( -1 )
+Get ( currentdate )
+Left ( "a" ; 1 )
+Left("a";1)
+Left	(	"a"	;	1	)
+TextColor ( "a" ; RGB ( 1 ; 2 ; 3 ) )
+TextStyleAdd ( "a" ; Bold + Italic )
+TextFont ( "a" ; "Arial" ; Roman )
+GetLayoutObjectAttribute ( "a" ; "content" )
+GetLayoutObjectAttribute ( "a" ; "content" ; 1 ; 2 )
+IsValidExpression ( "1" )
+SetRecursion ( 1 ; 10 )
+CryptGenerateSignature ( "a" ; "SHA256" ; "k" ; "" )
+Extend ( 1 )
+GetSummary ( 1 ; 2 )
+GetField ( "a" )
+GetFieldName ( 1 )
+Quote ( "a" )
+LayoutObjectUUID ( "x" )
+PosixPath
+"é" & "日本"
+""""
+"a\"b"
+"a\\b"
+"a\¶b"
+"a⏎b"
+1⏎+⏎2
+Date ( 1 ; 2 ; 2003 )
+GetAsDate ( "1/1/2001" )
+123456789
+999999999
+0

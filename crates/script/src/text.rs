@@ -30,7 +30,7 @@ impl fmp12::calc::Names for Names<'_> {
     }
 }
 
-impl fmp12::calc_compile::Resolve for Names<'_> {
+impl fmp12::script_calc::Resolve for Names<'_> {
     fn field(&self, to: Option<&str>, name: &str) -> Option<(u32, u32)> {
         let o = self
             .db
@@ -74,8 +74,8 @@ impl Names<'_> {
     }
 
     /// Compiles `src` (script context: field references name their TO).
-    pub fn compile(&self, src: &str) -> Result<Calc, fmp12::calc_compile::CompileError> {
-        fmp12::calc_compile::compile(src, 0, self).map(|c| Calc(c.tokens))
+    pub fn compile(&self, src: &str) -> Result<Calc, fmp12::script_calc::CompileError> {
+        fmp12::script_calc::compile(src, 0, self).map(|c| Calc(c.tokens))
     }
 }
 

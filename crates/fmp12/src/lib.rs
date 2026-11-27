@@ -5,14 +5,17 @@
 //! a hierarchical key/value store addressed by paths. See `docs/FORMAT.md`.
 
 pub mod calc;
-pub mod calc_compile;
+mod calc_compile;
 mod calc_tables;
 pub mod chunk;
+pub mod collate;
 pub mod graph;
 pub mod layouts;
 pub mod pb;
 pub mod save;
 pub mod schema;
+pub mod schema_edit;
+pub mod script_calc;
 pub mod scripts;
 pub mod scripts_save;
 pub mod scsu;

@@ -124,6 +124,43 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
             ),
         ),
         (
+            "new_file",
+            "Create a new, empty FileMaker file at `path` with one table (default name \"Table\") and open it.",
+            s(
+                json!({ "path": { "type": "string" }, "table": { "type": "string" } }),
+                &["path"],
+            ),
+        ),
+        (
+            "create_table",
+            "Add a table to the open file, with its table occurrence and a layout (Manage Database › Tables). Changes stay in memory until save_file.",
+            s(json!({ "name": { "type": "string" } }), &["name"]),
+        ),
+        (
+            "create_field",
+            "Add a field to a table (Manage Database › Fields): a normal field of `type`, a calculation (`calculation`, `stored`) or a summary (`summary`: operation and field). Options: auto-enter (serial next value, stamp, auto_calculation, constant), validation (not_empty, unique, existing, range [low, high], validation_calculation, always_validate), storage (global, repetitions, index). Calculations use FileMaker syntax; fields of other tables are written Occurrence::Field. Changes stay in memory until save_file.",
+            s(
+                json!({ "table": table, "name": { "type": "string" },
+                   "type": { "type": "string", "enum": ["text", "number", "date", "time", "timestamp", "container"] },
+                   "comment": { "type": "string" },
+                   "calculation": { "type": "string" }, "stored": { "type": "boolean" },
+                   "summary": { "type": "object", "properties": {
+                       "operation": { "type": "string", "enum": ["total", "average", "count", "minimum", "maximum", "stdev", "fraction", "list"] },
+                       "field": { "type": "string" } } },
+                   "serial": { "type": "string", "description": "Next serial value" },
+                   "stamp": { "type": "string", "enum": ["creation-date", "creation-time", "creation-timestamp", "creation-name", "creation-account",
+                       "modification-date", "modification-time", "modification-timestamp", "modification-name", "modification-account"] },
+                   "auto_calculation": { "type": "string" }, "replace_existing": { "type": "boolean" },
+                   "constant": { "type": "string" }, "prohibit_modification": { "type": "boolean" },
+                   "not_empty": { "type": "boolean" }, "unique": { "type": "boolean" }, "existing": { "type": "boolean" },
+                   "range": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 },
+                   "validation_calculation": { "type": "string" }, "always_validate": { "type": "boolean" },
+                   "global": { "type": "boolean" }, "repetitions": { "type": "integer" },
+                   "index": { "type": "string", "enum": ["none", "minimal", "all"] } }),
+                &["table", "name"],
+            ),
+        ),
+        (
             "save_file",
             "Write the open file with all changes. Give `path` to save a copy; omit it to overwrite the opened file.",
             s(json!({ "path": { "type": "string" } }), &[]),
@@ -134,6 +171,13 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
 /// Turns tool arguments into CLI-style arguments and runs the command.
 fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
     let str_of = |k: &str| a.get(k).and_then(Json::as_str).map(str::to_string);
+    if name == "new_file" {
+        let path = str_of("path").ok_or("path is required")?;
+        let table = str_of("table").unwrap_or_else(|| "Table".into());
+        let r = crate::schema::new_file(&path, &table)?;
+        *doc = Some(Doc::open(&path)?);
+        return Ok(r);
+    }
     if name == "open_file" {
         let path = str_of("path").ok_or("path is required")?;
         let d = Doc::open(&path)?;
@@ -278,6 +322,68 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
                 _ => "delete",
             }
         }
+        "create_table" => {
+            args.extend([
+                "add-table".into(),
+                str_of("name").ok_or("name is required")?,
+            ]);
+            "schema"
+        }
+        "create_field" => {
+            args.push("add-field".into());
+            args.push(str_of("table").ok_or("table is required")?);
+            args.push(str_of("name").ok_or("name is required")?);
+            for (k, opt) in [
+                ("type", "--type"),
+                ("comment", "--comment"),
+                ("calculation", "--calc"),
+                ("serial", "--serial"),
+                ("stamp", "--stamp"),
+                ("auto_calculation", "--auto-calc"),
+                ("constant", "--constant"),
+                ("validation_calculation", "--validate"),
+                ("index", "--index"),
+            ] {
+                if let Some(v) = str_of(k) {
+                    args.extend([opt.into(), v]);
+                }
+            }
+            for (k, opt) in [
+                ("replace_existing", "--replace"),
+                ("prohibit_modification", "--prohibit-modification"),
+                ("not_empty", "--not-empty"),
+                ("unique", "--unique"),
+                ("existing", "--existing"),
+                ("always_validate", "--always-validate"),
+                ("global", "--global"),
+            ] {
+                if flag(k) == Some(true) {
+                    args.push(opt.into());
+                }
+            }
+            if flag("stored") == Some(false) {
+                args.push("--unstored".into());
+            }
+            if let Some(s) = a.get("summary") {
+                let op = s
+                    .get("operation")
+                    .and_then(Json::as_str)
+                    .ok_or("summary.operation is required")?;
+                let f = s
+                    .get("field")
+                    .and_then(Json::as_str)
+                    .ok_or("summary.field is required")?;
+                args.extend(["--summary".into(), format!("{op}:{f}")]);
+            }
+            let r = list("range");
+            if let [lo, hi] = r.as_slice() {
+                args.extend(["--range".into(), format!("{lo}:{hi}")]);
+            }
+            if let Some(n) = a.get("repetitions").and_then(Json::as_u64) {
+                args.extend(["--repetitions".into(), n.to_string()]);
+            }
+            "schema"
+        }
         "list_scripts" => "scripts",
         "run_script" => {
             args.push(str_of("name").ok_or("name is required")?);
@@ -360,6 +466,48 @@ pub fn serve(file: Option<&str>) -> Res<Json> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creates_a_file_a_table_and_fields() {
+        let dir = std::env::temp_dir().join(format!("basecraft-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("new.fmp12").to_string_lossy().to_string();
+        let mut doc = None;
+        let mut call_ok = |name: &str, args: Json| {
+            let r = handle(
+                &mut doc,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name": name, "arguments": args}}),
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], false, "{name}: {r}");
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        call_ok("new_file", json!({"path": path, "table": "Notes"}));
+        call_ok("create_table", json!({"name": "People"}));
+        call_ok(
+            "create_field",
+            json!({"table": "People", "name": "Id", "type": "number", "serial": "1", "unique": true}),
+        );
+        call_ok(
+            "create_field",
+            json!({"table": "People", "name": "Label", "type": "text", "calculation": "\"#\" & Id"}),
+        );
+        call_ok(
+            "create_field",
+            json!({"table": "People", "name": "Count", "summary": {"operation": "count", "field": "Id"}}),
+        );
+        call_ok("create_record", json!({"table": "People"}));
+        call_ok("save_file", json!({}));
+        let db = engine::Database::open(&path).unwrap();
+        let t = db.tables.iter().find(|t| t.name == "People").unwrap();
+        let label = t.field_by_name("Label").unwrap().id;
+        assert_eq!(t.records[0].values[&label], "#1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn lists_tools_and_requires_open_file() {

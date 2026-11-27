@@ -22,7 +22,7 @@
   <img alt="Agent-drivable over MCP and CLI" src="https://img.shields.io/badge/agents-MCP%20%C2%B7%20CLI-8a5cc2?style=flat-square">
   <br>
   <a href="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-67%25-orange?style=flat-square"></a>
+  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-70%25-orange?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -65,7 +65,7 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~67 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
+**Estimated overall progress: ~70 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is
@@ -76,11 +76,11 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 | M0 Bootstrap | 2 | 100 % |
 | M1 Read `.fmp12` | 15 | 82 % |
 | M2 Calculation engine | 12 | 90 % |
-| M3 Data engine | 12 | 65 % |
+| M3 Data engine | 12 | 70 % |
 | M4 GUI (browse/find/views) | 15 | 55 % |
 | M5 Script engine | 12 | 75 % |
 | M6 Layout mode | 10 | 50 % |
-| M7 Write `.fmp12` | 10 | 65 % |
+| M7 Write `.fmp12` | 10 | 80 % |
 | M8 Import/export, print, security… | 12 | 45 % |
 
 ## Command line for scripts and AI agents
@@ -118,6 +118,35 @@ basecraft-cli session Contacts.fmp12
 
 Files written by the CLI open in FileMaker Pro 26.
 
+### Manage Database: new files, tables and fields
+
+```sh
+basecraft-cli new-file   Shop.fmp12 --table Customers               # a new, empty database
+basecraft-cli schema add-table   Shop.fmp12 Orders --in-place         # table + occurrence + layout
+basecraft-cli schema add-field   Shop.fmp12 Orders Id --type number --serial 1 --unique --in-place
+basecraft-cli schema add-field   Shop.fmp12 Orders Amount --type number --range 0:10000 --in-place
+basecraft-cli schema add-field   Shop.fmp12 Orders Label --calc '"#" & Id & " " & Amount' --in-place
+basecraft-cli schema add-field   Shop.fmp12 Orders Total --summary total:Amount --in-place
+basecraft-cli schema set-options Shop.fmp12 Orders Amount --not-empty --index all --in-place
+basecraft-cli schema rename      Shop.fmp12 field Orders Amount Price --in-place
+basecraft-cli schema rename      Shop.fmp12 table Orders Sales --in-place
+basecraft-cli schema delete      Shop.fmp12 field Sales Label --in-place
+basecraft-cli schema delete      Shop.fmp12 table Sales --in-place
+```
+
+* Field options: `--type text|number|date|time|timestamp|container`, `--comment`;
+  `--calc FORMULA` (`--unstored`) or `--summary total|average|count|minimum|maximum|stdev|fraction|list:Field`;
+  auto-enter `--serial NEXT`, `--stamp creation-date|creation-time|creation-timestamp|creation-name|creation-account`
+  (or `modification-…`), `--auto-calc FORMULA` (`--replace`, `--always-evaluate`), `--constant VALUE`,
+  `--prohibit-modification`; validation `--not-empty`, `--unique`, `--existing`, `--range LOW:HIGH`,
+  `--validate FORMULA`, `--always-validate`, `--strict` (no override); storage `--global`,
+  `--repetitions N`, `--index none|minimal|all`, `--no-auto-index`. With `set-options`,
+  `--name NEW` renames and `--no-<option>` turns an option off.
+* Calculations use FileMaker's syntax (fields of other tables as `Occurrence::Field`) and are
+  compiled the way FileMaker stores them, so FileMaker evaluates them.
+* A new table gets a table occurrence and an empty layout of the same name. Deleting a table
+  also deletes its occurrences and their relationships.
+
 ### Import, export and PDF
 
 ```sh
@@ -149,9 +178,10 @@ basecraft-cli print-pdf Contacts.fmp12 "Contact List" -o list.pdf --paper a4 --l
 `basecraft-cli mcp [file.fmp12]` is a [Model Context Protocol](https://modelcontextprotocol.io)
 server on stdio. It exposes these tools:
 
-* `open_file`, `describe_database`;
+* `open_file`, `new_file`, `describe_database`;
 * `find_records`, `evaluate`;
 * `create_record`, `update_record`, `delete_record`;
+* `create_table`, `create_field` (types, calculations, summaries, auto-enter, validation, storage);
 * `list_scripts`, `run_script`;
 * `export_records`, `import_records`, `print_pdf`;
 * `save_file`.

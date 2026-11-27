@@ -293,7 +293,16 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
             }
             entries.push(Entry { path: p13, item });
         }
-        // Changed and new records.
+        // Changed and new records. The records node [T].[5] must exist:
+        // FileMaker, finding it missing when it adds a record, starts it
+        // afresh and loses the records under it.
+        let p5 = vec![tp.clone(), vec![5]];
+        if !new.is_empty() && !entries.iter().any(|e| e.path == p5 && e.item == [0x80]) {
+            entries.push(Entry {
+                path: p5,
+                item: vec![0x80],
+            });
+        }
         for r in &changed {
             let Some(values) = new.get(r) else { continue };
             let rec = vec![tp.clone(), vec![5], path_elem(*r)];

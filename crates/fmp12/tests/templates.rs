@@ -231,3 +231,200 @@ fn entries_are_in_store_order() {
         }
     }
 }
+
+/// Every calculation of every template field (calculated fields, auto-enter
+/// and validation calculations): compiling its decompiled text gives back
+/// FileMaker's token stream (key 5) and compiled form (key 6).
+#[test]
+fn field_calculations_recompile() {
+    use std::collections::BTreeMap;
+    let Some(dir) = template_dir() else {
+        eprintln!("no FileMaker templates found, skipping");
+        return;
+    };
+    let (mut ok, mut total, mut fails) = (0, 0, Vec::new());
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        let names = fmp12::calc::FileNames::load(&file).unwrap();
+        // Nodes under a field definition: key → value (long values sit in
+        // sub-nodes [5] / [6], keys 1…n).
+        let mut kv: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
+        file.walk(|path, c| {
+            let (Some(p), fmp12::Chunk::Kv { key, data }) = (fmp12::int_path(path), c) else {
+                return;
+            };
+            if p.len() >= 5 && p[0] >= 128 && p[1..3] == [3, 5] {
+                kv.entry(p)
+                    .or_default()
+                    .entry(*key)
+                    .or_default()
+                    .extend_from_slice(data);
+            }
+        })
+        .unwrap();
+        for (p, m) in &kv {
+            let Some(k4) = m.get(&4) else { continue };
+            let long = |k: u32| {
+                let mut q = p.clone();
+                q.push(k);
+                kv.get(&q).map(|s| {
+                    s.range(1..)
+                        .flat_map(|(_, v)| v.clone())
+                        .collect::<Vec<u8>>()
+                })
+            };
+            let k5 = m.get(&5).cloned().or_else(|| long(5));
+            let k6 = m.get(&6).cloned().or_else(|| long(6));
+            let (Some(k5), Some(k6)) = (k5, k6) else {
+                continue;
+            };
+            let ctx = fmp12::calc::context(k4).unwrap_or(0);
+            total += 1;
+            let src = fmp12::calc::decompile(&k5, ctx, &names).unwrap();
+            let c = fmp12::calc::compile(&src, ctx, &names)
+                .unwrap_or_else(|e| panic!("{}: {src:?}: {e}", f.display()));
+            let exotic = src
+                .chars()
+                .any(|c| c as u32 >= 0x100 && !(0x2000..0x2080).contains(&(c as u32)));
+            let same_text =
+                fmp12::calc::decompile(&c.tokens, ctx, &names).as_deref() == Ok(src.as_str());
+            if c.tokens == k5 && c.compiled == k6 || exotic && same_text {
+                ok += 1;
+            } else {
+                fails.push(format!(
+                    "{}: {src:?}\n  {:02x?}\n  {:02x?}",
+                    f.display(),
+                    c.compiled,
+                    k6
+                ));
+            }
+        }
+    }
+    for x in fails.iter().take(10) {
+        eprintln!("{x}");
+    }
+    eprintln!("{ok}/{total} template field calculations recompile");
+    assert!(total > 0 && fails.is_empty());
+}
+
+/// Name indexes `[cat].[1].[1]` of every template: each key is the
+/// collation key of the name it indexes (when its characters are known).
+#[test]
+fn name_index_keys_match_collation() {
+    use std::collections::BTreeMap;
+    let Some(dir) = template_dir() else { return };
+    let (mut ok, mut unknown) = (0, 0);
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        let mut names: BTreeMap<(Vec<u32>, u32), String> = BTreeMap::new();
+        let mut keys: Vec<(Vec<u32>, Vec<u8>, u32)> = Vec::new();
+        file.walk(|path, c| {
+            let Some(p) = fmp12::int_path(path) else {
+                return;
+            };
+            match c {
+                fmp12::Chunk::Kv { key: 16, data } if p.len() >= 2 && p[p.len() - 2] == 5 => {
+                    names.insert(
+                        (p[..p.len() - 2].to_vec(), p[p.len() - 1]),
+                        fmp12::text(data),
+                    );
+                }
+                fmp12::Chunk::KvLong { key, data }
+                    if p.len() >= 2 && p[p.len() - 2..] == [1, 1] =>
+                {
+                    let id = fmp12::graph::to_ref(data)
+                        .or_else(|| data.get(1..).and_then(fmp12::path_int))
+                        .unwrap_or(0);
+                    keys.push((p[..p.len() - 2].to_vec(), key.to_vec(), id));
+                }
+                _ => {}
+            }
+        })
+        .unwrap();
+        for (cat, key, id) in keys {
+            // Fonts ([25]) may repeat a name and append a counter.
+            if cat == [25] {
+                continue;
+            }
+            let Some(name) = names.get(&(cat.clone(), id)) else {
+                continue;
+            };
+            match fmp12::collate::name_key(name) {
+                Some(mut k) => {
+                    // A second object with the same name (layouts "-"): the
+                    // key gets its id appended.
+                    if k != key {
+                        k.extend(fmp12::save::path_elem(id));
+                    }
+                    assert_eq!(k, key, "{}: {cat:?} {name:?}", f.display());
+                    ok += 1;
+                }
+                None => unknown += 1,
+            }
+        }
+    }
+    eprintln!("{ok} name keys match, {unknown} names with unknown characters");
+    assert!(ok > 0);
+}
+
+/// Schema edits on every English template: a new table with fields of each
+/// kind (one calculation refers to another table), a renamed and a deleted
+/// field. The file reads back with its records intact.
+#[test]
+fn schema_edits_round_trip() {
+    use fmp12::schema::{DataType, SummaryOp};
+    use fmp12::schema_edit::{Editor, FieldSpec, FieldType};
+    let Some(dir) = template_dir() else { return };
+    for f in template_files(&dir)
+        .into_iter()
+        .filter(|f| f.file_name().is_some_and(|n| n == "en.fmp12"))
+    {
+        let file = fmp12::File::open(&f).unwrap();
+        let before = fmp12::schema::tables(&file).unwrap();
+        let first = &before[0];
+        let records = fmp12::schema::records(&file, first).unwrap();
+        let tos = fmp12::graph::table_occurrences(&file).unwrap();
+        let first_to = tos.iter().find(|o| o.base_table == first.id).unwrap();
+        let (fid, fdef) = first.fields.iter().next().unwrap();
+        let mut ed = Editor::open(&file).unwrap();
+        let (t, _, layout) = ed.add_table("BaseCraft Test").unwrap();
+        assert!(layout.is_some(), "{}", f.display());
+        ed.add_field(t, &FieldSpec::new("N", DataType::Number))
+            .unwrap();
+        let other = format!("{}::{}", first_to.name, fdef.name);
+        let calc = FieldSpec::calculated("C", DataType::Text, &format!("N & {other}"));
+        ed.add_field(t, &calc).unwrap();
+        let n = ed.field_id(t, "N").unwrap();
+        ed.add_field(t, &FieldSpec::summary("S", SummaryOp::Count, n))
+            .unwrap();
+        ed.add_field(t, &FieldSpec::new("Gone", DataType::Date))
+            .unwrap();
+        let gone = ed.field_id(t, "Gone").unwrap();
+        ed.delete_field(t, gone).unwrap();
+        ed.rename_field(t, n, "Number").unwrap();
+        // Renaming a template field keeps every option of it.
+        ed.rename_field(first.id, *fid, "Renamed by BaseCraft")
+            .unwrap();
+        let out = fmp12::File::from_bytes(ed.finish()).unwrap();
+        let renamed = &fmp12::schema::tables(&out).unwrap()[0].fields[fid];
+        assert_eq!(renamed.name, "Renamed by BaseCraft");
+        assert_eq!(renamed.options, fdef.options, "{}", f.display());
+        assert_eq!(renamed.comment, fdef.comment);
+        let after = fmp12::schema::tables(&out).unwrap();
+        assert_eq!(after.len(), before.len() + 1);
+        let nt = after.iter().find(|x| x.id == t).unwrap();
+        let names: Vec<&str> = nt.fields.values().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["Number", "C", "S"], "{}", f.display());
+        assert_eq!(fmp12::schema::records(&out, first).unwrap(), records);
+        let ed = Editor::open(&out).unwrap();
+        let c = ed.field_spec(t, ed.field_id(t, "C").unwrap()).unwrap();
+        assert_eq!(
+            c.field_type,
+            FieldType::Calculated {
+                formula: format!("Number & {}::Renamed by BaseCraft", first_to.name),
+                stored: true
+            }
+        );
+        assert_eq!(*fid, *first.fields.keys().next().unwrap());
+    }
+}

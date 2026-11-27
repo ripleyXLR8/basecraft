@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use fmp12::calc_compile::{Resolve, compile};
+use fmp12::script_calc::{Resolve, compile};
 use fmp12::scripts::{
     Calc, DialogButton, FieldRef, LayoutDest, Script, SortOrder, Step, StepParams, id, scripts,
 };

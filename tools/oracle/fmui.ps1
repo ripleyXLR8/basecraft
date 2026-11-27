@@ -68,6 +68,16 @@ function Save-FmShot([string]$name) {
   }
 }
 
+# Screenshot of one FileMaker window or dialog (an automation element).
+function Save-FmWindowShot($el, [string]$name) {
+  $h = [IntPtr]$el.Current.NativeWindowHandle
+  $r = New-Object W32+RECT; [void][W32]::GetWindowRect($h, [ref]$r)
+  $bmp = New-Object Drawing.Bitmap ([Math]::Max(1,$r.R - $r.L)), ([Math]::Max(1,$r.B - $r.T))
+  $g = [Drawing.Graphics]::FromImage($bmp); $hdc = $g.GetHdc()
+  [void][W32]::PrintWindow($h, $hdc, 2); $g.ReleaseHdc($hdc)
+  $f = "$Shot\$name.png"; $bmp.Save($f); $f
+}
+
 function Send-FmKeys([string]$keys) {
   $w = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' -or $_.Current.ClassName -eq '#32770' } | Select -First 1
   [W32]::Front([IntPtr]$w.Current.NativeWindowHandle)
@@ -162,8 +172,13 @@ function Set-FmClip([string]$fmt, [string]$xml) {
 # Pastes the steps of an fmxmlsnippet file into a new script of the
 # frontmost file (Scripts > Script Workspace, New Script, Ctrl+V, Ctrl+S).
 function Add-FmScriptSteps([string]$snippet) {
-  Click-Fm 408 40; Start-Sleep 1; Click-Fm 480 63; Start-Sleep 3
-  $sw = Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' } | Select -First 1
+  for ($try = 0; $try -lt 4 -and -not $sw; $try++) {
+    $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+    [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
+    Click-Fm 408 40; Start-Sleep 1; Click-Fm 480 63; Start-Sleep 3
+    $sw = Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' } | Select -First 1
+    if (-not $sw) { [System.Windows.Forms.SendKeys]::SendWait("{ESC}{ESC}"); Start-Sleep 1 }
+  }
   $h = [IntPtr]$sw.Current.NativeWindowHandle
   $r = New-Object W32+RECT; [void][W32]::GetWindowRect($h, [ref]$r)
   [W32]::Front($h); [W32]::Click($r.L + 56, $r.T + 75); Start-Sleep 2   # New Script
@@ -172,6 +187,11 @@ function Add-FmScriptSteps([string]$snippet) {
   [System.Windows.Forms.SendKeys]::SendWait("^v"); Start-Sleep 3
   [System.Windows.Forms.SendKeys]::SendWait("^s"); Start-Sleep 2
   $sw.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close(); Start-Sleep 2
+  # A long paste may still be running at Ctrl+S: FileMaker then asks on close.
+  for ($i = 0; $i -lt 60 -and (Get-FmWindows | ? { $_.Current.Name -like 'Espace de travail*' }); $i++) {
+    if (Find-Fm "Enregistrer tout" "Button") { Invoke-Fm "Enregistrer tout" }
+    Start-Sleep 1
+  }
 }
 
 # Closes FileMaker through its main window and waits for it to exit, so the
@@ -181,4 +201,43 @@ function Close-Fm {
   if ($m) { $m.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close() }
   $p = Get-Process "FileMaker Pro" -ErrorAction SilentlyContinue
   if ($p -and -not $p.WaitForExit(30000)) { Stop-Fm }
+}
+
+# File > Manage > Database… of the frontmost file; returns the dialog.
+function Open-FmManageDb {
+  for ($try = 0; $try -lt 4; $try++) {
+    $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
+    [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
+    Click-Fm 32 40; Start-Sleep -Milliseconds 700; Click-Fm 50 243; Start-Sleep -Milliseconds 700; Click-Fm 305 243
+    for ($i = 0; $i -lt 10; $i++) {
+      Start-Sleep -Milliseconds 500
+      $d = Find-Fm "Gérer la base de données*" "Window"
+      if (-not $d) { $d = Get-FmWindows | % { $_.FindAll($TS::Children, [System.Windows.Automation.Condition]::TrueCondition) } | ? { $_.Current.Name -like 'Gérer la base de données*' } | Select -First 1 }
+      if ($d) { return $d }
+    }
+    [System.Windows.Forms.SendKeys]::SendWait("{ESC}{ESC}")
+  }
+  throw "Manage Database did not open"
+}
+
+function Select-FmTab([string]$name) {
+  (Find-Fm $name "TabItem").GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+  Start-Sleep 1
+}
+
+# Rows of the current Manage Database list (Tables or Fields tab), as shown:
+# name, type and options in one string each.
+function Get-FmDbRows {
+  $w = Get-FmWindows | Select -First 1
+  $c = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::DataItem)
+  $w.FindAll($TS::Descendants, $c) | % { $_.Current.Name -replace '^Réorganiser ', '' }
+}
+
+# Pastes the fields of an fmxmlsnippet (clipboard format Mac-XMFD) into the
+# table shown on the Fields tab of Manage Database, then closes it with OK.
+function Add-FmFields([string]$snippet) {
+  [void](Open-FmManageDb); Select-FmTab "Rubriques"
+  Set-FmClip "Mac-XMFD" (Get-Content $snippet -Raw -Encoding utf8)
+  Invoke-Fm "Coller"; Start-Sleep 3
+  Invoke-Fm "OK"; Start-Sleep 2
 }

@@ -21,6 +21,8 @@
 //!                       [--margin PT] [--find…] [--omit…] [--sort…]
 //! basecraft-cli scripts <file>                                 list scripts and their steps
 //! basecraft-cli run-script <file> <name|id> [--param P] [--layout L] [--answer N] [-o out | --in-place]
+//! basecraft-cli schema add-table|add-field|set-options|rename|delete <file> …   (-o out | --in-place)
+//! basecraft-cli new-file <out.fmp12> [--table Name]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
 //! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
 //! ```
@@ -29,6 +31,7 @@ use std::io::{BufRead, Write};
 
 mod io;
 mod mcp;
+mod schema;
 mod scripting;
 
 use engine::{Database, Order, Request};
@@ -454,6 +457,7 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
         "import" => io::import_file(d, &arg(0, "table")?, &arg(1, "source file")?, o),
         "print-pdf" => io::print_pdf(d, &arg(0, "layout")?, o),
         "scripts" => scripting::list(d),
+        "schema" => schema::run(d, &o.rest),
         "run-script" => scripting::run(
             d,
             &arg(0, "script name or id")?,
@@ -514,8 +518,24 @@ fn main_inner() -> Res<Json> {
         mcp::serve(args.get(1).map(String::as_str))?;
         std::process::exit(0);
     }
+    if args.first().map(String::as_str) == Some("new-file") {
+        let o = opts(&args[1..])?;
+        let out = o
+            .rest
+            .first()
+            .or(o.out.as_ref())
+            .ok_or("usage: basecraft-cli new-file <out.fmp12> [--table Name]")?;
+        return schema::new_file(out, o.table.as_deref().unwrap_or("Table"));
+    }
+    // `schema <sub> <file> …`: the file comes after the sub-command.
+    let args = match args.as_slice() {
+        [s, sub, file, rest @ ..] if s == "schema" => {
+            [vec![s.clone(), file.clone(), sub.clone()], rest.to_vec()].concat()
+        }
+        _ => args,
+    };
     let [cmd, file, rest @ ..] = args.as_slice() else {
-        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|export|import|print-pdf|scripts|run-script|session|mcp> <file.fmp12> [args] (see README)".into());
+        return Err("usage: basecraft-cli <info|records|eval|new|set|delete|export|import|print-pdf|scripts|run-script|schema|session|mcp> <file.fmp12> [args] (see README)".into());
     };
     let mut d = Doc::open(file)?;
     if cmd == "session" {
@@ -525,7 +545,7 @@ fn main_inner() -> Res<Json> {
     let result = run(&mut d, cmd, &o)?;
     if matches!(
         cmd.as_str(),
-        "new" | "set" | "delete" | "run-script" | "import"
+        "new" | "set" | "delete" | "run-script" | "import" | "schema"
     ) {
         let target = match (&o.out, o.in_place) {
             (Some(p), _) => p.clone(),

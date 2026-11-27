@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 use calc::Value;
 use fmp12::schema::{DataType, FieldKind};
+use fmp12::schema_edit::{EditError, Editor, FieldSpec};
 
 pub use find::{Request, find};
 pub use summary::{groups, summarize};
@@ -204,6 +205,93 @@ impl Database {
         self.tables.iter().find(|t| t.id == id)
     }
 
+    /// Applies a schema edit ("Manage Database") to `file`, which must be
+    /// the file this database was loaded from, and reloads the schema
+    /// (tables, fields, occurrences, layouts). Records not saved yet are
+    /// kept; values of deleted fields and tables are dropped.
+    pub fn edit_schema<T>(
+        &mut self,
+        file: &mut fmp12::File,
+        edit: impl FnOnce(&mut Editor) -> Result<T, EditError>,
+    ) -> Result<T, EditError> {
+        let mut ed = Editor::open(file)?;
+        let out = edit(&mut ed)?;
+        let new = fmp12::File::from_bytes(ed.finish())?;
+        let mut fresh = Database::load(&new)?;
+        for t in fresh.tables.iter_mut() {
+            let Some(old) = self.tables.iter_mut().find(|o| o.id == t.id) else {
+                continue;
+            };
+            let ids: std::collections::BTreeSet<u32> = t.fields.iter().map(|f| f.id).collect();
+            t.records = std::mem::take(&mut old.records);
+            for r in t.records.iter_mut() {
+                r.values.retain(|f, _| ids.contains(f));
+            }
+            t.next_record_id = t.next_record_id.max(old.next_record_id);
+        }
+        *self = fresh;
+        *file = new;
+        Ok(out)
+    }
+
+    /// Adds a table (with its occurrence and layout); returns its id.
+    pub fn add_table(&mut self, file: &mut fmp12::File, name: &str) -> Result<u32, EditError> {
+        self.edit_schema(file, |ed| ed.add_table(name).map(|(t, _, _)| t))
+    }
+
+    /// Adds a field to table `table`; returns its id.
+    pub fn add_field(
+        &mut self,
+        file: &mut fmp12::File,
+        table: u32,
+        spec: &FieldSpec,
+    ) -> Result<u32, EditError> {
+        self.edit_schema(file, |ed| ed.add_field(table, spec))
+    }
+
+    /// Replaces a field's definition (name, type, options).
+    pub fn set_field(
+        &mut self,
+        file: &mut fmp12::File,
+        table: u32,
+        field: u32,
+        spec: &FieldSpec,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.set_field(table, field, spec))
+    }
+
+    pub fn rename_table(
+        &mut self,
+        file: &mut fmp12::File,
+        table: u32,
+        name: &str,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.rename_table(table, name))
+    }
+
+    pub fn delete_table(&mut self, file: &mut fmp12::File, table: u32) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.delete_table(table))
+    }
+
+    pub fn rename_field(
+        &mut self,
+        file: &mut fmp12::File,
+        table: u32,
+        field: u32,
+        name: &str,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.rename_field(table, field, name))
+    }
+
+    pub fn delete_field(
+        &mut self,
+        file: &mut fmp12::File,
+        table: u32,
+        field: u32,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.delete_field(table, field))
+    }
+
     /// The bytes of `original` (the file this database was loaded from)
     /// with the current records of every table: new, edited and deleted
     /// records are written, everything else is kept. Stored calculations
@@ -242,7 +330,35 @@ impl Database {
             }
             data.insert(t.id, recs);
         }
-        fmp12::save::save_records(original, &data)
+        let bytes = fmp12::save::save_records(original, &data)?;
+        // Serial numbers: the file's next value moves past the numbers
+        // given here, so that FileMaker does not hand them out again.
+        let saved = fmp12::File::from_bytes(bytes)?;
+        let mut ed = Editor::open(&saved)?;
+        let mut moved = false;
+        for t in &self.tables {
+            for f in t.fields.iter().filter(|f| f.def.auto_serial()) {
+                let max = t
+                    .records
+                    .iter()
+                    .filter_map(|r| r.values.get(&f.id)?.trim().parse::<u64>().ok())
+                    .max();
+                let next = ed
+                    .next_serial(t.id, f.id)
+                    .and_then(|s| s.trim().parse::<u64>().ok());
+                if let (Some(max), Some(next)) = (max, next)
+                    && max >= next
+                {
+                    ed.set_next_serial(t.id, f.id, &(max + 1).to_string());
+                    moved = true;
+                }
+            }
+        }
+        Ok(if moved {
+            ed.finish()
+        } else {
+            saved.bytes().to_vec()
+        })
     }
 
     /// Base table of a table occurrence.

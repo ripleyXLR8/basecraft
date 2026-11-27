@@ -1121,6 +1121,19 @@ impl Editor {
         self.set_field(t, f, &spec)
     }
 
+    /// Next value of the serial number of field `f` (key 12), if it has one.
+    pub fn next_serial(&self, t: u32, f: u32) -> Option<String> {
+        self.get(&sp(&[t, 3, 5, f]), 12).map(|d| crate::text(&d))
+    }
+
+    /// Sets the next serial value of field `f` (records created elsewhere
+    /// must not reuse a number).
+    pub fn set_next_serial(&mut self, t: u32, f: u32, next: &str) {
+        let node = sp(&[t, 3, 5, f]);
+        self.set(node.clone(), 12, encode_text(next));
+        self.bump(node);
+    }
+
     /// Deletes field `f` of table `t` with its values and indexes.
     pub fn delete_field(&mut self, t: u32, f: u32) -> Res<()> {
         let names = self.names();

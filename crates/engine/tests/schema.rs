@@ -303,3 +303,106 @@ fn saving_moves_the_next_serial_value() {
     let ed = fmp12::schema_edit::Editor::open(&file).unwrap();
     assert_eq!(ed.next_serial(t, f).as_deref(), Some("3"));
 }
+
+#[test]
+fn relookup_copies_the_related_values_again() {
+    let mut s = shop();
+    let ada = s.client("1", "Ada", "Paris");
+    let r = s.invoice("1", "10");
+    let other = s.invoice("1", "20");
+    // The client's name changes: looked-up values keep the old one…
+    let c = s.db.tables.iter().position(|t| t.id == s.clients).unwrap();
+    s.db.tables[c].records[ada]
+        .values
+        .insert(s.f["Name"], "Ada L.".into());
+    assert_eq!(s.get(s.invoices, r, "ClientName"), "Ada");
+    // …until Relookup Field Contents on the match field.
+    s.db.relookup(s.invoices, &[r], s.f["ClientId"]);
+    assert_eq!(s.get(s.invoices, r, "ClientName"), "Ada L.");
+    assert_eq!(s.get(s.invoices, other, "ClientName"), "Ada");
+    // A field no lookup matches on changes nothing.
+    s.db.relookup(s.invoices, &[other], s.f["Amount"]);
+    assert_eq!(s.get(s.invoices, other, "ClientName"), "Ada");
+}
+
+#[test]
+fn value_list_size_and_custom_message_validation() {
+    use engine::Rule;
+    use fmp12::valuelists::Source;
+    let mut s = shop();
+    let sizes =
+        s.db.add_value_list(&mut s.file, "Sizes", &Source::Custom("S\rM\rL".into()))
+            .unwrap();
+    let mut size = FieldSpec::new("Size", DataType::Text);
+    size.validation.value_list = Some(sizes);
+    let size = s.db.add_field(&mut s.file, s.invoices, &size).unwrap();
+    let mut code = FieldSpec::new("Code", DataType::Text);
+    code.validation.max_chars = Some(3);
+    code.validation.message = Some("\"At most \" & 3 & \" characters\"".into());
+    let code = s.db.add_field(&mut s.file, s.invoices, &code).unwrap();
+    let r = s.invoice("1", "5");
+    let rules = |s: &Shop| -> Vec<(u32, Rule, u32)> {
+        s.db.validate(s.invoices, r)
+            .iter()
+            .map(|e| (e.field, e.rule, e.rule.code()))
+            .collect()
+    };
+    assert!(rules(&s).is_empty());
+    s.db.set_values(s.invoices, r, &[(size, "XL".into()), (code, "ABCD".into())]);
+    assert_eq!(
+        rules(&s),
+        [(size, Rule::ValueList, 506), (code, Rule::MaxChars, 511)]
+    );
+    // Value list values match whatever the case; the message is a calculation.
+    s.db.set_values(s.invoices, r, &[(size, "m".into()), (code, "ABC".into())]);
+    assert!(rules(&s).is_empty());
+    assert_eq!(s.db.validation_message(s.invoices, r, size), None);
+    assert_eq!(
+        s.db.validation_message(s.invoices, r, code).as_deref(),
+        Some("At most 3 characters")
+    );
+}
+
+#[test]
+fn summary_options_written_and_computed() {
+    use fmp12::schema::SummaryOp;
+    use fmp12::schema_edit::FieldType;
+    let mut s = shop();
+    for (c, a) in [("1", "10"), ("1", "5"), ("2", "30")] {
+        s.invoice(c, a);
+    }
+    let amount = s.f["Amount"];
+    let summary = |name: &str, op, running| FieldSpec {
+        field_type: FieldType::Summary {
+            op,
+            field: amount,
+            running,
+            by: None,
+        },
+        ..FieldSpec::new(name, DataType::Number)
+    };
+    let pop = summary("Pop", SummaryOp::StandardDeviation, true);
+    let pop = s.db.add_field(&mut s.file, s.invoices, &pop).unwrap();
+    let list = summary("List", SummaryOp::List, false);
+    let list = s.db.add_field(&mut s.file, s.invoices, &list).unwrap();
+    let running = summary("Running", SummaryOp::Total, true);
+    let running = s.db.add_field(&mut s.file, s.invoices, &running).unwrap();
+    let t = s.db.table(s.invoices).unwrap();
+    assert!(t.field(pop).unwrap().def.summary_population());
+    let op = t.field(list).unwrap().def.summary().unwrap().op;
+    assert_eq!(op, SummaryOp::List);
+    // Population standard deviation of 10, 5, 30: sqrt(350 / 3).
+    let v = s.db.value(s.invoices, 0, pop).to_text();
+    assert!(v.starts_with("10.801234497"), "{v}");
+    assert_eq!(s.db.value(s.invoices, 0, list).to_text(), "10\r5\r30");
+    // A running total in table order (the engine has no found set).
+    let run: Vec<String> = (0..3)
+        .map(|r| s.db.value(s.invoices, r, running).to_text())
+        .collect();
+    assert_eq!(run, ["10", "15", "45"]);
+    // The options survive a save and a reload.
+    let file = fmp12::File::from_bytes(s.db.save(&s.file).unwrap()).unwrap();
+    let db = Database::load(&file).unwrap();
+    let t = db.table(s.invoices).unwrap();
+    assert!(t.field(pop).unwrap().def.summary_population());
+}

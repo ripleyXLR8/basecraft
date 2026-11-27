@@ -82,6 +82,12 @@ pub fn tr(key: &'static str) -> &'static str {
         "must contain a unique value." => "doit contenir une valeur unique.",
         "must contain an existing value." => "doit contenir une valeur existante.",
         "must contain a number." => "doit contenir un nombre.",
+        "must contain a value from the value list." => {
+            "doit contenir une valeur de la liste de valeurs."
+        }
+        "must contain at most this many characters:" => {
+            "doit contenir au plus ce nombre de caractères :"
+        }
         "Accept anyway" => "Accepter quand même",
         "Save a Copy As…" => "Enregistrer une copie sous…",
         "or drop a .fmp12 file here" => "ou déposez un fichier .fmp12 ici",

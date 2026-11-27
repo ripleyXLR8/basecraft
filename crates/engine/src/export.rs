@@ -124,7 +124,8 @@ pub fn columns(db: &Database, to: u32, names: &[String]) -> Result<Vec<Column>, 
 
 /// Values of `field` of occurrence `field_to` for record `record` seen from
 /// occurrence `from`: one value for the record's own field, one per related
-/// record otherwise. Summary fields summarize `found`.
+/// record otherwise. Summary fields summarize `found` (running ones up to
+/// the record).
 pub fn values_through(
     db: &Database,
     from: u32,
@@ -139,7 +140,7 @@ pub fn values_through(
     if field_to == from {
         let summary = t.field(field).is_some_and(|f| f.kind == FieldKind::Summary);
         return vec![if summary {
-            crate::summarize(db, t.id, field, found, found)
+            crate::summary_at(db, t.id, field, record, found, &[])
         } else {
             db.value(t.id, record, field)
         }];

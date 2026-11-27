@@ -108,7 +108,18 @@ pub fn draw(
                 } else {
                     rec.and_then(|r| doc.db.related(layout_to, r, to).first().copied())
                 };
+                let summary = tbl
+                    .and_then(|t| doc.db.table(t)?.field(field as u32))
+                    .is_some_and(|f| f.kind == fmp12::schema::FieldKind::Summary);
                 match (tbl, r) {
+                    _ if summary => print::field_text(
+                        &doc.db,
+                        layout,
+                        found,
+                        sort,
+                        band,
+                        o.field.unwrap_or_default(),
+                    ),
                     (Some(tid), Some(r)) => doc.db.value(tid, r, field as u32).to_text(),
                     _ => String::new(),
                 }

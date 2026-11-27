@@ -73,7 +73,8 @@ pub enum FieldType {
     Summary {
         op: SummaryOp,
         field: u32,
-        /// Running total or count (Total, Count).
+        /// Running total or count (Total, Count); by population (Standard
+        /// Deviation, the same bit).
         running: bool,
         /// Second field of the same table: the sort field a running
         /// summary restarts on, the weight of an Average, the field a
@@ -343,7 +344,7 @@ fn op_code(op: SummaryOp) -> u8 {
         Maximum => 5,
         StandardDeviation => 6,
         FractionOfTotal => 7,
-        List => 8,
+        List => 9,
     }
 }
 
@@ -433,6 +434,13 @@ fn ref14(to: Option<u32>, mark: u8, field: Option<u32>) -> Vec<u8> {
 /// table's occurrence `ctx`) of a restarting running summary or a
 /// subtotaled fraction, the weight of an average.
 fn summary_block(op: SummaryOp, field: u32, running: bool, by: Option<u32>, ctx: u32) -> Vec<u8> {
+    // A standard deviation by population is option 0x01 with no field.
+    if op == SummaryOp::StandardDeviation {
+        let mut b = vec![op_code(op), running as u8];
+        b.extend(ref14(None, 0, Some(field)));
+        b.extend(ref14(None, 0, None));
+        return b;
+    }
     let flags = if running { 0x04 } else { 0 }
         | match (by, op) {
             (None, _) => 0,
@@ -1795,7 +1803,7 @@ impl Editor {
             if !has(t, field) {
                 return Err(EditError::NotFound(format!("summarized field {field}")));
             }
-            if running && !matches!(op, Total | Count) {
+            if running && !matches!(op, Total | Count | StandardDeviation) {
                 return Err(EditError::Invalid(format!("{op:?} cannot be running")));
             }
             if let Some(b) = by {
@@ -2012,7 +2020,7 @@ impl Editor {
                 FieldType::Summary {
                     op: s.op,
                     field: s.field,
-                    running: x.summary_running(),
+                    running: x.summary_running() || x.summary_population(),
                     by: x.summary_by(),
                 }
             }

@@ -25,7 +25,8 @@
 //! `--strict` (no override), `--in-list VALUELIST`, `--max-chars N`,
 //! `--message TEXT` (or `--message-calc F`); lookups `--lookup TO::Field`
 //! (`--lookup-from TO`, `--if-no-match none|lower|higher|value:TEXT`,
-//! `--copy-empty`); serial `--increment N`; summaries `--running`,
+//! `--copy-empty`); serial `--increment N`; summaries `--running` (or
+//! `--by-population` for a standard deviation),
 //! `--restart-by F`, `--weighted-by F`, `--subtotal-by F`; storage `--global`,
 //! `--repetitions N`, `--index none|minimal|all`, `--no-auto-index`.
 //! `--no-<option>` turns an option off (set-options).
@@ -206,7 +207,7 @@ fn apply_reference(
         "--message" => spec.validation.message = Some(literal(&val()?)),
         "--message-calc" => spec.validation.message = Some(val()?),
         "--no-message" => spec.validation.message = None,
-        "--running" => summary_by(spec, a, None, Some(true))?,
+        "--running" | "--by-population" => summary_by(spec, a, None, Some(true))?,
         "--no-running" => summary_by(spec, a, None, Some(false))?,
         "--restart-by" | "--weighted-by" | "--subtotal-by" => {
             let f = names.field(&val()?)?;

@@ -872,3 +872,194 @@ fn missing_script_and_sub_script_error() {
     let o = e.perform(&mut h, 1, None);
     assert_eq!(o.result.to_text(), "104");
 }
+
+/// A step whose parameters the decoder leaves raw (Relookup, Replace…):
+/// inline field `f` of occurrence `to`, calculations at positions 0, 1….
+fn raw_step(id: u16, to: u32, f: u32, calcs: &[Calc], options: u32) -> Step {
+    let mut raw = vec![0u8; 28];
+    let lo = (to - 128) as u16;
+    raw[6..11].copy_from_slice(&[4, 3, 0xD0, (lo >> 8) as u8, lo as u8]);
+    raw[12..15].copy_from_slice(&[2, 1, f as u8]);
+    raw[18..20].copy_from_slice(&[0, 1]);
+    let mut p = fmp12::scripts::RawParams::default();
+    for (i, c) in calcs.iter().enumerate() {
+        p.kv.insert((vec![128 + i as u32, 5], 5), c.0.clone());
+    }
+    Step {
+        id,
+        enabled: true,
+        options,
+        raw,
+        raw_params: p,
+        params: StepParams::Other,
+        ..Default::default()
+    }
+}
+
+/// Clients (Id, Name) and Invoices (ClientId, Amount, ClientName looked
+/// up from Clients::Name), built with the schema editor; a host on the
+/// Invoices layout. Returns the host and (invoices, invoices TO, ClientId,
+/// ClientName, Clients::Name) ids.
+fn lookup_host() -> (TestHost, [u32; 5]) {
+    use fmp12::schema::{DataType, Lookup, NoMatch};
+    use fmp12::schema_edit::{FieldSpec, RelationshipSpec};
+    let mut file =
+        fmp12::File::from_bytes(fmp12::schema_edit::new_file("Clients").unwrap()).unwrap();
+    let mut db = Database::load(&file).unwrap();
+    let c = db.tables[0].id;
+    let id = db
+        .add_field(&mut file, c, &FieldSpec::new("Id", DataType::Number))
+        .unwrap();
+    let name = db
+        .add_field(&mut file, c, &FieldSpec::new("Name", DataType::Text))
+        .unwrap();
+    let i = db.add_table(&mut file, "Invoices").unwrap();
+    let cid = db
+        .add_field(&mut file, i, &FieldSpec::new("ClientId", DataType::Number))
+        .unwrap();
+    let to = |db: &Database, n: &str| db.occurrences.iter().find(|o| o.name == n).unwrap().id;
+    let (cto, ito) = (to(&db, "Clients"), to(&db, "Invoices"));
+    let rel = RelationshipSpec::equal(cto, id, ito, cid);
+    db.add_relationship(&mut file, &rel).unwrap();
+    let mut l = FieldSpec::new("ClientName", DataType::Text);
+    l.auto_enter.lookup = Some(Lookup {
+        context: ito,
+        from: cto,
+        field: name,
+        no_match: NoMatch::DontCopy,
+        copy_empty: false,
+    });
+    let cname = db.add_field(&mut file, i, &l).unwrap();
+    for (k, n) in [("1", "Ada"), ("2", "Bob")] {
+        let r = db.new_record(c).unwrap();
+        db.set_values(c, r, &[(id, k.into()), (name, n.into())]);
+    }
+    for _ in 0..2 {
+        let r = db.new_record(i).unwrap();
+        db.set_values(i, r, &[(cid, "1".into())]);
+    }
+    let layout = db.layouts.iter().find(|l| l.name == "Invoices").unwrap().id;
+    let win = Window::new(&db, layout);
+    let h = TestHost {
+        db,
+        win,
+        answers: VecDeque::new(),
+        dialogs: Vec::new(),
+        errors: Vec::new(),
+    };
+    (h, [i, ito, cid, cname, name])
+}
+
+#[test]
+fn script_steps_run_lookups() {
+    let (mut h, [inv, ito, cid, cname, name]) = lookup_host();
+    let names = |h: &TestHost| -> Vec<String> {
+        (0..2)
+            .map(|r| h.db.value(inv, r, cname).to_text())
+            .collect()
+    };
+    assert_eq!(names(&h), ["Ada", "Ada"]);
+    let f = FieldRef {
+        to: ito,
+        field: cid,
+        repetition: 1,
+    };
+    let mut e = Engine::new(vec![]);
+    // Set Field on the match field looks up again.
+    let set = step(
+        id::SET_FIELD,
+        StepParams::SetField {
+            field: Some(f),
+            value: Some(c("2")),
+            repetition: None,
+        },
+    );
+    assert_eq!(e.run_step(&mut h, &set).last_error, 0);
+    assert_eq!(names(&h), ["Bob", "Ada"]);
+    // Set Field By Name, Insert Calculated Result (replacing the contents).
+    let by_name = raw_step(
+        id::SET_FIELD_BY_NAME,
+        ito,
+        0,
+        &[c("\"Invoices::ClientId\""), c("1")],
+        0,
+    );
+    assert_eq!(e.run_step(&mut h, &by_name).last_error, 0);
+    assert_eq!(names(&h), ["Ada", "Ada"]);
+    let select = fmp12::scripts::opt::SELECT;
+    let insert = raw_step(id::INSERT_CALCULATED_RESULT, ito, cid, &[c("2")], select);
+    assert_eq!(e.run_step(&mut h, &insert).last_error, 0);
+    assert_eq!(names(&h), ["Bob", "Ada"]);
+    // Replace Field Contents: every record of the found set.
+    let replace = raw_step(id::REPLACE_FIELD_CONTENTS, ito, cid, &[c("2")], 0);
+    assert_eq!(e.run_step(&mut h, &replace).last_error, 0);
+    assert_eq!(names(&h), ["Bob", "Bob"]);
+    assert_eq!(h.win.current, 0);
+    // Relookup Field Contents after Bob's name changed.
+    let clients = h.db.tables.iter().position(|t| t.id != inv).unwrap();
+    h.db.tables[clients].records[1]
+        .values
+        .insert(name, "Bobby".into());
+    assert_eq!(names(&h), ["Bob", "Bob"]);
+    let relookup = raw_step(id::RELOOKUP, ito, cid, &[], 0);
+    assert_eq!(e.run_step(&mut h, &relookup).last_error, 0);
+    assert_eq!(names(&h), ["Bobby", "Bobby"]);
+    // Paste without a clipboard: unavailable.
+    let paste = raw_step(id::PASTE, ito, cid, &[], 0);
+    assert_eq!(e.run_step(&mut h, &paste).last_error, error::UNAVAILABLE);
+}
+
+#[test]
+fn commit_enforces_validation() {
+    // People::Name not empty (15.3), City in value list "Cities" (14.0,
+    // key 7) with a custom message (14.7), Age at most 2 characters (14.1).
+    let mut h = TestHost::new(PEOPLE);
+    for f in h.db.tables[0].fields.iter_mut() {
+        f.def.options.resize(26, 0);
+        match f.id {
+            NAME => f.def.options[15] |= 1 << 3,
+            CITY => {
+                f.def.options[14] |= 1 | 1 << 7;
+                f.def.value_list_raw = vec![2, 1, 1];
+                f.def.message = "\"Pick a city\"".into();
+            }
+            _ => {
+                f.def.options[14] |= 1 << 1;
+                f.def.options[23] = 2;
+            }
+        }
+    }
+    let mut e = Engine::new(vec![script(
+        1,
+        vec![
+            step(id::SET_ERROR_CAPTURE, StepParams::Switch(true)),
+            plain(id::NEW_RECORD),
+            plain(id::COMMIT),
+            var("$a", "Get(LastError)"),
+            set_field(NAME, "\"Eve\""),
+            set_field(CITY, "\"Lima\""),
+            plain(id::COMMIT),
+            var("$b", "Get(LastError)"),
+            set_field(CITY, "\"rome\""),
+            set_field(AGE, "123"),
+            plain(id::COMMIT),
+            var("$c", "Get(LastError)"),
+            set_field(AGE, "12"),
+            plain(id::COMMIT),
+            exit("$a & \"/\" & $b & \"/\" & $c & \"/\" & Get(LastError)"),
+        ],
+    )]);
+    let o = e.perform(&mut h, 1, None);
+    assert_eq!(o.result.to_text(), "509/506/511/0");
+    assert_eq!(
+        h.db.validation_message(T, 4, CITY).as_deref(),
+        Some("Pick a city")
+    );
+    // Without error capture the error goes to the host.
+    let mut e = Engine::new(vec![script(
+        1,
+        vec![plain(id::NEW_RECORD), plain(id::COMMIT)],
+    )]);
+    e.perform(&mut h, 1, None);
+    assert_eq!(h.errors, [509]);
+}

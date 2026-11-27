@@ -127,6 +127,10 @@ pub trait Host {
         let _ = (name, repetition);
         true
     }
+    /// Text on the clipboard, for Paste (`None`: nothing to paste).
+    fn clipboard(&mut self) -> Option<String> {
+        None
+    }
     fn refresh(&mut self) {}
     fn freeze(&mut self) {}
     fn beep(&mut self) {}
@@ -755,9 +759,34 @@ impl Engine {
         }
     }
 
-    /// Commits the record being edited (FileMaker does on navigation).
-    fn commit(&mut self) {
+    /// Commits the record being edited (FileMaker does on navigation),
+    /// after checking its fields' validation options: the error code of
+    /// the first failing rule (509 not empty…) leaves the record open.
+    fn commit(&mut self, host: &mut dyn Host) -> Result<(), u32> {
+        self.commit_with(host, false)
+    }
+
+    /// Commit Records; `skip` = "Skip data entry validation" (fields
+    /// validated "always" are still checked).
+    fn commit_with(&mut self, host: &mut dyn Host, skip: bool) -> Result<(), u32> {
+        let Some((table, r, _)) = self.open else {
+            return Ok(());
+        };
+        let db = host.db();
+        let always = |f: u32| {
+            db.table(table)
+                .and_then(|t| t.field(f))
+                .is_some_and(|f| f.def.validation().always)
+        };
+        if let Some(e) = db
+            .validate(table, r)
+            .into_iter()
+            .find(|e| !skip || always(e.field))
+        {
+            return Err(e.rule.code());
+        }
         self.open = None;
+        Ok(())
     }
 
     fn exec(
@@ -866,16 +895,102 @@ impl Engine {
                         frame.locals.insert(key, v);
                     }
                 }
-                Target::Field(f) => {
-                    let old = if *select {
-                        String::new()
-                    } else {
-                        self.field_value(host, *f).unwrap_or_default()
-                    };
-                    self.set_field(host, *f, Value::text(format!("{old}{text}")))?;
-                }
+                Target::Field(f) => self.insert(host, *f, text, *select)?,
                 Target::None => return Err(error::FIELD_MISSING),
             },
+            (
+                StepParams::Other,
+                id::INSERT_CALCULATED_RESULT
+                | id::INSERT_CURRENT_DATE
+                | id::INSERT_CURRENT_TIME
+                | id::INSERT_CURRENT_USER_NAME
+                | id::PASTE,
+            ) => {
+                let v = match s.id {
+                    id::INSERT_CALCULATED_RESULT => {
+                        let c = calcs(s).into_iter().next().ok_or(error::UNAVAILABLE)?;
+                        self.eval(host, frame, &c)?
+                    }
+                    id::INSERT_CURRENT_DATE => now(host, "CurrentDate"),
+                    id::INSERT_CURRENT_TIME => now(host, "CurrentTime"),
+                    id::INSERT_CURRENT_USER_NAME => now(host, "UserName"),
+                    _ => Value::text(host.clipboard().ok_or(error::UNAVAILABLE)?),
+                };
+                let select = s.options & fmp12::scripts::opt::SELECT != 0;
+                match (s.raw_params.text(32), s.inline_field()) {
+                    (Some(name), _) => {
+                        let key = (name.to_lowercase(), 1);
+                        if name.starts_with("$$") {
+                            self.globals.insert(key, v);
+                        } else {
+                            frame.locals.insert(key, v);
+                        }
+                    }
+                    (None, Some(f)) => {
+                        let text = engine::stored_text(&v, &host.db().locale);
+                        self.insert(host, f, &text, select)?;
+                    }
+                    (None, None) => return Err(error::FIELD_MISSING),
+                }
+            }
+            (StepParams::Other, id::SET_FIELD_BY_NAME) => {
+                // ponytail: target name at position 0, value at 1, by
+                // analogy with Set Variable; not checked in FileMaker.
+                let mut c = calcs(s).into_iter();
+                let (Some(name), value) = (c.next(), c.next()) else {
+                    return Err(error::FIELD_MISSING);
+                };
+                let name = self.eval(host, frame, &name)?.to_text();
+                let v = match value {
+                    Some(v) => self.eval(host, frame, &v)?,
+                    None => Value::empty(),
+                };
+                let f = field_named(host.db(), &name).ok_or(error::FIELD_MISSING)?;
+                self.set_field(host, f, v)?;
+            }
+            (StepParams::Other, id::REPLACE_FIELD_CONTENTS) => {
+                // ponytail: with a calculation, or the current contents
+                // without one; serial numbers are not done.
+                self.commit(host)?;
+                let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
+                let (table, _, rec) = Self::context(host);
+                let db = host.db();
+                if db.table_of(f.to).map(|t| t.id) != Some(table) {
+                    return Err(error::FIELD_MISSING);
+                }
+                let current = rec.map(|r| db.value(table, r, f.field));
+                let calc = calcs(s).into_iter().next();
+                let w = host.window().clone();
+                for i in 0..w.found.len() {
+                    host.window().current = i;
+                    let v = match &calc {
+                        Some(c) => self.eval(host, frame, c),
+                        None => current.clone().ok_or(error::RECORD_MISSING),
+                    };
+                    let v = match v {
+                        Ok(v) => v,
+                        Err(e) => {
+                            host.window().current = w.current;
+                            return Err(e);
+                        }
+                    };
+                    let db = host.db();
+                    let text = engine::stored_text(&v, &db.locale);
+                    db.set_values(table, w.found[i], &[(f.field, text)]);
+                }
+                host.window().current = w.current;
+            }
+            (StepParams::Other, id::RELOOKUP) => {
+                self.commit(host)?;
+                let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
+                let (table, _, _) = Self::context(host);
+                let found = host.window().found.clone();
+                let db = host.db();
+                if db.table_of(f.to).map(|t| t.id) != Some(table) {
+                    return Err(error::FIELD_MISSING);
+                }
+                db.relookup(table, &found, f.field);
+            }
             (StepParams::GoToLayout { dest, .. }, _) => {
                 let target = match dest {
                     LayoutDest::Original => frame.original_layout,
@@ -910,7 +1025,7 @@ impl Engine {
                 },
                 _,
             ) => {
-                self.commit();
+                self.commit(host)?;
                 let n = self.eval_dest(host, frame, dest)?;
                 let w = host.window();
                 let len = if w.mode == Mode::Find {
@@ -1026,7 +1141,7 @@ impl Engine {
                 return Ok(Flow::Suspend(Suspend::Pause(secs), Pending::Pause));
             }
             (_, id::NEW_RECORD) => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, _) = Self::context(host);
                 if host.window().mode == Mode::Find {
                     let w = host.window();
@@ -1041,7 +1156,7 @@ impl Engine {
                 }
             }
             (_, id::DUPLICATE_RECORD) => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, rec) = Self::context(host);
                 if host.window().mode == Mode::Find {
                     let w = host.window();
@@ -1085,7 +1200,7 @@ impl Engine {
                 }
             }
             (StepParams::Records { dialog, .. }, id::DELETE_RECORD) => {
-                self.commit();
+                self.open = None;
                 if host.window().mode == Mode::Find {
                     let w = host.window();
                     if w.current_request < w.requests.len() {
@@ -1109,7 +1224,7 @@ impl Engine {
                 }
             }
             (StepParams::Records { dialog, .. }, id::DELETE_ALL_RECORDS) => {
-                self.commit();
+                self.open = None;
                 let (table, _, _) = Self::context(host);
                 let found = host.window().found.clone();
                 if *dialog {
@@ -1133,9 +1248,15 @@ impl Engine {
                     }
                 }
             }
-            (_, id::COMMIT) => self.commit(),
+            (
+                StepParams::Commit {
+                    skip_validation, ..
+                },
+                id::COMMIT,
+            ) => self.commit_with(host, *skip_validation)?,
+            (_, id::COMMIT) => self.commit(host)?,
             (StepParams::Mode { pause }, id::ENTER_BROWSE_MODE) => {
-                self.commit();
+                self.commit(host)?;
                 let w = host.window();
                 w.mode = Mode::Browse;
                 w.requests.clear();
@@ -1144,7 +1265,7 @@ impl Engine {
                 }
             }
             (StepParams::Mode { pause }, id::ENTER_PREVIEW_MODE) => {
-                self.commit();
+                self.commit(host)?;
                 host.window().mode = Mode::Preview;
                 if *pause {
                     return Ok(Flow::Suspend(Suspend::Pause(None), Pending::Pause));
@@ -1158,7 +1279,7 @@ impl Engine {
                 },
                 id::ENTER_FIND_MODE,
             ) => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, _) = Self::context(host);
                 let stored = self.requests(host, table, requests);
                 let w = host.window();
@@ -1179,7 +1300,7 @@ impl Engine {
                 },
                 id::PERFORM_FIND,
             ) => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, _) = Self::context(host);
                 let reqs = if *restore {
                     self.requests(host, table, requests)
@@ -1201,7 +1322,7 @@ impl Engine {
                 }
             }
             (_, id::SHOW_ALL) => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, _) = Self::context(host);
                 let n = host.db().table(table).map_or(0, |t| t.records.len());
                 let w = host.window();
@@ -1211,7 +1332,7 @@ impl Engine {
                 w.sorted = false;
             }
             (_, id::SHOW_OMITTED) => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, _) = Self::context(host);
                 let n = host.db().table(table).map_or(0, |t| t.records.len());
                 let w = host.window();
@@ -1220,7 +1341,7 @@ impl Engine {
                 w.sorted = false;
             }
             (_, id::OMIT_RECORD) => {
-                self.commit();
+                self.commit(host)?;
                 let w = host.window();
                 if w.mode == Mode::Find {
                     if let Some(q) = w.requests.get_mut(w.current_request) {
@@ -1235,7 +1356,7 @@ impl Engine {
                 }
             }
             (StepParams::Records { count, .. }, id::OMIT_MULTIPLE) => {
-                self.commit();
+                self.commit(host)?;
                 let n = match self.eval_opt(host, frame, count)? {
                     Some(v) => v.to_text().parse::<usize>().unwrap_or(1),
                     None => 1,
@@ -1246,7 +1367,7 @@ impl Engine {
                 w.current = w.current.min(w.found.len().saturating_sub(1));
             }
             (StepParams::Sort { keys, .. }, id::SORT) if !keys.is_empty() => {
-                self.commit();
+                self.commit(host)?;
                 let (table, _, _) = Self::context(host);
                 let mut found = host.window().found.clone();
                 sort(host.db(), table, &mut found, keys);
@@ -1256,7 +1377,7 @@ impl Engine {
                 w.sorted = true;
             }
             (_, id::UNSORT) => {
-                self.commit();
+                self.commit(host)?;
                 let w = host.window();
                 w.found.sort_unstable();
                 w.sorted = false;
@@ -1309,7 +1430,7 @@ impl Engine {
     }
 
     fn go_to_layout(&mut self, host: &mut dyn Host, layout: u32) -> Result<(), u32> {
-        self.commit();
+        self.commit(host)?;
         let current = host.window().layout;
         let db = host.db();
         let (_, new) = layout_table(db, layout).ok_or(error::LAYOUT_MISSING)?;
@@ -1362,6 +1483,23 @@ impl Engine {
         Some(db.value(t.id, r, f.field).to_text())
     }
 
+    /// Insert steps: `text` replaces the field's contents (`select`) or
+    /// goes after them.
+    fn insert(
+        &mut self,
+        host: &mut dyn Host,
+        f: FieldRef,
+        text: &str,
+        select: bool,
+    ) -> Result<(), u32> {
+        let old = if select {
+            String::new()
+        } else {
+            self.field_value(host, f).unwrap_or_default()
+        };
+        self.set_field(host, f, Value::text(format!("{old}{text}")))
+    }
+
     fn set_field(&mut self, host: &mut dyn Host, f: FieldRef, v: Value) -> Result<(), u32> {
         let (table, to, rec) = Self::context(host);
         let mode = host.window().mode;
@@ -1399,10 +1537,37 @@ impl Engine {
         if !matches!(&self.open, Some((ot, or, _)) if *ot == tid && *or == r) {
             self.open = Some((tid, r, Some(db.tables[ti].records[r].clone())));
         }
-        db.tables[ti].records[r].values.insert(f.field, text);
-        db.touch(tid, r);
+        // Lookups matching on the field copy again, stamps update.
+        db.set_values(tid, r, &[(f.field, text)]);
         Ok(())
     }
+}
+
+/// The calculations of a step's parameters, in position order.
+fn calcs(s: &Step) -> Vec<Calc> {
+    (0..16).filter_map(|p| s.raw_params.calc(p)).collect()
+}
+
+/// `Get ( flag )` for the current record (Insert Current Date…).
+fn now(host: &mut dyn Host, flag: &str) -> Value {
+    let (table, to, rec) = Engine::context(host);
+    host.db()
+        .eval_source(&format!("Get ( {flag} )"), table, to, rec)
+}
+
+/// The field named `TO::Field` (Set Field By Name).
+fn field_named(db: &Database, name: &str) -> Option<FieldRef> {
+    let (to, field) = name.split_once("::")?;
+    let to = db
+        .occurrences
+        .iter()
+        .find(|o| o.name.eq_ignore_ascii_case(to.trim()))?;
+    let f = db.table(to.base_table)?.field_by_name(field.trim())?;
+    Some(FieldRef {
+        to: to.id,
+        field: f.id,
+        repetition: 1,
+    })
 }
 
 /// FileMaker's delete confirmation: Delete (button 1) or Cancel.

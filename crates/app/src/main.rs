@@ -343,14 +343,25 @@ impl App {
         let msg: Vec<String> = errs
             .iter()
             .map(|e| {
-                let name = tbl
-                    .and_then(|x| x.field(e.field))
-                    .map_or(String::new(), |f| f.name.clone());
+                // A custom message replaces FileMaker's.
+                if let Some(m) = d.db.validation_message(t, r, e.field) {
+                    return m;
+                }
+                let f = tbl.and_then(|x| x.field(e.field));
+                let name = f.map_or(String::new(), |f| f.name.clone());
                 let rule = match e.rule {
-                    engine::Rule::NotEmpty => tr("must not be empty."),
-                    engine::Rule::Unique => tr("must contain a unique value."),
-                    engine::Rule::Existing => tr("must contain an existing value."),
-                    engine::Rule::Numeric => tr("must contain a number."),
+                    engine::Rule::NotEmpty => tr("must not be empty.").to_string(),
+                    engine::Rule::Unique => tr("must contain a unique value.").to_string(),
+                    engine::Rule::Existing => tr("must contain an existing value.").to_string(),
+                    engine::Rule::Numeric => tr("must contain a number.").to_string(),
+                    engine::Rule::ValueList => {
+                        tr("must contain a value from the value list.").to_string()
+                    }
+                    engine::Rule::MaxChars => format!(
+                        "{} {}",
+                        tr("must contain at most this many characters:"),
+                        f.and_then(|f| f.def.max_size()).unwrap_or(0)
+                    ),
                 };
                 format!("« {name} » {rule}")
             })
@@ -1843,6 +1854,7 @@ fn draw_object(
                 _ => None,
             };
             let mut changed = false;
+            let mut left = false;
             if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
                 let s = tbl.records[rec].values.entry(field).or_default();
                 match choices {
@@ -1864,6 +1876,7 @@ fn draw_object(
                         if let Some(v) = picked {
                             *s = v;
                             changed = true;
+                            left = true;
                             events.push((o.id, event::OBJECT_MODIFY));
                         }
                     }
@@ -1886,6 +1899,7 @@ fn draw_object(
                             events.push((o.id, event::OBJECT_MODIFY));
                         }
                         if r.lost_focus() {
+                            left = true;
                             events.push((o.id, event::OBJECT_EXIT));
                         }
                     }
@@ -1895,8 +1909,32 @@ fn draw_object(
                 *dirty = true;
                 doc.db.touch(t, rec);
             }
+            commit_field(ui, &mut doc.db, (t, rec, field), changed, left);
         }
     }
+}
+
+/// Once a field changed and is left (or a value is picked), lookups
+/// matching on it copy again, as in FileMaker.
+fn commit_field(
+    ui: &egui::Ui,
+    db: &mut Database,
+    (t, rec, field): (u32, usize, u32),
+    changed: bool,
+    left: bool,
+) {
+    let key = egui::Id::NULL.with(("modified", t, rec, field));
+    if changed {
+        ui.data_mut(|d| d.insert_temp(key, true));
+    }
+    if !left || !ui.data_mut(|d| d.remove_temp::<bool>(key)).unwrap_or(false) {
+        return;
+    }
+    let v = db
+        .table(t)
+        .and_then(|x| x.records.get(rec)?.values.get(&field).cloned())
+        .unwrap_or_default();
+    db.set_values(t, rec, &[(field, v)]);
 }
 
 /// Table view: one column per field of the layout's body, one row per record.
@@ -1940,9 +1978,11 @@ fn table_view(
                     ui.label(doc.db.value(t, rec, *f).to_text());
                 } else if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
                     let s = tbl.records[rec].values.entry(*f).or_default();
-                    if ui.text_edit_singleline(s).changed() {
+                    let r = ui.text_edit_singleline(s);
+                    if r.changed() {
                         *dirty = true;
                     }
+                    commit_field(ui, &mut doc.db, (t, rec, *f), r.changed(), r.lost_focus());
                 }
             }
             ui.end_row();

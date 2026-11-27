@@ -51,6 +51,14 @@ pub mod id {
     pub const REVERT_RECORD: u16 = 51;
     pub const ENTER_BROWSE_MODE: u16 = 55;
     pub const INSERT_TEXT: u16 = 61;
+    pub const INSERT_CURRENT_DATE: u16 = 13;
+    pub const INSERT_CURRENT_TIME: u16 = 14;
+    pub const RELOOKUP: u16 = 40;
+    pub const PASTE: u16 = 48;
+    pub const INSERT_CURRENT_USER_NAME: u16 = 60;
+    pub const INSERT_CALCULATED_RESULT: u16 = 77;
+    pub const REPLACE_FIELD_CONTENTS: u16 = 91;
+    pub const SET_FIELD_BY_NAME: u16 = 147;
     pub const PAUSE_RESUME: u16 = 62;
     pub const IF: u16 = 68;
     pub const ELSE: u16 = 69;
@@ -365,7 +373,7 @@ impl Step {
     }
 
     /// Field of the inline block: TO at 0, field at 6, repetition at 12.
-    pub(crate) fn inline_field(&self) -> Option<FieldRef> {
+    pub fn inline_field(&self) -> Option<FieldRef> {
         let b = self.block();
         Some(FieldRef {
             to: to_ref(&self.slot(0))?,

@@ -17,7 +17,7 @@ use std::ops::Range;
 
 use engine::{Database, Order};
 use fmp12::layouts::{Layout, LayoutObject, part};
-use fmp12::schema::{FieldKind, SummaryOp};
+use fmp12::schema::FieldKind;
 use fmp12::theme::ObjectStyle;
 
 use look::{Look, resolve};
@@ -222,12 +222,43 @@ pub fn paginate(
     pages
 }
 
+/// Text field object `field` (occurrence, field, repetition) shows on
+/// `band` of the pages of `found` sorted by `sort` (summary fields over
+/// the band's records).
+pub fn field_text(
+    db: &Database,
+    layout: &Layout,
+    found: &[usize],
+    sort: &[(u32, Order)],
+    band: &Band,
+    field: (u64, u64, u64),
+) -> String {
+    let sort: Vec<u32> = sort.iter().map(|(f, _)| *f).collect();
+    let ctx = Ctx {
+        db,
+        layout,
+        theme: None,
+        found,
+        sort: &sort,
+        page: 0,
+        pages: 0,
+    };
+    let group = found.get(band.group.clone()).unwrap_or_default();
+    let body = layout
+        .parts
+        .get(band.part)
+        .is_some_and(|p| p.kind == part::BODY);
+    ctx.field_text(field, band.record, group, body)
+}
+
 /// What a band draws its objects with.
 struct Ctx<'a> {
     db: &'a Database,
     layout: &'a Layout,
     theme: Option<&'a fmp12::theme::Theme>,
     found: &'a [usize],
+    /// Sort fields of the found set, in order.
+    sort: &'a [u32],
     page: usize,
     pages: usize,
 }
@@ -292,20 +323,20 @@ impl Ctx<'_> {
         };
         let from = layout_to(self.layout);
         if f.kind == FieldKind::Summary {
-            let set: Vec<usize> = if to == from {
-                match (record, f.def.summary()) {
-                    (Some(r), Some(s)) if body && s.op == SummaryOp::FractionOfTotal => vec![r],
-                    _ => group.to_vec(),
+            let v = match record {
+                // Running summaries and fractions show the record's own value.
+                Some(r) if to == from && body => {
+                    engine::summary_at(self.db, t.id, fid, r, self.found, self.sort)
                 }
-            } else {
-                record.map_or_else(Vec::new, |r| self.db.related(from, r, to))
+                _ if to == from => {
+                    engine::summarize_sorted(self.db, t.id, fid, group, self.found, self.sort)
+                }
+                _ => {
+                    let set = record.map_or_else(Vec::new, |r| self.db.related(from, r, to));
+                    engine::summarize(self.db, t.id, fid, &set, &set)
+                }
             };
-            let total = if to == from {
-                self.found.to_vec()
-            } else {
-                set.clone()
-            };
-            return self.text(&engine::summarize(self.db, t.id, fid, &set, &total));
+            return self.text(&v);
         }
         let Some(r) = record else {
             return String::new();
@@ -415,11 +446,13 @@ pub fn pdf(
         .find(|l| l.id == layout_id)
         .ok_or_else(|| format!("no layout {layout_id}"))?;
     let pages = paginate(db, layout, found, sort, paper);
+    let sort_fields: Vec<u32> = sort.iter().map(|(f, _)| *f).collect();
     let mut ctx = Ctx {
         db,
         layout,
         theme: db.themes.iter().find(|t| t.number == layout.theme),
         found,
+        sort: &sort_fields,
         page: 0,
         pages: pages.len(),
     };

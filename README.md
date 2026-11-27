@@ -22,7 +22,7 @@
   <img alt="Agent-drivable over MCP and CLI" src="https://img.shields.io/badge/agents-MCP%20%C2%B7%20CLI-8a5cc2?style=flat-square">
   <br>
   <a href="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-71%25-orange?style=flat-square"></a>
+  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-74%25-orange?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -65,7 +65,7 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~71 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
+**Estimated overall progress: ~74 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is
@@ -76,11 +76,11 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 | M0 Bootstrap | 2 | 100 % |
 | M1 Read `.fmp12` | 15 | 82 % |
 | M2 Calculation engine | 12 | 90 % |
-| M3 Data engine | 12 | 70 % |
+| M3 Data engine | 12 | 78 % |
 | M4 GUI (browse/find/views) | 15 | 55 % |
 | M5 Script engine | 12 | 75 % |
 | M6 Layout mode | 10 | 50 % |
-| M7 Write `.fmp12` | 10 | 80 % |
+| M7 Write `.fmp12` | 10 | 85 % |
 | M8 Import/export, print, security… | 12 | 45 % |
 
 ## Command line for scripts and AI agents

@@ -1,7 +1,7 @@
 # OpenMaker
 
 [![CI](https://github.com/ripleyXLR8/openmaker/actions/workflows/ci.yml/badge.svg)](https://github.com/ripleyXLR8/openmaker/actions/workflows/ci.yml)
-[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-39%25-orange)](#progress-to-10)
+[![Progress to 1.0](https://img.shields.io/badge/progress%20to%201.0-43%25-orange)](#progress-to-10)
 [![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-blue)](https://ripleyxlr8.github.io/openmaker/)
 
 **OpenMaker is an open-source, from-scratch reimplementation, in Rust, of the
@@ -29,11 +29,11 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 | Calculation engine (`crates/calc`): all 234 functions present; behaviour being checked against FileMaker | 🚧 |
 | Data engine (`crates/engine`): records, find, sort, calculated fields | 🚧 |
 | GUI (egui): read-only viewer, layouts drawn in form view | 🚧 |
-| `.fmp12` writing | ⏳ |
+| `.fmp12` writing: unchanged rewrite, new/edited/deleted records | 🚧 |
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~39 %** (▓▓▓▓▓▓▓▓░░░░░░░░░░░░)
+**Estimated overall progress: ~43 %** (▓▓▓▓▓▓▓▓▓░░░░░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is
@@ -44,11 +44,11 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 | M0 Bootstrap | 2 | 100 % |
 | M1 Read `.fmp12` | 15 | 78 % |
 | M2 Calculation engine | 12 | 70 % |
-| M3 Data engine | 12 | 45 % |
+| M3 Data engine | 12 | 55 % |
 | M4 GUI (browse/find/views) | 15 | 45 % |
 | M5 Script engine | 12 | 5 % |
 | M6 Layout mode | 10 | 0 % |
-| M7 Write `.fmp12` | 10 | 45 % |
+| M7 Write `.fmp12` | 10 | 65 % |
 | M8 Import/export, print, security… | 12 | 0 % |
 
 ## Web version

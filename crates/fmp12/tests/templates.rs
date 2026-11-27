@@ -142,3 +142,44 @@ fn leaf_sectors_reencode_byte_for_byte() {
     assert!(n > 0);
     eprintln!("{n} leaf sectors re-encoded");
 }
+
+#[test]
+fn locales() {
+    use fmp12::schema::DateOrder::*;
+    let Some(dir) = template_dir() else { return };
+    let l = |lang: &str| {
+        let f = fmp12::File::open(dir.join("Meetings").join(format!("{lang}.fmp12"))).unwrap();
+        fmp12::schema::locale(&f).unwrap()
+    };
+    let en = l("en");
+    assert_eq!(
+        (en.language, en.date_order, en.am.as_str()),
+        (21, Mdy, " AM")
+    );
+    assert_eq!(en.pm, " PM");
+    let fr = l("fr");
+    assert_eq!(
+        (fr.date_order, fr.decimal, fr.thousands),
+        (Dmy, ',', '\u{A0}')
+    );
+    assert!(fr.am.is_empty());
+    let de = l("de");
+    assert_eq!((de.date_order, de.date_separator), (Dmy, '.'));
+    assert_eq!(l("ja").date_order, Ymd);
+    assert_eq!((l("sv").date_order, l("sv").date_separator), (Ymd, '-'));
+}
+
+/// `write::sort_key` reproduces FileMaker's store order on every template.
+#[test]
+fn entries_are_in_store_order() {
+    let Some(dir) = template_dir() else { return };
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        let mut es = fmp12::write::entries(&file).unwrap();
+        fmp12::write::drop_leftovers(&mut es);
+        for w in es.windows(2) {
+            let (a, b) = (fmp12::write::sort_key(&w[0]), fmp12::write::sort_key(&w[1]));
+            assert!(a <= b, "{}: {:02x?} > {:02x?}", f.display(), w[0], w[1]);
+        }
+    }
+}

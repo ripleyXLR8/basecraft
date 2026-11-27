@@ -118,9 +118,43 @@ pub fn decode(src: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// Encodes text as SCSU in single-byte mode, never changing windows:
+/// ASCII and Latin-1 as single bytes, a character of a static window as
+/// SQn + offset (FileMaker writes U+2014 as `05 14`), anything else as SQU.
+pub fn encode(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for u in s.encode_utf16() {
+        let c = u as u32;
+        match c {
+            // Tag bytes (01–08, 0B, 0C, 0E–1F) need quoting from window 0.
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => out.extend_from_slice(&[0x01, u as u8]),
+            0x00..=0xFF => out.push(u as u8),
+            _ => match (1..8).find(|&w| (STATIC[w]..STATIC[w] + 0x80).contains(&c)) {
+                Some(w) => out.extend_from_slice(&[w as u8 + 1, (c - STATIC[w]) as u8]),
+                None => out.extend_from_slice(&[0x0E, (u >> 8) as u8, u as u8]),
+            },
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::decode;
+    use super::{decode, encode};
+
+    #[test]
+    fn encode_roundtrips() {
+        for s in [
+            "Café crème — spécial",
+            "a\rb\tc\u{1}",
+            "日本語 €",
+            "😀 x",
+            "",
+        ] {
+            assert_eq!(decode(&encode(s)), s);
+        }
+        assert_eq!(encode("é—"), [0xE9, 0x05, 0x14]);
+    }
 
     #[test]
     fn ascii_and_latin1() {

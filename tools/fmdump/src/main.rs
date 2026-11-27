@@ -3,6 +3,7 @@
 //! fmdump <file> sectors        sector table
 //! fmdump <file> chunks         every chunk with its path (text-decoded)
 //! fmdump <file> raw            tab-separated path, kind, key, hex value, file offset
+//! fmdump <file> entries        writer view: hex path elements, hex item bytes
 //! fmdump <file> tables         tables and fields
 //! fmdump <file> graph          table occurrences and relationships
 //! fmdump <file> rewrite <out>   re-serialise the file with OpenMaker's writer
@@ -38,7 +39,9 @@ fn path(p: &[&[u8]]) -> String {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let [_, file, cmd, rest @ ..] = args.as_slice() else {
-        eprintln!("usage: fmdump <file.fmp12> sectors|chunks|raw|tables|graph|records <table>");
+        eprintln!(
+            "usage: fmdump <file.fmp12> sectors|chunks|raw|entries|tables|graph|records <table>"
+        );
         std::process::exit(2);
     };
     let f = File::open(file)?;
@@ -77,6 +80,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Chunk::Push(_) | Chunk::Pop | Chunk::Marker => {}
             }
         })?,
+        "entries" => {
+            let h = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+            for e in fmp12::write::entries(&f)? {
+                let p: Vec<String> = e.path.iter().map(|p| h(p)).collect();
+                println!("{}	{}", p.join("."), h(&e.item));
+            }
+        }
         "tables" => {
             for t in schema::tables(&f)? {
                 println!("{} (id {})", t.name, t.id);

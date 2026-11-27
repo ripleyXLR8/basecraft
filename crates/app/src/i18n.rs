@@ -60,6 +60,9 @@ pub fn tr(key: &'static str) -> &'static str {
         "Cancel" => "Annuler",
         "Unsaved changes" => "Modifications non enregistrées",
         "Save" => "Enregistrer",
+        "Saved. Scripts were added, renamed or deleted: BaseCraft opens this file, but FileMaker Pro will report it as damaged." => {
+            "Enregistré. Des scripts ont été ajoutés, renommés ou supprimés : BaseCraft ouvre ce fichier, mais FileMaker Pro le signalera comme endommagé."
+        }
         "Data Viewer" => "Visualiseur de données",
         "Expression" => "Expression",
         "Value" => "Valeur",

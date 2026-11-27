@@ -242,6 +242,13 @@ impl App {
             self.workspace.dirty = false;
         }
         let scripts = self.engine.as_ref().map(|e| e.scripts.clone());
+        // FileMaker refuses a file whose script list changed (FORMAT.md §8, key 8).
+        let names = |l: &[fmp12::scripts::Script]| {
+            l.iter().map(|s| (s.id, s.name.clone())).collect::<Vec<_>>()
+        };
+        let list_changed = scripts.as_ref().is_some_and(|l| {
+            fmp12::scripts::scripts(&d.file).map_or(true, |old| names(&old) != names(l))
+        });
         let saved = d.db.save(&d.file).and_then(|b| {
             let f = fmp12::File::from_bytes(b)?;
             let b = fmp12::save::save_layouts(&f, &d.db.layouts)?;
@@ -272,6 +279,9 @@ impl App {
                 self.error = Some(e.to_string());
                 return;
             }
+        }
+        if list_changed {
+            self.error = Some(tr("Saved. Scripts were added, renamed or deleted: BaseCraft opens this file, but FileMaker Pro will report it as damaged.").to_string());
         }
         let file_name = format!("{}.fmp12", d.name);
         #[cfg(not(target_arch = "wasm32"))]

@@ -28,6 +28,8 @@ pub struct Field {
     pub value_list_raw: Vec<u8>,
     /// Custom validation message: the calculation's text (key 24).
     pub message: String,
+    /// Next value of a serial number (key 12, text).
+    pub serial_next: String,
 }
 
 /// What a lookup copies when no related record matches.
@@ -428,6 +430,7 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
                     ([], Chunk::Kv { key: 11, data }) => field.lookup_constant = text(data),
                     ([], Chunk::Kv { key: 7, data }) => field.value_list_raw = data.to_vec(),
                     ([], Chunk::Kv { key: 24, data }) => field.message = text(data),
+                    ([], Chunk::Kv { key: 12, data }) => field.serial_next = text(data),
                     _ => {
                         if let Some((first, s)) = name_part(rel, c) {
                             if first {

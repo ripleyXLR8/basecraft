@@ -138,7 +138,7 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
         ),
         (
             "create_field",
-            "Add a field to a table (Manage Database › Fields): a normal field of `type`, a calculation (`calculation`, `stored`) or a summary (`summary`: operation and field). Options: auto-enter (serial next value, stamp, auto_calculation, constant), validation (not_empty, unique, existing, range [low, high], validation_calculation, always_validate), storage (global, repetitions, index). Calculations use FileMaker syntax; fields of other tables are written Occurrence::Field. Changes stay in memory until save_file.",
+            "Add a field to a table (Manage Database › Fields): a normal field of `type`, a calculation (`calculation`, `stored`) or a summary (`summary`: operation, field, running, by = restart/weight/subtotal field). Options: auto-enter (serial next value and increment, stamp, auto_calculation, constant, lookup from Occurrence::Field through a relationship), validation (not_empty, unique, existing, range [low, high], value_list, max_chars, validation_calculation, message, always_validate), storage (global, repetitions, index). Calculations use FileMaker syntax; fields of other tables are written Occurrence::Field. Changes stay in memory until save_file.",
             s(
                 json!({ "table": table, "name": { "type": "string" },
                    "type": { "type": "string", "enum": ["text", "number", "date", "time", "timestamp", "container"] },
@@ -146,8 +146,19 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
                    "calculation": { "type": "string" }, "stored": { "type": "boolean" },
                    "summary": { "type": "object", "properties": {
                        "operation": { "type": "string", "enum": ["total", "average", "count", "minimum", "maximum", "stdev", "fraction", "list"] },
-                       "field": { "type": "string" } } },
+                       "field": { "type": "string" },
+                       "running": { "type": "boolean", "description": "Running total or count" },
+                       "by": { "type": "string", "description": "Field a running summary restarts on, the weight of an average, or the field a fraction is subtotaled by" } } },
                    "serial": { "type": "string", "description": "Next serial value" },
+                   "serial_increment": { "type": "integer" },
+                   "lookup": { "type": "object", "description": "Copy a related field when the match field changes",
+                       "properties": { "field": { "type": "string", "description": "Occurrence::Field to copy" },
+                       "start": { "type": "string", "description": "Occurrence the lookup starts from (default: the table's first)" },
+                       "if_no_match": { "type": "string", "description": "none, lower, higher or value:TEXT" },
+                       "copy_empty": { "type": "boolean" } }, "required": ["field"] },
+                   "value_list": { "type": "string", "description": "Validate: member of this value list" },
+                   "max_chars": { "type": "integer" },
+                   "message": { "type": "string", "description": "Text shown when validation fails" },
                    "stamp": { "type": "string", "enum": ["creation-date", "creation-time", "creation-timestamp", "creation-name", "creation-account",
                        "modification-date", "modification-time", "modification-timestamp", "modification-name", "modification-account"] },
                    "auto_calculation": { "type": "string" }, "replace_existing": { "type": "boolean" },
@@ -158,6 +169,39 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
                    "global": { "type": "boolean" }, "repetitions": { "type": "integer" },
                    "index": { "type": "string", "enum": ["none", "minimal", "all"] } }),
                 &["table", "name"],
+            ),
+        ),
+        (
+            "create_occurrence",
+            "Add a table occurrence of a table to the relationship graph (Manage Database › Relationships), under its own name. Changes stay in memory until save_file.",
+            s(
+                json!({ "table": { "type": "string" }, "name": { "type": "string" } }),
+                &["table", "name"],
+            ),
+        ),
+        (
+            "create_relationship",
+            "Relate two table occurrences (Manage Database › Relationships). `predicates`: \"LeftField op RightField\" with op =, ≠, <, ≤, >, ≥ or × (or !=, <=, >=, x). Options per side: allow creation of records, delete them with the other side's record, sort them (\"Field\" or \"Field:desc\"). The graph has no cycles: relate a new occurrence instead. Changes stay in memory until save_file.",
+            s(
+                json!({ "left": { "type": "string" }, "right": { "type": "string" },
+                   "predicates": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                   "create_left": { "type": "boolean" }, "create_right": { "type": "boolean" },
+                   "delete_left": { "type": "boolean" }, "delete_right": { "type": "boolean" },
+                   "sort_left": { "type": "array", "items": { "type": "string" } },
+                   "sort_right": { "type": "array", "items": { "type": "string" } } }),
+                &["left", "right", "predicates"],
+            ),
+        ),
+        (
+            "create_valuelist",
+            "Add a value list (File › Manage › Value Lists): custom `values`, or the values of `field` (Occurrence::Field), optionally with a `second_field` shown next to it (`second_only`, `sort_by_second`) and only values related from `related_from`. Changes stay in memory until save_file.",
+            s(
+                json!({ "name": { "type": "string" },
+                   "values": { "type": "array", "items": { "type": "string" } },
+                   "field": { "type": "string" }, "second_field": { "type": "string" },
+                   "second_only": { "type": "boolean" }, "sort_by_second": { "type": "boolean" },
+                   "related_from": { "type": "string" } }),
+                &["name"],
             ),
         ),
         (
@@ -343,6 +387,8 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
                 ("constant", "--constant"),
                 ("validation_calculation", "--validate"),
                 ("index", "--index"),
+                ("value_list", "--in-list"),
+                ("message", "--message"),
             ] {
                 if let Some(v) = str_of(k) {
                     args.extend([opt.into(), v]);
@@ -379,8 +425,88 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
             if let [lo, hi] = r.as_slice() {
                 args.extend(["--range".into(), format!("{lo}:{hi}")]);
             }
-            if let Some(n) = a.get("repetitions").and_then(Json::as_u64) {
-                args.extend(["--repetitions".into(), n.to_string()]);
+            for (k, opt) in [
+                ("repetitions", "--repetitions"),
+                ("serial_increment", "--increment"),
+                ("max_chars", "--max-chars"),
+            ] {
+                if let Some(n) = a.get(k).and_then(Json::as_u64) {
+                    args.extend([opt.into(), n.to_string()]);
+                }
+            }
+            if let Some(s) = a.get("summary") {
+                if s.get("running").and_then(Json::as_bool) == Some(true) {
+                    args.push("--running".into());
+                }
+                if let Some(by) = s.get("by").and_then(Json::as_str) {
+                    args.extend(["--subtotal-by".into(), by.to_string()]);
+                }
+            }
+            if let Some(l) = a.get("lookup") {
+                let get = |k: &str| l.get(k).and_then(Json::as_str).map(str::to_string);
+                args.extend([
+                    "--lookup".into(),
+                    get("field").ok_or("lookup.field is required")?,
+                ]);
+                if let Some(v) = get("start") {
+                    args.extend(["--lookup-from".into(), v]);
+                }
+                if let Some(v) = get("if_no_match") {
+                    args.extend(["--if-no-match".into(), v]);
+                }
+                if l.get("copy_empty").and_then(Json::as_bool) == Some(true) {
+                    args.push("--copy-empty".into());
+                }
+            }
+            "schema"
+        }
+        "create_occurrence" => {
+            args.push("add-occurrence".into());
+            args.push(str_of("table").ok_or("table is required")?);
+            args.push(str_of("name").ok_or("name is required")?);
+            "schema"
+        }
+        "create_relationship" => {
+            args.push("add-relationship".into());
+            args.push(str_of("left").ok_or("left is required")?);
+            args.push(str_of("right").ok_or("right is required")?);
+            let preds = list("predicates");
+            if preds.is_empty() {
+                return Err("predicates are required".into());
+            }
+            args.extend(preds);
+            for k in ["create_left", "create_right", "delete_left", "delete_right"] {
+                if flag(k) == Some(true) {
+                    args.push(format!("--{}", k.replace('_', "-")));
+                }
+            }
+            for k in ["sort_left", "sort_right"] {
+                for f in list(k) {
+                    args.extend([format!("--{}", k.replace('_', "-")), f]);
+                }
+            }
+            "schema"
+        }
+        "create_valuelist" => {
+            args.push("add-valuelist".into());
+            args.push(str_of("name").ok_or("name is required")?);
+            args.extend(list("values"));
+            for (k, opt) in [
+                ("field", "--from-field"),
+                ("second_field", "--second"),
+                ("related_from", "--related-from"),
+            ] {
+                if let Some(v) = str_of(k) {
+                    args.extend([opt.into(), v]);
+                }
+            }
+            for (k, opt) in [
+                ("second_only", "--second-only"),
+                ("sort_by_second", "--sort-second"),
+            ] {
+                if flag(k) == Some(true) {
+                    args.push(opt.into());
+                }
             }
             "schema"
         }
@@ -506,6 +632,130 @@ mod tests {
         let t = db.tables.iter().find(|t| t.name == "People").unwrap();
         let label = t.field_by_name("Label").unwrap().id;
         assert_eq!(t.records[0].values[&label], "#1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn creates_relationships_lookups_and_value_lists() {
+        let dir = std::env::temp_dir().join(format!("basecraft-mcp-rel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shop.fmp12").to_string_lossy().to_string();
+        let mut doc = None;
+        let call = |doc: &mut Option<Doc>, name: &str, args: Json| {
+            let r = handle(
+                doc,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name": name, "arguments": args}}),
+            )
+            .unwrap();
+            let text = r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            (r["result"]["isError"] == false, text)
+        };
+        let ok = |doc: &mut Option<Doc>, name: &str, args: Json| {
+            let (good, text) = call(doc, name, args);
+            assert!(good, "{name}: {text}");
+            text
+        };
+        ok(
+            &mut doc,
+            "new_file",
+            json!({"path": path, "table": "Clients"}),
+        );
+        for (t, f, ty) in [("Clients", "Id", "number"), ("Clients", "Name", "text")] {
+            ok(
+                &mut doc,
+                "create_field",
+                json!({"table": t, "name": f, "type": ty}),
+            );
+        }
+        ok(&mut doc, "create_table", json!({"name": "Invoices"}));
+        for f in ["ClientId", "Amount"] {
+            ok(
+                &mut doc,
+                "create_field",
+                json!({"table": "Invoices", "name": f, "type": "number"}),
+            );
+        }
+        let rel = ok(
+            &mut doc,
+            "create_relationship",
+            json!({"left": "Clients", "right": "Invoices", "predicates": ["Id = ClientId"],
+                   "create_right": true, "delete_right": true, "sort_right": ["Amount:desc"]}),
+        );
+        assert!(rel.contains("Id = ClientId"), "{rel}");
+        ok(
+            &mut doc,
+            "create_occurrence",
+            json!({"table": "Invoices", "name": "Big invoices"}),
+        );
+        ok(
+            &mut doc,
+            "create_relationship",
+            json!({"left": "Clients", "right": "Big invoices", "predicates": ["Id = ClientId", "Id < Amount"]}),
+        );
+        ok(
+            &mut doc,
+            "create_field",
+            json!({"table": "Invoices", "name": "ClientName", "type": "text",
+                   "lookup": {"field": "Clients::Name", "if_no_match": "value:?"}}),
+        );
+        ok(
+            &mut doc,
+            "create_field",
+            json!({"table": "Invoices", "name": "Running", "type": "number",
+                   "summary": {"operation": "total", "field": "Amount", "running": true, "by": "ClientId"}}),
+        );
+        let vl = ok(
+            &mut doc,
+            "create_valuelist",
+            json!({"name": "Cities", "values": ["Paris", "Lyon"]}),
+        );
+        assert!(vl.contains("Lyon"), "{vl}");
+        ok(
+            &mut doc,
+            "create_valuelist",
+            json!({"name": "Names", "field": "Clients::Id", "second_field": "Clients::Name", "second_only": true}),
+        );
+        ok(
+            &mut doc,
+            "create_field",
+            json!({"table": "Clients", "name": "City", "type": "text",
+                   "value_list": "Cities", "max_chars": 10, "message": "Pick a city"}),
+        );
+        // Errors come back as tool errors.
+        let (good, text) = call(
+            &mut doc,
+            "create_relationship",
+            json!({"left": "Clients", "right": "Invoices", "predicates": ["Id = ClientId"]}),
+        );
+        assert!(!good, "{text}");
+        ok(
+            &mut doc,
+            "create_record",
+            json!({"table": "Clients", "fields": {"Id": "1", "Name": "Ada"}}),
+        );
+        let inv = ok(
+            &mut doc,
+            "create_record",
+            json!({"table": "Invoices", "fields": {"ClientId": "1", "Amount": "5"}}),
+        );
+        assert!(inv.contains("\"ClientName\":\"Ada\""), "{inv}");
+        let n = ok(
+            &mut doc,
+            "evaluate",
+            json!({"calculation": "Count ( Invoices::Amount ) & \"/\" & Count ( ${Big invoices}::Amount )", "table": "Clients", "record_id": 1}),
+        );
+        assert!(n.contains("1/1"), "{n}");
+        ok(&mut doc, "save_file", json!({}));
+        let db = engine::Database::open(&path).unwrap();
+        assert_eq!(db.relationships.len(), 2);
+        assert_eq!(db.value_lists.len(), 2);
+        let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
+        let f = t.field_by_name("ClientName").unwrap();
+        assert!(f.def.lookup().is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 

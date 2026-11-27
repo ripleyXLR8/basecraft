@@ -422,7 +422,8 @@ impl Database {
                 if let (Some(max), Some(next)) = (max, next)
                     && max >= next
                 {
-                    ed.set_next_serial(t.id, f.id, &(max + 1).to_string());
+                    let inc = f.def.serial_increment() as u64;
+                    ed.set_next_serial(t.id, f.id, &(max + inc).to_string());
                     moved = true;
                 }
             }
@@ -844,15 +845,22 @@ impl Database {
             return None;
         }
         if f.def.auto_serial() {
-            // ponytail: next serial = highest existing value + 1 (stored next value not decoded).
+            // The file's next value, or past the highest value given here.
+            // ponytail: numeric serials only.
             let t = self.table(table)?;
+            let inc = f.def.serial_increment() as i64;
             let max = t
                 .records
                 .iter()
                 .filter_map(|r| r.values.get(&f.id)?.trim().parse::<i64>().ok())
-                .max()
-                .unwrap_or(0);
-            return Some((max + 1).to_string());
+                .max();
+            let stored = f.def.serial_next.trim().parse::<i64>().ok();
+            let next = match (max, stored) {
+                (Some(m), Some(s)) => s.max(m + inc),
+                (Some(m), None) => m + inc,
+                (None, s) => s.unwrap_or(1),
+            };
+            return Some(next.to_string());
         }
         let src = f.auto_calc.as_ref()?;
         let v = self

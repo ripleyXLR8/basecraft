@@ -84,7 +84,7 @@ function Test-FmGraph([string]$file, [string]$Plan = "1:1,2:2,1:1", [string]$Scr
   Click-FmId "IDOK" $v; Start-Sleep 2
   $m = Get-FmWindows | ? { $_.Current.ClassName -like 'FMPRO*' } | Select -First 1
   [W32]::Front([IntPtr]$m.Current.NativeWindowHandle); Start-Sleep -Milliseconds 500
-  foreach ($step in $Plan.Split(',')) {
+  foreach ($step in ($Plan.Split(',') | ? { $_ })) {
     $layout, $n = $step.Split(':') | % { [int]$_ }
     Click-Fm 130 123; Start-Sleep 1
     Click-Fm 104 (145 + 20 * ($layout - 1)); Start-Sleep 1

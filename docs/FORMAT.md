@@ -187,7 +187,7 @@ Every catalog follows the same pattern:
 | `[2]` | file-level settings; key 13 = locale (§13), key 134 = data formats (§14) | 🔍 |
 | `[3].[16]` | BaseTableCatalog; `[3].[16].[5].[T]` key 251 = change counter (§13) | ✅ read, written (§14) |
 | `[3].[17]` | TableOccurrenceCatalog; `[3].[17].[1].[14].[T]` = evaluation plan cache (§7) | ✅ read, written (§14) |
-| `[3].[251]` | RelationshipCatalog | 🔍 |
+| `[3].[251]` | RelationshipCatalog (251 spelled as one byte `FB`, §7) | ✅ read, written (§14) |
 | `[4]` | LayoutCatalog; `[4].[5].[L].[5].[n]` = LayoutObject | 🔍 |
 | `[6]` | ThemeCatalog (§12) | ✅ styles |
 | `[25]` | font catalog (§12) | ✅ names |
@@ -196,7 +196,7 @@ Every catalog follows the same pattern:
 | `[23].[2]` | PrivilegeSetsCatalog | 🔍 |
 | `[23].[3]` | ExtendedPrivilegesCatalog | 🔍 |
 | `[23].[4]` | FileAccessCatalog | 🔍 |
-| `[33]` | ValueListCatalog | 🔍 |
+| `[33]` | ValueListCatalog (§9) | ✅ read, written (§14) |
 | `[38]` | BaseDirectoryCatalog | 🔍 |
 | `[65]` | CustomMenuCatalog | 🔍 |
 | `[T].[3].[5].[F]` | FieldCatalog of table T | ✅ names |
@@ -245,7 +245,7 @@ FileMaker export XML. All 214 template fields match the export (`tests/oracle.rs
 | 14 | 1 | maximum size |
 | 14 | 2 | validate always (not only during data entry) |
 | 14 | 4, 5, 6 | strict data type: numeric, four-digit year, time |
-| 14 | 7 | custom error message |
+| 14 | 7 | custom error message (set with 15.7) |
 | 15 | 0 | validation by calculation |
 | 15 | 1 | `alwaysValidate` (validate even when not modified) |
 | 15 | 2 | user **cannot** override |
@@ -254,26 +254,57 @@ FileMaker export XML. All 214 template fields match the export (`tests/oracle.rs
 | 15 | 5 | existing value |
 | 15 | 6 | range |
 | 15 | 7 | custom message |
+| 16–19 | — | serial number increment, u32 BE (1 in every field FileMaker creates) |
+| 20–23 | — | maximum number of characters of 14.1, u32 BE |
 | 24–25 | — | maximum repetitions, u16 BE |
 
-Bytes 2, 12–13 and 16–23 changed nothing visible in the XML. FileMaker
-writes byte 19 = 1 in every field it creates. Index language: the file's
-language (`[2]` key 13, §13) for new fields.
+Bytes 2 and 12–13 changed nothing visible in the XML. Index language: the
+file's language (`[2]` key 13, §13) for new fields. Bytes 16–23 were read
+from fields set in FileMaker's Field Options dialog (increment 3, maximum
+12 characters).
 
 **Summary fields** keep their definition in key 9 of the field node, e.g.
 `01 00 02 01 00 00 FE 7F 02 01 05 BE BF EF 00 01 02 01 00 00 FF 1F 02 01 00 00 BF EF 00 01`:
 
 | Byte | Meaning |
 |-----:|---------|
-| 0 | operation: 1 Total, 3 Count (seen in the templates); 2 Average, 4 Minimum, 5 Maximum, 6 Standard Deviation, 7 Fraction of Total, 8 List assumed from the dialog order |
-| 8… | summarized field: length *n*, `01`, path integer (*n* − 1 bytes) |
+| 0 | operation: 1 Total, 2 Average, 3 Count, 4 Minimum, 5 Maximum, 6 Standard Deviation, 7 Fraction of Total, 8 List (1, 2, 3, 7 seen in files FileMaker wrote; the others from the dialog order) |
+| 1 | options: 0x04 running total or count, 0x10 restart for each sorted group, 0x01 a second field is set |
+| 2–15 | the summarized field, as a 14-byte reference (below) |
+| 16–29 | the second field: the sort field a running summary restarts on, the field a Fraction of Total is subtotaled by (both on the table's occurrence), the weight of a weighted Average (no occurrence); `02 01 00 00 00 00 02 01 00 00 00 00 00 01` when unset |
 
-The other bytes (running total, by population, restart per sort group,
-the "subtotaled" field of Fraction of Total) are not decoded; bytes 4–7,
-11–13, 20–21 and 26–27 hold leftovers (FileMaker writes zeros in a new
-summary, `F9 7F`, `64 23` in others).
+A **14-byte field reference** (also in lookups below): a 5-byte
+occurrence slot (`04 03 D0 hi lo`, or `02 01 00` and two bytes of
+padding), a byte (`7F` in second references and lookups, `00` for the
+summarized field), a 4-byte field slot (`len 01 path-int`, padded), two
+bytes, and the repetition (u16). The padding holds leftovers in older
+files (`FE 7F`, `BE BF EF`); FileMaker 26 writes zeros. The XML names
+the options RunningTotal, RunningCount, WeightedAverage,
+FractionalSubtotal and `restartEachGroup`.
 
-Other keys of a field node: **12** next serial value (text), **13**
+**Lookups** (option bit 10.2) keep their definition in key 8:
+
+| Byte | Meaning |
+|-----:|---------|
+| 0 | if no match: 0 do not copy, 1 copy the next lower value, 2 the next higher, 3 the constant of key 11 |
+| 1 | 1 = copy an empty value too (the "Do not copy contents if empty" box unticked) |
+| 2–15 | the field copied, as a 14-byte reference through the related occurrence |
+| 16–20 | the occurrence the lookup starts from ("Starting with table"), `len 03 D0 hi lo` |
+| 21 | `00` |
+
+FileMaker fires a lookup only when the field catalog's dependencies hold
+an empty node `[T].[3].[1].[14].[251].[F].[start TO].[related TO]` (251
+spelled `FB`): without it the definition shows in Manage Database and in
+the XML, but nothing is ever copied. A lookup has no `[FFF0]` entry.
+
+Other validation keys: **7** "member of value list": `len 01 path-int`
+of the value list, then `00 90 01 02 01 00 00 71 D1 FF` (FileMaker 26's
+bytes, not decoded); **24** the custom message as the text of its
+calculation (FileMaker 26 only offers a calculation, e.g. `"Bad value"`),
+compiled in sub-node **`[32]`** (keys 4, 5, 6).
+
+Other keys of a field node: **12** next serial value (text; FileMaker
+writes `1` in every field), **11** lookup constant (text), **13**
 auto-enter constant (text), **33**/**34** validation range low/high
 (text), **251** and **252** counters, **217** source UUID, **218** tags;
 sub-node **`[5]`** the calculation of a calculated field or the auto-enter
@@ -288,8 +319,11 @@ The field catalog header `[T].[3].[1]` also holds:
 * `[14].[FFF0].[F]`: what field *F* depends on: key *G* = 01 for each field
   of the table its calculation uses (00 for the field a summary summarizes),
   key FF00 (32640) = 01 for any auto-enter, FF02 (32642) = 01 for a
-  modification stamp; `[14].[FFF1].[F]`: fields its validation
-  calculation uses. FileMaker does not rebuild these.
+  modification stamp; for a summary with a second field, that field
+  = 02 (a weight), or the byte-string key `00 TOref len field` = 02 (a
+  sort or subtotal field on the table's occurrence); `[14].[FFF1].[F]`:
+  fields its validation calculation uses; `[14].[251].[F]`: lookups
+  (above). FileMaker does not rebuild these.
 
 ## 6. Long values
 
@@ -311,10 +345,34 @@ formatting for text). Short values stay inline. Readers must accept both.
   `[FF00]` rank → kind and field, `[FF02]` modification stamps, `[FFFB]`
   summaries, `[FFFC]` fields to validate, `[G]` fields depending on G).
   It is a cache: FileMaker rebuilds it when it is missing.
-* `[3].[251].[5].[R]` key 2: `04 TOref(left) 04 TOref(right) | sort spec… |
-  flags`. The last byte holds the flags: 0x10 cascade-create right, 0x20 cascade-create left.
-  `[R].[3]` keys 1…n = join predicates `op | len 01 field | len 01 field`
-  (op 0 = `=`).
+* `[3].[251]`, with 251 spelled as one byte `FB` (not `80 7B`):
+  `[1]` catalog header (key 0 = last id as a length-prefixed integer, 4
+  = count, 216 UUID, 252 counter; no name index or display order), node
+  `[5].[R]` per relationship (key 2, predicates in `[3]`, 216 UUID). A
+  file that never had a relationship (a new file) has no `[3].[251]`.
+* `[3].[251].[5].[R]` key 2: `04 TOref(left) 04 TOref(right) | right
+  side's sort order | left side's sort order | 00 00 00 | flags`. A sort
+  order is a u32 count, then per key `len TOref | len 01 field | 00 01 |
+  02 01 00 | 02 01 00 | 00 01 | value list (00 = none) | order (0
+  ascending, 1 descending) | 00000000`, the field being one of that
+  side's occurrence. Flags: 0x01 delete the right side's records with
+  the left one, 0x02 the left side's, 0x10 allow creating right records,
+  0x20 left records, 0x40 right side sorted, 0x80 left side sorted.
+* `[R].[3]` keys 1…n = join predicates `op | len 01 field | len 01 field`,
+  op 0 `=`, 1 `≠`, 2 `<`, 3 `≤`, 4 `>`, 5 `≥`, 6 `×` (XML Equal,
+  NotEqual, Less, LessOrEqual, Greater, GreaterOrEqual, CartesianProduct).
+* `[3].[17].[5].[TO].[251]` (`FB`): the occurrence's links, one per
+  relationship: 3-byte key `D0 hi lo` (the other occurrence) → the
+  relationship id as a length-prefixed integer (op `12`: `12 D0 00 03
+  01 03`).
+* `[3].[17].[1].[8].[TO]`: routes. For every occurrence reachable from
+  TO: `D0 hi lo` → the id of the first relationship on the way (the
+  graph has no cycles, so the path is unique). The `[8]` node exists in
+  new files.
+* FileMaker refuses a second relationship between the same occurrences
+  (it adds predicates to the first instead) and a cycle (another
+  occurrence is needed); records can be created only through `=`
+  predicates.
 
 ## 8. Scripts ✅
 
@@ -514,8 +572,22 @@ checked against the XML export (`tests/oracle.rs`,
 ## 9. Value lists ✅
 
 `[33].[5].[V]`: key 16 = name, key 3 = custom values (CR-separated),
-key 2 = definition: byte 0 = source (0 custom, 1 field), then for a field:
-`flags | 04 TOref | len 01 field | …`.
+key 2 = definition, 216 UUID:
+
+| Bytes | Meaning |
+|------:|---------|
+| 0 | source: 0 custom values, 1 values from a field |
+| 1–2 | u16 options: 0x01 only values related from an occurrence, 0x02 sort by the second field, 0x04 show only the second field (each checked alone in FileMaker's XML) |
+| … | first field: `len TOref` (`02 01 00` when none), `len 01 field`, u16 `00 01` |
+| … | second field, the same (`02 01 00 02 01 00 00 01` when none) |
+| … | the occurrence related values start from (`02 01 00` when none), then two `02 01 00` |
+| last 2 | `01 7A` |
+
+The catalog `[33].[1]`: key 0 last id (length-prefixed), 4 count, 32 =
+01 (XML `SortOrder`), name index `[1]`, display order `[3]`, `[6]` an
+index keyed by the u16 source and the name key without its tertiary part
+(like the field type index), `[7]` the set of ids (one empty key per
+id).
 
 ## 10. Layouts ✅ (partial)
 
@@ -979,3 +1051,41 @@ BaseCraft's plain theme (`examples/mkblank.rs`). A theme whose compiled
 styles hold only a few default rules (background, borders, text colour
 and size) is enough for FileMaker; one with no rules opens too, but
 draws layouts grey.
+
+### Occurrences, relationships and value lists
+
+Decoded from a file where FileMaker's Edit Relationship, Add Table
+Occurrence and Manage Value Lists dialogs added occurrences, four
+relationships (every operator, both sides sorted, create and delete on
+either side) and four value lists, and from fields given lookups and the
+other options below in its Field Options dialog (`tools/oracle`,
+`Find-FmWindow`, `Click-FmId`: those dialogs expose automation ids).
+
+* **Occurrence**: as for a new table (§7 key 2). FileMaker places a new
+  one 30 points right and below the last; BaseCraft puts it to the right
+  of the others, 131 × 111 points (occurrences of size 0 count as a row,
+  the way FileMaker lays them out). Renaming writes key 16 and the name
+  index; deleting removes its node, its relationships and its record
+  cache `[TO]`. The last occurrence of a table stays (its calculations
+  are evaluated from it).
+* **Relationship**: node `[3].[251].[5].[R]` and catalog (§7), then both
+  occurrences' links `[251]` and the route table `[3].[17].[1].[8]` are
+  rewritten from all relationships, and the evaluation plan
+  `[3].[17].[1].[14]` is dropped (FileMaker rebuilds it).
+* **Value list**: node `[33].[5].[V]`, catalog entries `[1]`, `[3]`,
+  `[6]`, `[7]`, keys 0, 4, 252 (§9).
+* **Field options**: lookups (key 8, constant key 11, the `[14].[251]`
+  dependency node), "member of value list" (key 7), maximum characters
+  (bytes 20–23), custom messages (key 24 and `[32]`), the serial
+  increment (bytes 16–19), summary options (key 9 byte 1 and the second
+  reference), §5.
+
+Checked in FileMaker Pro 26 (`tools/oracle/graph_demo.sh`,
+`template_demo.sh`, `Test-FmGraph`): files built by `basecraft-cli`
+open without a warning; Manage Database shows the graph; Save a Copy as
+XML shows every relationship option and operator, the lookups, the value
+lists and the other field options as written; records FileMaker creates
+see their related records through calculations (`Count`, `List`, a `×`
+relationship), lookups copy the related value (also the no-match
+constant and the next lower value), `ValueListItems` returns the custom
+and field values, serials step by the increment.

@@ -834,7 +834,7 @@ impl Editor {
                         crate::graph::read_occurrence(o, &data);
                     }
                 }
-                ([t, 3, 5, f], 16 | 2 | 7 | 8 | 9 | 11 | 24) if *t >= 128 => {
+                ([t, 3, 5, f], 16 | 2 | 7 | 8 | 9 | 11 | 12 | 24) if *t >= 128 => {
                     let x = fields.entry((*t, *f)).or_default();
                     match key {
                         16 => x.name = crate::text(&data),
@@ -843,6 +843,7 @@ impl Editor {
                         8 => x.lookup_raw = data,
                         11 => x.lookup_constant = crate::text(&data),
                         24 => x.message = crate::text(&data),
+                        12 => x.serial_next = crate::text(&data),
                         _ => x.summary_raw = data,
                     }
                 }

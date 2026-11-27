@@ -34,8 +34,8 @@ pub struct ValueList {
 
 /// Option bits of the definition (bytes 1–2).
 pub const RELATED_ONLY: u16 = 0x01;
-pub const SECOND_ONLY: u16 = 0x02;
-pub const SORT_BY_SECOND: u16 = 0x04;
+pub const SECOND_ONLY: u16 = 0x04;
+pub const SORT_BY_SECOND: u16 = 0x02;
 
 /// Definition (key 2): source (0 custom, 1 field), u16 options, first
 /// field (`len TO | len 01 field | u16 repetition`), second field (same,

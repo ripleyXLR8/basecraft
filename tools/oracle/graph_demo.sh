@@ -25,6 +25,7 @@ s add-field "$F" Invoices ClientCity --lookup Clients::City --if-no-match lower 
 s add-valuelist "$F" Cities Paris Lyon Nice
 s add-valuelist "$F" ClientNames --from-field Clients::Id --second Clients::Name --second-only --sort-second
 s add-valuelist "$F" Amounts --from-field Invoices::Amount --related-from Clients
+s add-valuelist "$F" IdsByName --from-field Clients::Id --second Clients::Name --sort-second
 s add-field "$F" Clients Town --in-list Cities --max-chars 20 --message "Pick a city"
 s add-field "$F" Clients InvoiceCount --type number --calc "Count ( Invoices::Id )" --unstored
 s add-field "$F" Clients Amounts --calc "List ( Invoices::Amount )" --unstored

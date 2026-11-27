@@ -58,6 +58,8 @@ struct App {
     request: BTreeMap<u32, String>,
     sort_field: Option<u32>,
     dirty: bool,
+    /// Front panel chosen by the user, per tab control id.
+    tabs: BTreeMap<u64, u64>,
 }
 
 impl App {
@@ -529,36 +531,204 @@ impl App {
             );
         }
         let ctx = DrawCtx { table: t, mode };
+        let layout_to = (layout.table_occurrence & 0xFFF) as u32;
+        let by_id: BTreeMap<u64, usize> = layout
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (o.id, i))
+            .collect();
+        let ancestors = |o: &fmp12::layouts::LayoutObject| {
+            let mut v = Vec::new();
+            let mut p = o.parent;
+            while let Some(id) = p {
+                let Some(&i) = by_id.get(&id) else { break };
+                v.push(&layout.objects[i]);
+                p = layout.objects[i].parent;
+            }
+            v
+        };
+        // Front panel of each tab control: the user's choice, else field 6, else the first panel.
+        let front = |tc: &fmp12::layouts::LayoutObject, tabs: &BTreeMap<u64, u64>| {
+            tabs.get(&tc.id).copied().or(tc.active_child).or_else(|| {
+                layout
+                    .objects
+                    .iter()
+                    .find(|x| x.parent == Some(tc.id) && x.kind == 12)
+                    .map(|x| x.id)
+            })
+        };
+        let mut clicked_tab = None;
         for (o, lk) in layout.objects.iter().zip(&looks) {
-            let in_body = o.bounds.top >= btop && o.bounds.top < btop + bh;
+            let anc = ancestors(o);
+            // Hidden behind another tab, or drawn by its portal.
+            let hidden = anc.iter().any(|a| {
+                a.kind == 12
+                    && a.parent
+                        .and_then(|tc| by_id.get(&tc))
+                        .is_some_and(|&i| front(&layout.objects[i], &self.tabs) != Some(a.id))
+            });
+            if hidden || anc.iter().any(|a| a.kind == 9) {
+                continue;
+            }
+            let ab = layout.absolute(o);
+            let in_body = ab.top >= btop && ab.top < btop + bh;
             let instances: Vec<(f64, Option<usize>)> = if in_body {
                 rows.iter()
                     .enumerate()
                     .map(|(i, r)| (i as f64 * bh, *r))
                     .collect()
             } else {
-                vec![(shift(o.bounds.top) - o.bounds.top, record)]
+                vec![(shift(ab.top) - ab.top, record)]
             };
             for (dy, rec) in instances {
                 let r = Rect::from_min_max(
-                    origin + Vec2::new(o.bounds.left as f32, (o.bounds.top + dy) as f32),
-                    origin + Vec2::new(o.bounds.right as f32, (o.bounds.bottom + dy) as f32),
+                    origin + Vec2::new(ab.left as f32, (ab.top + dy) as f32),
+                    origin + Vec2::new(ab.right as f32, (ab.bottom + dy) as f32),
                 );
-                draw_object(
-                    ui,
-                    &painter,
-                    doc,
-                    &ctx,
-                    o,
-                    lk,
-                    r,
-                    rec,
-                    &mut self.request,
-                    &mut self.dirty,
-                );
+                match o.kind {
+                    // Tab control: one clickable tab per panel.
+                    11 => {
+                        lk.paint_box(&painter, r);
+                        let active = front(o, &self.tabs);
+                        let mut x = r.left();
+                        for p in layout.objects.iter().filter(|p| p.parent == Some(o.id)) {
+                            let label = p.text.clone().unwrap_or_default();
+                            let w = (label.chars().count() as f32 * 8.0 + 32.0).max(60.0);
+                            let tab =
+                                Rect::from_min_size(egui::pos2(x, r.top()), Vec2::new(w, 30.0));
+                            let on = active == Some(p.id);
+                            painter.rect_filled(
+                                tab,
+                                0.0,
+                                if on {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::from_gray(232)
+                                },
+                            );
+                            painter.rect_stroke(
+                                tab,
+                                0.0,
+                                Stroke::new(1.0, Color32::from_gray(200)),
+                                StrokeKind::Inside,
+                            );
+                            painter.text(
+                                tab.center(),
+                                egui::Align2::CENTER_CENTER,
+                                &label,
+                                lk.font(),
+                                Color32::from_gray(if on { 20 } else { 110 }),
+                            );
+                            let id = ui.scope_id().with(("tab", o.id, p.id));
+                            if ui.interact(tab, id, egui::Sense::click()).clicked() {
+                                clicked_tab = Some((o.id, p.id));
+                            }
+                            x += w;
+                        }
+                    }
+                    // Portal: one row per related record.
+                    9 => {
+                        lk.paint_box(&painter, r);
+                        let Some((pto, nrows, first)) = o.portal else {
+                            continue;
+                        };
+                        let pto = (pto & 0xFFF) as u32;
+                        let Some(ptable) = doc.db.table_of(pto).map(|x| x.id) else {
+                            continue;
+                        };
+                        let related = match (mode, rec) {
+                            (Mode::Browse, Some(rr)) => doc.db.related(layout_to, rr, pto),
+                            _ => Vec::new(),
+                        };
+                        let nrows = nrows.max(1) as usize;
+                        let row_h = (o.bounds.bottom - o.bounds.top) / nrows as f64;
+                        let children: Vec<usize> = layout
+                            .objects
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| c.parent == Some(o.id))
+                            .map(|(i, _)| i)
+                            .collect();
+                        for row in 0..nrows {
+                            let related_rec =
+                                related.get(first.saturating_sub(1) as usize + row).copied();
+                            let y0 = r.top() + (row as f64 * row_h) as f32;
+                            if row > 0 {
+                                painter.line_segment(
+                                    [egui::pos2(r.left(), y0), egui::pos2(r.right(), y0)],
+                                    Stroke::new(0.5, Color32::from_gray(220)),
+                                );
+                            }
+                            let Some(rr) = related_rec else { continue };
+                            for &ci in &children {
+                                let c = &layout.objects[ci];
+                                let cr = Rect::from_min_size(
+                                    egui::pos2(
+                                        r.left() + c.bounds.left as f32,
+                                        y0 + c.bounds.top as f32,
+                                    ),
+                                    Vec2::new(
+                                        (c.bounds.right - c.bounds.left) as f32,
+                                        (c.bounds.bottom - c.bounds.top) as f32,
+                                    ),
+                                );
+                                draw_object(
+                                    ui,
+                                    &painter,
+                                    doc,
+                                    &ctx,
+                                    c,
+                                    &looks[ci],
+                                    cr,
+                                    Some((ptable, Some(rr))),
+                                    &mut self.request,
+                                    &mut self.dirty,
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        let owner = owner_of(doc, o, t, layout_to, rec);
+                        draw_object(
+                            ui,
+                            &painter,
+                            doc,
+                            &ctx,
+                            o,
+                            lk,
+                            r,
+                            owner,
+                            &mut self.request,
+                            &mut self.dirty,
+                        );
+                    }
+                }
             }
         }
+        if let Some((tc, p)) = clicked_tab {
+            self.tabs.insert(tc, p);
+        }
     }
+}
+
+/// Table and record whose value a field object shows: the layout's own
+/// record, or the first related record for a field of another occurrence.
+fn owner_of(
+    doc: &Doc,
+    o: &fmp12::layouts::LayoutObject,
+    t: u32,
+    layout_to: u32,
+    rec: Option<usize>,
+) -> Option<(u32, Option<usize>)> {
+    let (to, _, _) = o.field?;
+    let to = (to & 0xFFF) as u32;
+    let ft = doc.db.table_of(to)?.id;
+    if to == layout_to || ft == t && doc.db.table_of(layout_to).map(|x| x.id) == Some(ft) {
+        return Some((t, rec));
+    }
+    let first = rec.and_then(|r| doc.db.related(layout_to, r, to).first().copied());
+    Some((ft, first))
 }
 
 struct DrawCtx {
@@ -575,11 +745,10 @@ fn draw_object(
     o: &fmp12::layouts::LayoutObject,
     lk: &Look,
     r: Rect,
-    record: Option<usize>,
+    owner: Option<(u32, Option<usize>)>,
     request: &mut BTreeMap<u32, String>,
     dirty: &mut bool,
 ) {
-    let t = c.table;
     lk.paint_box(painter, r);
     if o.kind != 1 {
         if let Some(txt) = &o.text {
@@ -587,14 +756,9 @@ fn draw_object(
         }
         return;
     }
-    let Some((to, field, _)) = o.field else {
+    let (Some((_, field, _)), Some((t, record))) = (o.field, owner) else {
         return;
     };
-    let ft = doc.db.table_of((to & 0xFFF) as u32).map(|x| x.id);
-    // ponytail: related fields (other base tables) are not shown yet.
-    if ft != Some(t) {
-        return;
-    }
     let field = field as u32;
     let is_calc = doc
         .db
@@ -603,7 +767,7 @@ fn draw_object(
         .is_some_and(|f| f.calc.is_some());
     let inner = lk.content_rect(r);
     match (c.mode, record) {
-        (Mode::Find, _) => {
+        (Mode::Find, _) if t == c.table => {
             painter.rect_stroke(
                 r,
                 0.0,
@@ -613,7 +777,7 @@ fn draw_object(
             let s = request.entry(field).or_default();
             ui.put(inner, lk.edit(s));
         }
-        (Mode::Browse, None) => {}
+        (Mode::Find, _) | (Mode::Browse, None) => {}
         (Mode::Browse, Some(rec)) if is_calc => {
             let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
             lk.paint_text(painter, r, &v);

@@ -121,7 +121,9 @@ ApplicationArchitecture.
 | Theme styles applied when drawing layouts: backgrounds, borders, radius, text colour, size, alignment, padding | ✅ |
 | Fonts (family, weight), icons, button labels, states (hover, focus, pressed) | ⏳ |
 | Form, List (body repeated per record) and Table views | ✅ |
-| Portals, tab controls, popups, value lists | ⏳ |
+| Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |
+| Related fields outside portals (first related record) | ✅ |
+| Pop-up menus, drop-down lists, checkboxes from value lists | ⏳ |
 | Layout mode, Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
 | Web: save (download, or File System Access API) | ⏳ |

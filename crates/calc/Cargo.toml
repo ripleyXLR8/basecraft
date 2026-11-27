@@ -1,0 +1,20 @@
+[package]
+name = "calc"
+version = "0.1.0"
+description = "FileMaker calculation language: lexer, parser and evaluator"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# FileMaker numbers are decimals with up to 400 significant digits; f64 cannot
+# represent them. bigdecimal (and the num-bigint it re-exports) gives exact
+# + - * and the integer arithmetic we build division and rounding on.
+bigdecimal = "0.4.11"
+# JSON functions. arbitrary_precision keeps number literals as text so we can
+# re-format them with FileMaker's decimal rules instead of going through f64.
+serde_json = { version = "1.0.154", features = ["arbitrary_precision"] }
+# CryptDigest / CryptAuthCode: audited hash implementations beat hand-rolled ones.
+md-5 = "0.11.0"
+sha1 = "0.11.0"
+sha2 = "0.11.2"

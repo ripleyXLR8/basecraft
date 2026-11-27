@@ -105,15 +105,18 @@ impl RawParams {
         }
     }
 
-    /// The tree as file entries under `base`.
+    /// The tree as file entries under `base`. Elements above 127 keep the
+    /// spelling they were read with; new ones are spelled `00 xx` (128 +
+    /// xx), as FileMaker spells every parameter node: it does not find a
+    /// parameter spelled `80 xx` (checked in FileMaker 26).
     pub fn entries(&self, base: &[u32]) -> Vec<Entry> {
         let at = |rel: &[u32]| -> Vec<Vec<u8>> {
             let mut p = spelled(base);
             p.extend(rel.iter().map(|v| {
-                self.spelling
-                    .get(v)
-                    .cloned()
-                    .unwrap_or_else(|| path_elem(*v))
+                self.spelling.get(v).cloned().unwrap_or_else(|| match *v {
+                    0..128 => vec![*v as u8],
+                    _ => ((*v - 128) as u16).to_be_bytes().to_vec(),
+                })
             }));
             p
         };
@@ -614,33 +617,31 @@ pub fn block_links(steps: &mut [Step]) {
 
 /// The step list (28-byte records, the last one's trailing zeros trimmed)
 /// and the parameter nodes of `script`, as entries under `[17].[5].[S]`.
+/// FileMaker finds a step's parameters by its position, not by bytes 0–3:
+/// step *i* (0-based) always gets node `[S].[5].[i + 1]` (checked in
+/// FileMaker 26: a new step numbered otherwise shows no parameters).
 /// Steps without a parameter node, or sharing one with an earlier step,
-/// get a new node numbered after `last`; returns the new last number.
-pub fn step_entries(script: &Script, last: u32) -> (Vec<Entry>, u32) {
+/// get a new UUID. Returns the entries and the step count (key 0 of
+/// `[S].[5]`).
+pub fn step_entries(script: &Script) -> (Vec<Entry>, u32) {
     let s = script.id;
     let mut steps = script.steps.clone();
     block_links(&mut steps);
     let mut used = BTreeSet::new();
-    let mut last = last;
     let mut list = Vec::new();
     let mut out = Vec::new();
-    for st in &mut steps {
+    let last = steps.len() as u32;
+    for (i, st) in steps.iter_mut().enumerate() {
         st.sync();
-        let n = match step_number(&st.raw) {
-            Some(n) if used.insert(n) => n,
-            _ => {
-                last += 1;
-                used.insert(last);
-                let slot = id_slot(last);
-                st.raw[..4].fill(0);
-                st.raw[..slot.len()].copy_from_slice(&slot);
-                st.raw_params.kv.remove(&(vec![], 217));
-                st.raw_params
-                    .put(&[], 216, fresh_uuid(((s as u64) << 32) | last as u64));
-                last
-            }
-        };
-        last = last.max(n);
+        let n = i as u32 + 1;
+        if !step_number(&st.raw).is_some_and(|m| used.insert(m)) {
+            st.raw_params.kv.remove(&(vec![], 217));
+            st.raw_params
+                .put(&[], 216, fresh_uuid(((s as u64) << 32) | n as u64));
+        }
+        let slot = id_slot(n);
+        st.raw[..4].fill(0);
+        st.raw[..slot.len()].copy_from_slice(&slot);
         let mut r = st.raw.clone();
         r.resize(STEP_LEN, 0);
         list.extend(r);
@@ -779,20 +780,14 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
                     rename(&mut entries, s);
                 }
                 if o.steps != s.steps {
-                    let mut last = 0;
                     entries.retain(|e| {
                         let Some(p) = ipath(e) else { return true };
-                        if p.as_slice() == [17, 5, s.id, 5]
-                            && let Some((0, v)) = entry_kv(e)
-                        {
-                            last = read_len_int(&v).unwrap_or(0) as u32;
-                        }
                         let list = p.as_slice() == [17, 5, s.id]
                             && entry_kv(e).is_some_and(|(k, _)| k == 4);
                         let sub = p.len() >= 4 && p[..3] == [17, 5, s.id] && matches!(p[3], 4 | 5);
                         !(list || sub)
                     });
-                    add.extend(step_entries(s, last).0);
+                    add.extend(step_entries(s).0);
                 }
             }
             None => {
@@ -808,7 +803,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
                 for (k, v) in &meta {
                     add.push(kv_entry(&sp, *k, v.clone()));
                 }
-                add.extend(step_entries(s, 0).0);
+                add.extend(step_entries(s).0);
                 let cp = [17, 1, 7, s.id];
                 add.push(marker(&cp));
                 add.push(kv_entry(&cp, 16, encode_text(&s.name)));
@@ -825,7 +820,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
     let ids: Vec<u32> = scripts.iter().map(|s| s.id).collect();
     let old_ids: Vec<u32> = old.iter().map(|s| s.id).collect();
     if ids != old_ids {
-        let mut last = 0;
+        let (mut last, mut counter) = (0, 0);
         entries.retain(|e| {
             let p = ipath(e);
             if p.as_deref() == Some(&[17, 1])
@@ -834,7 +829,10 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
                 if k == 0 {
                     last = read_len_int(&v).unwrap_or(0) as u32;
                 }
-                return !matches!(k, 0 | 4);
+                if k == 252 {
+                    counter = read_len_int(&v).unwrap_or(0);
+                }
+                return !matches!(k, 0 | 4 | 252);
             }
             !(p.as_deref() == Some(&[17, 1, 3]) && e.item.first() != Some(&0x80))
         });
@@ -853,6 +851,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
         }
         let max = ids.iter().copied().max().unwrap_or(0).max(last);
         add.push(kv_entry(&[17, 1], 0, len_int(max as u64)));
+        add.push(kv_entry(&[17, 1], 252, len_int(counter + 1)));
         add.push(kv_entry(
             &[17, 1],
             4,

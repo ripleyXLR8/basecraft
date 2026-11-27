@@ -71,7 +71,8 @@ fn template_scripts_reencode_byte_for_byte() {
                 continue;
             }
             let (mut want, last) = stored(&entries, s.id);
-            let (mut got, _) = step_entries(&s, last);
+            let (mut got, count) = step_entries(&s);
+            assert_eq!(count, last, "{} {}", path.display(), s.name);
             write::sort(&mut want);
             write::sort(&mut got);
             if got != want {

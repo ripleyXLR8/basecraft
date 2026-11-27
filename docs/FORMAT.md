@@ -680,6 +680,49 @@ FileMaker's part order and not verified. The break field of a sub-summary
   field 2 is its table occurrence; `[4].[1].[1]` indexes layout names by
   collation key.
 
+### Charts (`fmp12::charts`) ✅ read
+
+Decoded from charts made in FileMaker Pro 26 (Insert › Chart, Chart Setup,
+and layout objects pasted as `Mac-XML2` clipboard snippets, then diffed;
+fixture `crates/fmp12/tests/fixtures/charts.fmp12`, 14 charts).
+
+* A chart is object kind **13** (an external object, like a web viewer):
+  object field 11 = `{1: 0x43485254 'CHRT', 2: 0 (typeIndex), 3: 19
+  (externalFlagSet)}`; options (field 3) `0x30000000`. In the clipboard XML
+  it is `<Object type="ExternalObject"><ExternalObj typeID="CHRT">`.
+* Calculations in `[4].[5].[L].[5].[obj].[K].[5]` (keys 4, 5, 6 as for
+  button labels): K = 128 chart title, 129 X axis title, 130 Y axis title,
+  131 X data, 133 + 2*i data of Y series *i*, 134 + 2*i its name. A bubble
+  chart's size (XML `WSeriesList`) follows the last series: key 137 with
+  two series. 🔸 one-series bubbles not seen.
+* Settings record `[4].[5].[L].[5].[obj].[139].[138]`: key 0 = length
+  (u32 BE), keys 1… = 1000-byte chunks of a record of big-endian u32 words
+  (1,110 bytes for one series, 1,185 for two). `.[139]` holds `00 00`.
+
+| Byte | Meaning |
+|-----:|---------|
+| 0–3 | 2 (version?) |
+| 4–7 | show data points on chart (values on the marks) |
+| 8–11 | type: 0 Column, 1 Bar, 2 Line, 3 Area, 4 Pie, 5 Positive/negative, 6 Stacked column, 7 Stacked bar, 8 Bubble, 9 Scatter (XML `Column`, `Bar`, `Line`, `Area`, `Pie`, …, `Stacked Column`, `Stacked Bar`, `Bubble`, `Scatter`) |
+| 20–23 | colour scheme: 3 Earth (default, XML `Earth`), 0 Bright; FileMaker 26 lists Earth, Jewel Tones, Pastel, Desert Spring, Gray, Brown, Red, Orange, Purple, Blue… (other codes not mapped) |
+| 56–59 | show legend (XML `Legend style="Normal"` / `"None"`) |
+| 120 | data source: 2 current found set, 1 current record (delimited data), 3 related records |
+| 121… | length-prefixed: `02 01 00`, or for related records the table occurrence `04 03 D0 hi lo` |
+
+  After the source the record has variable-length parts (fonts: `00 0D 3F B7
+  …` with size and RGBA colour, the series colours list `00 00 00 02 38 79
+  A3 FF D8 92 41 FF`, gridline colours, axis number formats) that are not
+  decoded.
+* Rendering (`print::chart`, shared by Browse, Preview and PDF), measured
+  on FileMaker's Browse mode: title 19 pt on top, legend (swatch + series
+  name) under it, value labels on both sides of the plot (top and bottom
+  for bar charts), a single series coloured per category (Earth:
+  `909A3F BD9D7D 4E7E99 CAA465 8E8E8E 7A7841 DAC582 4D7D98 646567 60ABB3
+  6F7349 847566`), several series one colour each; positive/negative
+  charts show the first series over a blue (positive) and pink (negative)
+  background; delimited data are return-separated lists of the current
+  record.
+
 ### Writing (`fmp12::save::save_layouts`) 🔍
 
 FileMaker writes minimal protobuf, so decode → encode gives the same

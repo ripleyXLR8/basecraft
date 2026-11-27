@@ -690,3 +690,30 @@ fn records_menu_and_m8_dialogs() {
     assert_eq!(h.state().request.get(&size).map(|s| s.as_str()), Some("M"));
     assert!(!h.state().dialogs_open());
 }
+
+/// The 14 charts of `fmp12/tests/fixtures/charts.fmp12` (a BaseCraft-made
+/// file whose charts were made in FileMaker Pro 26) in Browse and Preview.
+#[test]
+fn charts_render() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fmp12/tests/fixtures/charts.fmp12"
+    ))
+    .unwrap();
+    let mut app = App::default();
+    app.open("charts".into(), bytes);
+    let mut h = harness_for(app);
+    h.run_steps(3);
+    let key = {
+        let doc = h.state().doc.as_ref().unwrap();
+        egui::Id::NULL.with(("charts", &doc.name, doc.file.bytes().len()))
+    };
+    let cached = h
+        .ctx
+        .data(|d| d.get_temp::<std::sync::Arc<print::Charts>>(key));
+    assert_eq!(cached.unwrap().len(), 14);
+    shot(&mut h, "ours_charts_browse");
+    h.state_mut().mode = Some(Mode::Preview);
+    h.run_steps(3);
+    shot(&mut h, "ours_charts_preview");
+}

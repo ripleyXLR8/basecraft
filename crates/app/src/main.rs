@@ -16,6 +16,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use engine::{Database, Order, Request};
 use fmp12::layouts::Layout;
 
+mod chart;
 mod design;
 mod i18n;
 mod look;
@@ -1568,6 +1569,7 @@ impl App {
                             }
                         }
                     }
+                    13 if chart::draw(ui.ctx(), &painter, doc, &layout, o, r, &found, rec) => {}
                     _ => {
                         if let Some(step) = o.button.as_ref().filter(|_| mode == Mode::Browse) {
                             let id = ui.scope_id().with(("button", o.id));

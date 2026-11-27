@@ -244,7 +244,10 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | GUI Preview mode | ⏳ |
 | CLI `export`, `import`, `print-pdf`; MCP `export_records`, `import_records`, `print_pdf` | ✅ |
 | Builds for `wasm32-unknown-unknown` (`engine`, `print`) | ✅ |
-| Charts, security (accounts, privileges), Data Viewer | ⏳ |
+| Charts (`fmp12::charts`, FORMAT.md §10): object kind 13 (`CHRT`), title, axis titles, X data, Y series and names, bubble size, type (column, bar, line, area, pie, positive/negative, stacked column, stacked bar, bubble, scatter), data source (found set, current record delimited values, related records), legend, data points, colour scheme | ✅ 14 charts made in FileMaker 26 decoded (`tests/charts.rs`) |
+| Charts drawn in Browse, Preview (`app::chart`) and PDF (`print::chart`, one layout for both): all 10 types, title, legend, ticks, value labels, Earth and Bright palettes | ✅ compared with FileMaker screenshots |
+| Chart fonts, custom series colours, gridlines, legend position, axis ranges and formats, other colour schemes, "summary groups when sorted" | ⏳ |
+| Security (accounts, privileges) | ⏳ |
 
 ## M4 — GUI (`crates/app`)
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |

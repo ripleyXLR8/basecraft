@@ -337,3 +337,34 @@ fn template_list_layout() {
     // Themed: the body text is not plain black everywhere.
     assert!(has(&bytes, " rg "));
 }
+
+/// The charts of `fmp12/tests/fixtures/charts.fmp12` (made in FileMaker
+/// Pro 26) in a PDF: titles, legends, category labels and filled marks.
+#[test]
+fn charts_in_pdf() {
+    let f = fmp12::File::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fmp12/tests/fixtures/charts.fmp12"
+    ))
+    .unwrap();
+    let db = engine::Database::load(&f).unwrap();
+    let charts = fmp12::charts::charts(&f).unwrap();
+    let layout = db.layouts.iter().find(|l| l.name == "Sales").unwrap();
+    let t = db
+        .table_of((layout.table_occurrence & 0xFFF) as u32)
+        .unwrap();
+    let found: Vec<usize> = (0..t.records.len()).collect();
+    let paper = Paper::letter().landscape();
+    let (bytes, _) = pdf_with_charts(&db, &charts, layout.id, &found, &[], &paper).unwrap();
+    for s in [
+        "(Two series) Tj",
+        "(Cost) Tj",
+        "(Jan) Tj",
+        "(May) Tj",
+        "(North) Tj",
+        "(200) Tj",
+        " h f",
+    ] {
+        assert!(has(&bytes, s), "{s}");
+    }
+}

@@ -98,6 +98,9 @@ pub fn draw(
                 page_rect.min + Vec2::new((b.left + ml) as f32, (b.top + dy) as f32),
                 page_rect.min + Vec2::new((b.right + ml) as f32, (b.bottom + dy) as f32),
             );
+            if crate::chart::draw(ui.ctx(), &painter, doc, layout, o, r, found, band.record) {
+                continue;
+            }
             lk.paint_box(&painter, r);
             let text = if let Some((to, field, _)) = o.field {
                 let to = (to & 0xFFF) as u32;

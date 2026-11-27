@@ -4,6 +4,9 @@
 //! `<name>.xml`, produced locally with `tools/oracle`. Skipped when unset:
 //! those files derive from Claris templates and are not committed.
 
+// Helpers outside #[test] functions may unwrap, expect and panic too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use fmp12::schema::{self, AutoStamp, DataType, FieldKind, Indexing};
 use std::path::PathBuf;
 

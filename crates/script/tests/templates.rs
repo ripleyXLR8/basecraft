@@ -1,6 +1,9 @@
 //! Runs the FileMaker templates' own scripts (skipped when the templates
 //! are not installed, e.g. on CI).
 
+// Helpers outside #[test] functions may unwrap, expect and panic too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use calc::Value;
 use engine::Database;
 use script::{Engine, Host, Window};

@@ -41,10 +41,18 @@ pub fn to_hankaku(s: &str) -> String {
             out.push(h);
         } else if c == 'ヴ' {
             out.push_str("ｳﾞ");
-        } else if let Some(b) = VOICED.chars().find(|&b| offset(b, 1) == Some(c)) {
-            out.extend([half(b).unwrap(), 'ﾞ']);
-        } else if let Some(b) = SEMI.chars().find(|&b| offset(b, 2) == Some(c)) {
-            out.extend([half(b).unwrap(), 'ﾟ']);
+        } else if let Some(h) = VOICED
+            .chars()
+            .find(|&b| offset(b, 1) == Some(c))
+            .and_then(half)
+        {
+            out.extend([h, 'ﾞ']);
+        } else if let Some(h) = SEMI
+            .chars()
+            .find(|&b| offset(b, 2) == Some(c))
+            .and_then(half)
+        {
+            out.extend([h, 'ﾟ']);
         } else {
             out.push(c);
         }
@@ -156,7 +164,7 @@ pub fn num_to_j_text(_: &mut Evaluator, a: &[Value]) -> R {
             return c;
         };
         match ty {
-            1 => char::from_u32('０' as u32 + v as u32).unwrap(),
+            1 => char::from_u32('０' as u32 + v as u32).unwrap_or(c),
             2 => KANJI_DIGITS[v],
             3 => traditional[v],
             _ => c,

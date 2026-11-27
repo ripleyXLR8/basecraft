@@ -131,7 +131,11 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                 }
             }
             let text: String = s[start..i].iter().collect();
-            Tok::Num(num::parse(&format!("0{text}")).unwrap())
+            // None only beyond FileMaker's range (over 800 decimal places).
+            let Some(n) = num::parse(&format!("0{text}")) else {
+                return err(start, code::CANNOT_EVALUATE_NUMBER, "number out of range");
+            };
+            Tok::Num(n)
         } else if c == '$' && next == Some('{') {
             let close = s[i..].iter().position(|&ch| ch == '}');
             let Some(close) = close else {

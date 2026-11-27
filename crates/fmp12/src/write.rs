@@ -211,9 +211,11 @@ pub fn pack(entries: &[Entry]) -> Vec<(Vec<u8>, &Entry)> {
             path_delta(&[], &e.path, &mut d);
             pages.push((Vec::new(), e));
         }
-        let buf = &mut pages.last_mut().unwrap().0;
-        buf.extend_from_slice(&d);
-        buf.extend_from_slice(&e.item);
+        // Always a page here: one was pushed above unless the entry fit.
+        if let Some((buf, _)) = pages.last_mut() {
+            buf.extend_from_slice(&d);
+            buf.extend_from_slice(&e.item);
+        }
         prev = &e.path;
     }
     pages
@@ -325,7 +327,10 @@ pub fn encode_index(seps: &[Sep]) -> Vec<u8> {
     for (i, s) in seps.iter().enumerate() {
         for (d, e) in s.path.iter().enumerate().skip(depth) {
             // The element at depth d is popped by the first entry keeping < d + 1.
-            let j = (i..n).find(|&j| keep[j].is_none_or(|k| k <= d)).unwrap();
+            // keep[n - 1] is None, so the search always stops by then.
+            let j = (i..n)
+                .find(|&j| keep[j].is_none_or(|k| k <= d))
+                .unwrap_or(n - 1);
             let start = out.len();
             push_code(e, &mut out);
             if keep[j] != Some(d) {

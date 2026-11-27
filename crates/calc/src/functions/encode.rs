@@ -92,7 +92,7 @@ pub(crate) fn b64(data: &[u8]) -> String {
 fn wrap(s: &str, width: usize) -> String {
     s.as_bytes()
         .chunks(width)
-        .map(|c| format!("{}\r\n", std::str::from_utf8(c).unwrap()))
+        .map(|c| format!("{}\r\n", String::from_utf8_lossy(c)))
         .collect()
 }
 
@@ -253,12 +253,16 @@ pub fn crypt_auth_code(_: &mut Evaluator, a: &[Value]) -> R {
         return bin(data);
     }
     if key.len() > block {
-        key = digest(&alg, &key).unwrap().0;
+        key = digest(&alg, &key).ok_or_else(|| bad_alg(&alg))?.0;
     }
     key.resize(block, 0);
     let pad = |p: u8| key.iter().map(|k| k ^ p).collect::<Vec<u8>>();
-    let inner = digest(&alg, &[pad(0x36), data].concat()).unwrap().0;
-    bin(digest(&alg, &[pad(0x5C), inner].concat()).unwrap().0)
+    let inner = digest(&alg, &[pad(0x36), data].concat())
+        .ok_or_else(|| bad_alg(&alg))?
+        .0;
+    bin(digest(&alg, &[pad(0x5C), inner].concat())
+        .ok_or_else(|| bad_alg(&alg))?
+        .0)
 }
 
 #[derive(Clone, Copy, PartialEq)]

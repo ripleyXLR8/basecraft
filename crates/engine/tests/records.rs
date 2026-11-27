@@ -2,6 +2,9 @@
 //! FileMaker Pro 26. They are copies of Claris templates, so they stay
 //! local (`crates/fmp12/tests/fixtures/local`); tests skip without them.
 
+// Helpers outside #[test] functions may unwrap, expect and panic too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use calc::Value;
 use calc::value::{day_number, parse_time};
 use engine::{Database, typed_in};

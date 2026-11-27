@@ -109,7 +109,7 @@ pub fn parse_spans(payload: &[u8]) -> Result<Vec<(Chunk<'_>, &[u8])>, Error> {
             0x08 => Chunk::Data(c.take(2)?),
             0x0E if c.peek() == Some(0xFF) => Chunk::Data(c.take(6)?),
             0x09..=0x0D => {
-                let key = path_int(c.take(2)?).unwrap();
+                let key = path_int(c.take(2)?).ok_or(Error::Truncated(at))?;
                 let n = if op == 9 { 1 } else { 2 * (op as usize - 9) };
                 Chunk::Kv {
                     key,
@@ -117,7 +117,7 @@ pub fn parse_spans(payload: &[u8]) -> Result<Vec<(Chunk<'_>, &[u8])>, Error> {
                 }
             }
             0x0E => {
-                let key = path_int(c.take(2)?).unwrap();
+                let key = path_int(c.take(2)?).ok_or(Error::Truncated(at))?;
                 let n = c.byte()? as usize;
                 Chunk::Kv {
                     key,
@@ -125,7 +125,7 @@ pub fn parse_spans(payload: &[u8]) -> Result<Vec<(Chunk<'_>, &[u8])>, Error> {
                 }
             }
             0x0F => {
-                let key = path_int(c.take(2)?).unwrap();
+                let key = path_int(c.take(2)?).ok_or(Error::Truncated(at))?;
                 let n = be(c.take(2)?) as usize;
                 Chunk::Kv {
                     key,

@@ -848,17 +848,10 @@ impl App {
     }
 
     fn layout_bar(&mut self, ui: &mut egui::Ui) {
-        if self.doc.is_none() {
+        let Some(doc) = &self.doc else {
             return;
-        }
-        let names: Vec<String> = self
-            .doc
-            .as_ref()
-            .unwrap()
-            .layouts
-            .iter()
-            .map(|l| l.name.clone())
-            .collect();
+        };
+        let names: Vec<String> = doc.layouts.iter().map(|l| l.name.clone()).collect();
         let mut chosen = None;
         if self.mode() == Mode::Layout {
             let mut then = None;
@@ -1719,19 +1712,24 @@ fn main() -> eframe::Result {
 #[cfg(target_arch = "wasm32")]
 fn main() {
     use wasm_bindgen::JsCast;
-    wasm_bindgen_futures::spawn_local(async {
-        let canvas = web_sys::window()
+    let fail = |msg: &str| web_sys::console::error_1(&msg.into());
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(canvas) = web_sys::window()
             .and_then(|w| w.document())
             .and_then(|d| d.get_element_by_id("basecraft"))
             .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
-            .expect("canvas #basecraft");
-        eframe::WebRunner::new()
+        else {
+            return fail("BaseCraft: no <canvas id=\"basecraft\"> in the page");
+        };
+        if let Err(e) = eframe::WebRunner::new()
             .start(
                 canvas,
                 eframe::WebOptions::default(),
                 creator(App::default()),
             )
             .await
-            .expect("failed to start BaseCraft");
+        {
+            fail(&format!("failed to start BaseCraft: {e:?}"));
+        }
     });
 }

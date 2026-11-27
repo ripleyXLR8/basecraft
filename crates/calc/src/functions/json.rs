@@ -274,8 +274,11 @@ fn g15_c(f: f64) -> String {
         return "0".into();
     }
     let e = format!("{f:.14e}");
-    let (m, exp) = e.split_once('e').unwrap();
-    let exp: i32 = exp.parse().unwrap();
+    // inf and NaN have no exponent: return them as Rust prints them, which
+    // `g15`'s callers already expect.
+    let Some((m, Ok(exp))) = e.split_once('e').map(|(m, x)| (m, x.parse::<i32>())) else {
+        return e;
+    };
     let trim = |s: &str| {
         if s.contains('.') {
             s.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -372,7 +375,8 @@ fn write_compact(j: &J, out: &mut String, colon: &str) {
             }
             out.push('}');
         }
-        s => out.push_str(&scalar(s).unwrap()),
+        // Arrays and objects are matched above, so `scalar` always answers.
+        s => out.push_str(&scalar(s).unwrap_or_default()),
     }
 }
 
@@ -466,7 +470,7 @@ impl Styled {
                     }
                 }
             }
-            s => self.out.push_str(&scalar(s).unwrap()),
+            s => self.out.push_str(&scalar(s).unwrap_or_default()),
         }
     }
 }

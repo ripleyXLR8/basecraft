@@ -225,8 +225,7 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                     // [T].[1].[F]…: index of a changed field.
                     (2.., Some(1)) => !int(2).is_some_and(|f| fields.contains(&f)),
                     // [T].[5].[R]…: a changed record.
-                    (3.., Some(5)) if int(2).is_some_and(|r| changed.contains(&r)) => {
-                        let r = int(2).unwrap();
+                    (3.., Some(5)) if let Some(r) = int(2).filter(|r| changed.contains(r)) => {
                         let meta = e.path.len() == 3
                             && key.is_some_and(|k| !table.fields.contains_key(&k));
                         if meta && new.contains_key(&r) {

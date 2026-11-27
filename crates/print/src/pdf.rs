@@ -86,8 +86,14 @@ impl Pdf {
         self.pages.push((width, height, Vec::new()));
     }
 
+    /// The current page's content stream. Drawing before any `page()` call
+    /// starts a US Letter page.
     fn out(&mut self) -> (&mut Vec<u8>, f64) {
-        let (_, h, s) = self.pages.last_mut().expect("page() first");
+        if self.pages.is_empty() {
+            self.page(612.0, 792.0);
+        }
+        let last = self.pages.len() - 1;
+        let (_, h, s) = &mut self.pages[last];
         (s, *h)
     }
 

@@ -8,3 +8,6 @@ publish = false
 
 [dependencies]
 fmp12 = { path = "../../crates/fmp12" }
+
+[lints]
+workspace = true

@@ -10,3 +10,6 @@ repository.workspace = true
 calc = { version = "0.1.0", path = "../calc" }
 engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
+
+[lints]
+workspace = true

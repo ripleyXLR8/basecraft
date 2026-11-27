@@ -32,4 +32,7 @@ script = { version = "0.1.0", path = "../script" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
-web-sys = { version = "0.3.107", features = ["Window", "Document", "HtmlCanvasElement", "Navigator"] }
+web-sys = { version = "0.3.107", features = ["Window", "Document", "HtmlCanvasElement", "Navigator", "console"] }
+
+[lints]
+workspace = true

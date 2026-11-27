@@ -4,6 +4,9 @@
 //! starter template (Claris content, so never committed) where we typed
 //! records in FileMaker. Tests skip when it is absent.
 
+// Helpers outside #[test] functions may unwrap, expect and panic too.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::PathBuf;
 
 use fmp12::{File, save, schema, write};

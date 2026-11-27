@@ -195,6 +195,9 @@ pub struct Workspace {
     calc: Option<CalcDialog>,
     /// Button labels and the input label of a Show Custom Dialog step.
     labels: Option<[String; 4]>,
+    /// Breakpoints (script id, step index), kept for the session: the
+    /// Script Debugger stops before these steps.
+    pub breakpoints: BTreeSet<(u32, usize)>,
 }
 
 impl Workspace {
@@ -583,11 +586,30 @@ impl Workspace {
                     }
                     let id = egui::Id::NULL.with(("ws_step", sel, i));
                     // The click lands on the button inside; the drag source
-                    // around it only senses drags.
-                    let egui::InnerResponse { inner, response: r } =
-                        ui.dnd_drag_source(id, i, |ui| {
-                            ui.add(egui::Button::selectable(cur == Some(i), text))
-                        });
+                    // around it only senses drags. The gutter on the left
+                    // sets and clears breakpoints, as in FileMaker.
+                    let egui::InnerResponse { inner, response: r } = ui
+                        .horizontal(|ui| {
+                            let on = self.breakpoints.contains(&(sel, i));
+                            let dot = RichText::new(if on { "\u{25CF}" } else { "\u{25CB}" })
+                                .color(if on {
+                                    Color32::from_rgb(200, 30, 30)
+                                } else {
+                                    Color32::from_gray(200)
+                                });
+                            if ui
+                                .add(egui::Button::new(dot).frame(false))
+                                .on_hover_text(tr("Breakpoint"))
+                                .clicked()
+                                && !self.breakpoints.remove(&(sel, i))
+                            {
+                                self.breakpoints.insert((sel, i));
+                            }
+                            ui.dnd_drag_source(id, i, |ui| {
+                                ui.add(egui::Button::selectable(cur == Some(i), text))
+                            })
+                        })
+                        .inner;
                     if inner.clicked() {
                         clicked = Some(i);
                     }

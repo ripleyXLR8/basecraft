@@ -369,7 +369,7 @@ impl Step {
     }
 
     /// Object id of the first slot (`01` + path integer): layout, script.
-    pub(crate) fn inline_id(&self) -> Option<u32> {
+    pub fn inline_id(&self) -> Option<u32> {
         id_ref(&self.slot(0))
     }
 
@@ -517,7 +517,7 @@ fn id_ref(b: &[u8]) -> Option<u32> {
 /// Stored find requests: `[6].[6]` key 0 = count; `[6].[6].[r]` = request
 /// r, key 0 (empty) when it omits; byte-string keys
 /// `00 | TO ref | 01 field` → criterion text.
-fn find_requests(p: &RawParams) -> Vec<FindRequest> {
+pub fn find_requests(p: &RawParams) -> Vec<FindRequest> {
     let mut out: BTreeMap<u32, FindRequest> = BTreeMap::new();
     for (path, key) in p.kv.keys() {
         if let [6, 6, r] = path.as_slice() {

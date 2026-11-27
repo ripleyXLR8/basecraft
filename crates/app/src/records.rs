@@ -466,6 +466,7 @@ impl App {
             self.open_replace_contents();
             ui.close();
         }
+        self.records_menu_more(ui);
     }
 
     /// File menu entries: Import Records › File…, Export Records….
@@ -538,7 +539,7 @@ impl App {
         });
     }
 
-    fn open_export(&mut self) {
+    pub(crate) fn open_export(&mut self) {
         if !self.commit() {
             return;
         }
@@ -560,7 +561,7 @@ impl App {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn pick_import_file(&mut self, _ctx: &egui::Context) {
+    pub(crate) fn pick_import_file(&mut self, _ctx: &egui::Context) {
         let Some(p) = rfd::FileDialog::new()
             .add_filter(
                 "BaseCraft",
@@ -582,7 +583,7 @@ impl App {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn pick_import_file(&mut self, ctx: &egui::Context) {
+    pub(crate) fn pick_import_file(&mut self, ctx: &egui::Context) {
         let slot = self.m8.picked.clone();
         let ctx = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -1645,7 +1646,7 @@ impl Export {
 
 /// Saves `bytes`: a save dialog on desktop, a download in the browser.
 #[cfg(not(target_arch = "wasm32"))]
-fn save_bytes(
+pub(crate) fn save_bytes(
     _ctx: &egui::Context,
     name: String,
     ext: &str,
@@ -1665,7 +1666,7 @@ fn save_bytes(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn save_bytes(
+pub(crate) fn save_bytes(
     _ctx: &egui::Context,
     name: String,
     _ext: &str,

@@ -21,7 +21,10 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+mod steps;
 pub mod text;
+
+pub use steps::{UNSUPPORTED, stored_path};
 
 use calc::Value;
 use engine::replace::{
@@ -40,7 +43,8 @@ pub mod error {
     pub const FIELD_MISSING: u32 = 102;
     pub const SCRIPT_MISSING: u32 = 104;
     pub const LAYOUT_MISSING: u32 = 105;
-    pub const OBJECT_MISSING: u32 = 112;
+    /// Go to Object, Set Web Viewer: no object of that name (FileMaker 26).
+    pub const OBJECT_MISSING: u32 = 116;
     pub const NO_CRITERIA: u32 = 400;
     pub const NO_MATCH: u32 = 401;
 }
@@ -54,7 +58,7 @@ pub enum Mode {
 }
 
 /// What a window shows. The host owns it; scripts change it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Window {
     /// Current layout id (`[4].[5].[L]`).
     pub layout: u32,
@@ -68,6 +72,72 @@ pub struct Window {
     /// Find requests (Find mode) and the current one.
     pub requests: Vec<Request>,
     pub current_request: usize,
+    /// Window name (`Get ( WindowName )`), set by New Window and Set
+    /// Window Title; empty for the host's main window (the host shows
+    /// the file name).
+    pub name: String,
+    /// View As: form, list or table (`Get ( LayoutViewState )` 0, 1, 2).
+    pub view: View,
+    /// Zoom percentage (Set Zoom Level), 100 by default.
+    pub zoom: u32,
+    /// Show/Hide Toolbars (`Get ( StatusAreaState )`), menu bar, text ruler.
+    pub toolbar: bool,
+    pub menubar: bool,
+    pub ruler: bool,
+    /// Move/Resize Window: top, left, width, height in points.
+    pub top: f64,
+    pub left: f64,
+    pub width: f64,
+    pub height: f64,
+    /// Adjust Window: hidden or minimized.
+    pub hidden: bool,
+    /// Field with the focus (Go to Field, Go to Next/Previous Field) and
+    /// its selection (Set Selection: start, size; 0-based characters).
+    pub field: Option<FieldRef>,
+    pub selection: (usize, usize),
+    /// Current portal row, 1-based (0: no portal row is active).
+    pub portal_row: usize,
+    /// Requests of the last find (Modify Last Find, Constrain/Extend).
+    pub last_find: Vec<Request>,
+}
+
+/// View As.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    #[default]
+    Form,
+    List,
+    Table,
+}
+
+impl Default for Window {
+    /// 100 %, toolbar and menu bar shown, 800 × 600.
+    fn default() -> Window {
+        Window {
+            layout: 0,
+            mode: Mode::Browse,
+            found: Vec::new(),
+            current: 0,
+            sorted: false,
+            requests: Vec::new(),
+            current_request: 0,
+            name: String::new(),
+            view: View::Form,
+            zoom: 100,
+            toolbar: true,
+            menubar: true,
+            ruler: false,
+            top: 0.0,
+            left: 0.0,
+            width: 800.0,
+            height: 600.0,
+            hidden: false,
+            field: None,
+            selection: (0, 0),
+            portal_row: 0,
+            last_find: Vec::new(),
+        }
+    }
 }
 
 impl Window {
@@ -149,6 +219,87 @@ pub trait Host {
         let _ = step;
         error::UNAVAILABLE
     }
+    /// Cut, Copy, Copy Record, Copy All Records: text for the clipboard.
+    fn set_clipboard(&mut self, text: String) {
+        let _ = text;
+    }
+    /// What a headless host answers to a [`UiRequest`] when the run is
+    /// finished with [`Run::finish`]: nothing is shown, the step goes on
+    /// (pickers are cancelled).
+    fn ui(&mut self, r: &UiRequest) -> Answer {
+        match r {
+            UiRequest::Index { .. } | UiRequest::FolderPath { .. } => Answer::Cancel,
+            _ => Answer::Continue,
+        }
+    }
+}
+
+/// Something only the application can do (a dialog, a file, the OS):
+/// the run waits ([`Suspend::Ui`]) and goes on with [`Answer::Continue`]
+/// (done), [`Answer::Cancel`] (error 1) or [`Answer::Text`] (a value).
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiRequest {
+    /// Open URL (and Send Mail as a `mailto:` URL): the host asks before
+    /// handing it to the OS. `dialog` = "With dialog: On".
+    OpenUrl {
+        url: String,
+        dialog: bool,
+    },
+    /// Sort Records with dialog (the stored order is already applied).
+    Sort,
+    /// Insert from Index: the values of the field's index; answer with
+    /// the chosen one ([`Answer::Text`]).
+    Index {
+        values: Vec<String>,
+    },
+    /// Get Folder Path: answer with the folder ([`Answer::Text`]).
+    FolderPath {
+        title: String,
+        default: String,
+    },
+    /// Print, Print Setup; Save Records as PDF / Excel; Export Field
+    /// Contents (`text`); Save a Copy as; Import / Export Records. `path`
+    /// is the stored output file, if any.
+    Print {
+        dialog: bool,
+    },
+    PrintSetup,
+    SavePdf {
+        path: Option<String>,
+        dialog: bool,
+    },
+    SaveExcel {
+        path: Option<String>,
+        dialog: bool,
+    },
+    ExportField {
+        path: Option<String>,
+        text: String,
+    },
+    SaveCopy {
+        path: Option<String>,
+    },
+    Import {
+        dialog: bool,
+    },
+    Export {
+        dialog: bool,
+    },
+    /// New File, Open File, Close File (also Close Window on the last window).
+    NewFile,
+    OpenFile,
+    CloseFile,
+    /// Adjust Window.
+    Adjust(Adjust),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adjust {
+    ResizeToFit,
+    Maximize,
+    Minimize,
+    Restore,
+    Hide,
 }
 
 /// Why a run stopped before its end.
@@ -160,6 +311,27 @@ pub enum Suspend {
     /// [`Answer::Continue`] or [`Answer::Cancel`]. The duration (seconds)
     /// when the pause ends by itself.
     Pause(Option<f64>),
+    /// The debugger stopped before a step (a breakpoint, or stepping):
+    /// [`Run::current`] is the step; answer with [`Answer::Continue`]
+    /// after choosing how to go on ([`Run::set_stepping`]), or
+    /// [`Answer::Cancel`] to halt.
+    Breakpoint,
+    /// The application has to do something: see [`UiRequest`].
+    Ui(UiRequest),
+}
+
+/// How the debugger goes on from a [`Suspend::Breakpoint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Stepping {
+    /// Run to the next breakpoint.
+    #[default]
+    Run,
+    /// Step: the next step of this script or its callers.
+    Over,
+    /// Step Into: the next step, also inside a performed script.
+    Into,
+    /// Step Out: the next step of a calling script.
+    Out,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +348,8 @@ pub enum Answer {
     Dialog(DialogAnswer),
     Continue,
     Cancel,
+    /// A value for a [`UiRequest`] (index value, folder path).
+    Text(String),
 }
 
 /// What a suspended step does with the answer.
@@ -192,10 +366,28 @@ enum Pending {
         records: Vec<usize>,
     },
     Pause,
+    /// Stopped by the debugger before the current step.
+    Break,
+    /// A [`UiRequest`]: what to do with the answer.
+    Ui(UiPending),
+}
+
+#[derive(Debug, Clone)]
+enum UiPending {
+    /// Nothing: Cancel is error 1.
+    Done,
+    /// Store the text in a variable (Get Folder Path).
+    Variable(String),
+    /// Insert the text into a field (Insert from Index).
+    Insert(FieldRef, bool),
+    /// The last window closed: the script stops.
+    Halt,
 }
 
 /// One script call on the run's stack.
 struct Call {
+    /// Script id (0 for a button's step).
+    script: u32,
     steps: Vec<Step>,
     links: Links,
     pc: usize,
@@ -210,9 +402,37 @@ pub struct Run {
     halted: bool,
     /// Error before anything ran (script missing).
     early: Option<u32>,
+    /// Debugger: breakpoints (script id, step index); how it goes on and
+    /// the stack depth when it last stopped; `resumed` lets the step it
+    /// stopped on run.
+    pub breakpoints: std::collections::BTreeSet<(u32, usize)>,
+    stepping: Option<(Stepping, usize)>,
+    resumed: bool,
+}
+
+/// One level of a run's call stack ([`Run::stack`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Level {
+    pub script: u32,
+    pub name: String,
+    /// Index of the step about to run (or running).
+    pub step: usize,
 }
 
 impl Run {
+    fn new(stack: Vec<Call>) -> Run {
+        Run {
+            stack,
+            pending: None,
+            result: Value::empty(),
+            halted: false,
+            early: None,
+            breakpoints: Default::default(),
+            stepping: None,
+            resumed: false,
+        }
+    }
+
     /// Runs until the end or the next suspension. `answer` replies to the
     /// previous [`Status::Suspended`] ([`Answer::Start`] the first time).
     pub fn resume(&mut self, e: &mut Engine, host: &mut dyn Host, answer: Answer) -> Status {
@@ -233,7 +453,10 @@ impl Run {
             match self.resume(e, host, answer) {
                 Status::Finished(o) => return o,
                 Status::Suspended(Suspend::Dialog(d)) => answer = Answer::Dialog(host.dialog(&d)),
-                Status::Suspended(Suspend::Pause(_)) => answer = Answer::Continue,
+                Status::Suspended(Suspend::Pause(_) | Suspend::Breakpoint) => {
+                    answer = Answer::Continue
+                }
+                Status::Suspended(Suspend::Ui(r)) => answer = host.ui(&r),
             }
         }
     }
@@ -241,6 +464,72 @@ impl Run {
     /// Whether the run is waiting for an answer.
     pub fn is_suspended(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// Debugger on: the run stops before its next step (the first one of
+    /// a new run), then as [`Run::set_stepping`] says. Off: it ignores
+    /// breakpoints and runs to the end.
+    pub fn set_debug(&mut self, on: bool) {
+        self.stepping = on.then_some((Stepping::Into, 0));
+    }
+
+    /// Whether the debugger is on for this run.
+    pub fn debugging(&self) -> bool {
+        self.stepping.is_some()
+    }
+
+    /// How to go on after a [`Suspend::Breakpoint`] (debugger on).
+    pub fn set_stepping(&mut self, s: Stepping) {
+        self.stepping = Some((s, self.stack.len()));
+    }
+
+    /// The call stack, outermost first.
+    pub fn stack(&self) -> Vec<Level> {
+        self.stack
+            .iter()
+            .map(|c| Level {
+                script: c.script,
+                name: c.frame.name.clone(),
+                step: c.pc,
+            })
+            .collect()
+    }
+
+    /// (script id, step index) about to run.
+    pub fn current(&self) -> Option<(u32, usize)> {
+        self.stack.last().map(|c| (c.script, c.pc))
+    }
+
+    /// `$local` variables of the innermost call: (name, repetition, value).
+    pub fn locals(&self) -> Vec<(String, usize, Value)> {
+        let mut v: Vec<_> = self
+            .stack
+            .last()
+            .map(|c| {
+                c.frame
+                    .locals
+                    .iter()
+                    .map(|((n, r), x)| (n.clone(), *r, x.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        v
+    }
+
+    /// Whether the debugger stops before the step at the top of the stack.
+    fn should_break(&self) -> bool {
+        let (Some(c), Some((mode, d))) = (self.stack.last(), self.stepping) else {
+            return false;
+        };
+        let depth = self.stack.len();
+        self.breakpoints.contains(&(c.script, c.pc))
+            || match mode {
+                Stepping::Into => true,
+                Stepping::Over => depth <= d,
+                Stepping::Out => depth < d,
+                Stepping::Run => false,
+            }
     }
 }
 
@@ -283,6 +572,31 @@ pub struct Engine {
     pub trigger: TriggerInfo,
     /// `Get ( LastErrorLocation )`: script, step and line of the last error.
     last_error_location: String,
+    /// Windows behind the host's current one (New Window, Select Window),
+    /// the most recently active last.
+    pub windows: Vec<Window>,
+    /// Install OnTimer Script: script, parameter calculation (evaluated
+    /// when the timer fires) and interval in seconds. The host runs it.
+    pub timer: Option<Timer>,
+    /// Set Layout Object Animation (`Get ( ScriptAnimationState )`).
+    animation: bool,
+    /// Set Error Logging: on, and the custom debug information.
+    pub error_logging: Option<Option<Calc>>,
+    /// Record committed or left last (Insert from Last Visited).
+    last_visited: Option<(u32, usize)>,
+    /// Values undone by Undo/Redo (table, record, values).
+    redo: Option<(u32, usize, engine::Record)>,
+    /// Text of the last Cut, Copy, Copy Record (also given to
+    /// [`Host::set_clipboard`]); Paste uses it when the host has none.
+    pub clipboard: Option<String>,
+}
+
+/// Install OnTimer Script.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Timer {
+    pub script: u32,
+    pub parameter: Option<Calc>,
+    pub interval: f64,
 }
 
 /// One script call.
@@ -426,7 +740,19 @@ impl Engine {
             open: None,
             trigger: TriggerInfo::default(),
             last_error_location: String::new(),
+            windows: Vec::new(),
+            timer: None,
+            animation: true,
+            error_logging: None,
+            last_visited: None,
+            redo: None,
+            clipboard: None,
         }
+    }
+
+    /// `Get ( LastError )` after the last step.
+    pub fn last_error(&self) -> u32 {
+        self.last_error
     }
 
     /// The scripts of a file.
@@ -438,13 +764,7 @@ impl Engine {
     pub fn start(&mut self, host: &mut dyn Host, id: u32, parameter: Option<Value>) -> Run {
         self.error_capture = false;
         self.allow_abort = true;
-        let mut run = Run {
-            stack: Vec::new(),
-            pending: None,
-            result: Value::empty(),
-            halted: false,
-            early: None,
-        };
+        let mut run = Run::new(Vec::new());
         match self.scripts.iter().position(|s| s.id == id) {
             Some(i) => self.push(host, &mut run, i, parameter.unwrap_or_else(Value::empty)),
             None => run.early = Some(error::SCRIPT_MISSING),
@@ -457,24 +777,19 @@ impl Engine {
     pub fn start_step(&mut self, host: &mut dyn Host, step: &Step) -> Run {
         self.error_capture = false;
         let steps = vec![step.clone()];
-        Run {
-            stack: vec![Call {
-                links: links(&steps),
-                steps,
-                pc: 0,
-                frame: Frame {
-                    name: String::new(),
-                    locals: HashMap::new(),
-                    parameter: Value::empty(),
-                    result: Value::empty(),
-                    original_layout: host.window().layout,
-                },
-            }],
-            pending: None,
-            result: Value::empty(),
-            halted: false,
-            early: None,
-        }
+        Run::new(vec![Call {
+            script: 0,
+            links: links(&steps),
+            steps,
+            pc: 0,
+            frame: Frame {
+                name: String::new(),
+                locals: HashMap::new(),
+                parameter: Value::empty(),
+                result: Value::empty(),
+                original_layout: host.window().layout,
+            },
+        }])
     }
 
     /// Runs script `id` to the end (Perform Script): dialogs are answered
@@ -526,6 +841,7 @@ impl Engine {
         let script = &self.scripts[i];
         let steps = script.steps.clone();
         run.stack.push(Call {
+            script: script.id,
             links: links(&steps),
             steps,
             pc: 0,
@@ -557,6 +873,13 @@ impl Engine {
                 top.pc += 1;
                 continue;
             }
+            if !std::mem::take(&mut run.resumed) && run.should_break() {
+                run.pending = Some(Pending::Break);
+                return Status::Suspended(Suspend::Breakpoint);
+            }
+            let Some(top) = run.stack.last_mut() else {
+                continue;
+            };
             let pc = top.pc;
             match self.exec(host, &top.steps, &top.links, pc, &mut top.frame) {
                 Ok(Flow::Call(i, p)) => self.push(host, run, i, p),
@@ -633,6 +956,29 @@ impl Engine {
                 Self::halt(run);
             }
             (Pending::Pause, _) => self.complete(run, host, Flow::Next, 0),
+            (Pending::Break, Answer::Cancel) => Self::halt(run),
+            (Pending::Break, _) => run.resumed = true,
+            (Pending::Ui(_), Answer::Cancel) => {
+                self.complete(run, host, Flow::Next, error::USER_CANCELED)
+            }
+            (Pending::Ui(UiPending::Halt), _) => Self::halt(run),
+            (Pending::Ui(UiPending::Variable(name)), Answer::Text(t)) => {
+                let key = (name.to_lowercase(), 1);
+                if name.starts_with("$$") {
+                    self.globals.insert(key, Value::text(t));
+                } else if let Some(top) = run.stack.last_mut() {
+                    top.frame.locals.insert(key, Value::text(t));
+                }
+                self.complete(run, host, Flow::Next, 0);
+            }
+            (Pending::Ui(UiPending::Insert(f, select)), Answer::Text(t)) => {
+                let err = self.insert(host, f, &t, select).err().unwrap_or(0);
+                self.complete(run, host, Flow::Next, err);
+            }
+            (Pending::Ui(UiPending::Variable(_) | UiPending::Insert(..)), _) => {
+                self.complete(run, host, Flow::Next, error::USER_CANCELED)
+            }
+            (Pending::Ui(UiPending::Done), _) => self.complete(run, host, Flow::Next, 0),
             (Pending::Dialog { inputs, commits }, a) => {
                 let a = match a {
                     Answer::Dialog(d) => d,
@@ -691,7 +1037,46 @@ impl Engine {
         flags.insert("lasterror", num(self.last_error as usize));
         flags.insert("lasterrorlocation", Value::text(&self.last_error_location));
         flags.insert("lasterrordetail", Value::text(""));
-        flags.insert("scriptanimationstate", num(0));
+        flags.insert("scriptanimationstate", num(self.animation as usize));
+        flags.insert("windowname", Value::text(&w.name));
+        flags.insert("windowtop", num(w.top.max(0.0) as usize));
+        flags.insert("windowleft", num(w.left.max(0.0) as usize));
+        flags.insert("windowwidth", num(w.width.max(0.0) as usize));
+        flags.insert("windowheight", num(w.height.max(0.0) as usize));
+        flags.insert("windowvisible", num(!w.hidden as usize));
+        flags.insert("windowzoomlevel", num(w.zoom as usize));
+        flags.insert(
+            "layoutviewstate",
+            num(match w.view {
+                View::Form => 0,
+                View::List => 1,
+                View::Table => 2,
+            }),
+        );
+        flags.insert("statusareastate", num(w.toolbar as usize));
+        flags.insert("activeportalrownumber", num(w.portal_row));
+        flags.insert("activeselectionstart", num(w.selection.0 + 1));
+        flags.insert("activeselectionsize", num(w.selection.1));
+        if let Some(f) = w.field {
+            let fname = db
+                .table_of(f.to)
+                .and_then(|t| t.field(f.field))
+                .map(|x| x.name.clone())
+                .unwrap_or_default();
+            flags.insert("activefieldname", Value::text(fname));
+            let tname = db
+                .occurrences
+                .iter()
+                .find(|o| o.id == f.to)
+                .map(|o| o.name.clone())
+                .unwrap_or_default();
+            flags.insert("activefieldtablename", Value::text(tname));
+            if let (Some(t), Some(r)) = (db.table_of(f.to), record)
+                && t.id == table
+            {
+                flags.insert("activefieldcontents", db.value(table, r, f.field));
+            }
+        }
         flags.insert("triggerkeystroke", Value::text(&self.trigger.keystroke));
         flags.insert(
             "triggermodifierkeys",
@@ -773,6 +1158,9 @@ impl Engine {
     /// validated "always" are still checked).
     fn commit_with(&mut self, host: &mut dyn Host, skip: bool) -> Result<(), u32> {
         let Some((table, r, _)) = self.open else {
+            if let (t, _, Some(r)) = Self::context(host) {
+                self.last_visited = Some((t, r));
+            }
             return Ok(());
         };
         let db = host.db();
@@ -789,6 +1177,8 @@ impl Engine {
             return Err(e.rule.code());
         }
         self.open = None;
+        self.redo = None;
+        self.last_visited = Some((table, r));
         Ok(())
     }
 
@@ -835,6 +1225,14 @@ impl Engine {
                 let p = self
                     .eval_opt(host, frame, parameter)?
                     .unwrap_or_else(Value::empty);
+                // By name: the name's calculation at [130] (FORMAT.md §8).
+                let script = match (script, s.raw_params.calc(2)) {
+                    (None, Some(c)) => {
+                        let name = self.eval(host, frame, &c)?.to_text();
+                        self.script_named(&name)
+                    }
+                    (s, _) => *s,
+                };
                 let i = script
                     .and_then(|id| self.scripts.iter().position(|s| s.id == id))
                     .ok_or(error::SCRIPT_MISSING)?;
@@ -917,10 +1315,15 @@ impl Engine {
                     id::INSERT_CURRENT_DATE => now(host, "CurrentDate"),
                     id::INSERT_CURRENT_TIME => now(host, "CurrentTime"),
                     id::INSERT_CURRENT_USER_NAME => now(host, "UserName"),
-                    _ => Value::text(host.clipboard().ok_or(error::UNAVAILABLE)?),
+                    _ => Value::text(
+                        host.clipboard()
+                            .or_else(|| self.clipboard.clone())
+                            .ok_or(error::UNAVAILABLE)?,
+                    ),
                 };
                 let select = s.options & fmp12::scripts::opt::SELECT != 0;
-                match (s.raw_params.text(32), s.inline_field()) {
+                let active = host.window().field;
+                match (s.raw_params.text(32), s.inline_field().or(active)) {
                     (Some(name), _) => {
                         let key = (name.to_lowercase(), 1);
                         if name.starts_with("$$") {
@@ -1194,6 +1597,14 @@ impl Engine {
                 if !host.go_to_field(*field, *select) {
                     return Err(error::FIELD_MISSING);
                 }
+                host.window().field = *field;
+                let len = match field {
+                    Some(f) if *select => {
+                        self.field_value(host, *f).map_or(0, |v| v.chars().count())
+                    }
+                    _ => 0,
+                };
+                host.window().selection = (0, len);
             }
             (StepParams::GoToObject { name, repetition }, _) => {
                 let n = self
@@ -1201,9 +1612,28 @@ impl Engine {
                     .map(|v| v.to_text())
                     .unwrap_or_default();
                 let r = self.repetition(host, frame, repetition)?;
-                // ponytail: error code for a missing object not verified against FileMaker.
+                // No object of that name on the layout: 116 (FileMaker 26).
+                let layout = host.window().layout;
+                let named = host
+                    .db()
+                    .layouts
+                    .iter()
+                    .find(|l| l.id == layout)
+                    .and_then(|l| l.objects.iter().find(|o| o.name == n))
+                    .map(|o| o.field);
+                let Some(field) = named else {
+                    return Err(error::OBJECT_MISSING);
+                };
                 if !host.go_to_object(&n, r as u32) {
                     return Err(error::OBJECT_MISSING);
+                }
+                // A field object becomes the active field.
+                if let Some((t, f, _)) = field {
+                    host.window().field = Some(FieldRef {
+                        to: (t & 0xFFF) as u32,
+                        field: f as u32,
+                        repetition: r as u16,
+                    });
                 }
             }
             (
@@ -1414,6 +1844,7 @@ impl Engine {
                 let w = host.window();
                 w.mode = Mode::Browse;
                 w.requests.clear();
+                w.last_find = reqs;
                 w.found = found;
                 w.current = 0;
                 w.sorted = false;
@@ -1466,15 +1897,24 @@ impl Engine {
                 w.found.drain(w.current.min(end)..end);
                 w.current = w.current.min(w.found.len().saturating_sub(1));
             }
-            (StepParams::Sort { keys, .. }, id::SORT) if !keys.is_empty() => {
+            (StepParams::Sort { keys, dialog, .. }, id::SORT) => {
                 self.commit(host)?;
-                let (table, _, _) = Self::context(host);
-                let mut found = host.window().found.clone();
-                sort(host.db(), table, &mut found, keys);
-                let w = host.window();
-                w.found = found;
-                w.current = 0;
-                w.sorted = true;
+                if !keys.is_empty() {
+                    let (table, _, _) = Self::context(host);
+                    let mut found = host.window().found.clone();
+                    sort(host.db(), table, &mut found, keys);
+                    let w = host.window();
+                    w.found = found;
+                    w.current = 0;
+                    w.sorted = true;
+                }
+                // With dialog: the Sort Records dialog, on the stored order.
+                if *dialog {
+                    return Ok(Flow::Suspend(
+                        Suspend::Ui(UiRequest::Sort),
+                        Pending::Ui(UiPending::Done),
+                    ));
+                }
             }
             (_, id::UNSORT) => {
                 self.commit(host)?;
@@ -1485,7 +1925,12 @@ impl Engine {
             (_, id::FREEZE_WINDOW) => host.freeze(),
             (_, id::REFRESH_WINDOW) => host.refresh(),
             (_, id::BEEP) => host.beep(),
-            _ => return Err(host.other(s)),
+            _ => {
+                return match self.exec_more(host, frame, s) {
+                    Some(r) => r,
+                    None => Err(host.other(s)),
+                };
+            }
         }
         Ok(Flow::Next)
     }
@@ -1712,7 +2157,7 @@ fn delete_records(host: &mut dyn Host, table: u32, records: &[usize]) {
 
 /// Sorts a found set by stored sort keys of `table` (other tables' fields
 /// are ignored). Custom orders follow the value list, other values after.
-fn sort(db: &Database, table: u32, found: &mut [usize], keys: &[(FieldRef, SortOrder)]) {
+pub fn sort(db: &Database, table: u32, found: &mut [usize], keys: &[(FieldRef, SortOrder)]) {
     let keys: Vec<(u32, SortOrder, Vec<String>)> = keys
         .iter()
         .filter(|(f, _)| db.table_of(f.to).is_some_and(|t| t.id == table))

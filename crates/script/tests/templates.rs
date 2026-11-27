@@ -128,11 +128,12 @@ fn tasks_create_assignee_entry() {
     let l = h.db.layouts.iter().find(|l| l.id == h.win.layout).unwrap();
     assert_eq!(l.name, "Add Assignee");
     assert_eq!(h.db.table(132).unwrap().records.len(), before + 1);
-    // Then Cancel Add Assignee: Delete Record (no dialog) and Close Window
-    // (not run by the engine: error 3).
+    // Then Cancel Add Assignee: Delete Record (no dialog) and Close Window,
+    // which closes the file's only window: the host closes the file and
+    // the script stops.
     let o = e.perform_named(&mut h, "Cancel Add Assignee", None);
     assert_eq!(h.db.table(132).unwrap().records.len(), before);
-    assert_eq!(o.last_error, 3);
+    assert_eq!((o.last_error, o.halted), (0, true));
 }
 
 #[test]
@@ -154,8 +155,21 @@ fn tasks_go_to_entry_field_passes_its_parameter() {
         return;
     };
     let mut h = Obj(host(db, 130), Vec::new());
-    // Go to Object [Get ( ScriptParameter )]; Select All (not run: error 3).
-    e.perform_named(&mut h, "Go to Entry Field", Some(Value::text("Due Date")));
+    // On the layout that has the object (Go to Object: 116 elsewhere).
+    let l =
+        h.0.db
+            .layouts
+            .iter()
+            .find(|l| l.objects.iter().any(|o| o.name == "Due Date"))
+            .unwrap()
+            .id;
+    h.0.win.layout = l;
+    // Go to Object [Get ( ScriptParameter )]; Select All.
+    let o = e.perform_named(&mut h, "Go to Entry Field", Some(Value::text("Due Date")));
+    assert_eq!(h.1, ["Due Date"]);
+    assert_eq!(o.last_error, 0);
+    // An object the layout does not have: error 116, the host is not asked.
+    e.perform_named(&mut h, "Go to Entry Field", Some(Value::text("Nope")));
     assert_eq!(h.1, ["Due Date"]);
 }
 

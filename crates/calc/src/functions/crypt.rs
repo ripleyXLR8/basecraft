@@ -86,6 +86,7 @@ fn decrypt(data: &[u8], key: &str) -> R {
             Ok(Value::Container(Container {
                 name: String::from_utf8_lossy(name).into_owned(),
                 data: data.to_vec(),
+                ..Default::default()
             }))
         }
         _ => Err(wrong()),
@@ -96,6 +97,7 @@ pub fn crypt_encrypt(_: &mut Evaluator, a: &[Value]) -> R {
     Ok(Value::Container(Container {
         name: "encrypted.data".into(),
         data: encrypt(&a[0], &txt(a, 1))?,
+        ..Default::default()
     }))
 }
 
@@ -241,6 +243,7 @@ pub fn crypt_generate_signature(_: &mut Evaluator, a: &[Value]) -> R {
     Ok(Value::Container(Container {
         name: String::new(),
         data: sig,
+        ..Default::default()
     }))
 }
 
@@ -265,6 +268,7 @@ mod tests {
         let file = Value::Container(Container {
             name: "a.bin".into(),
             data: vec![0, 1, 2],
+            ..Default::default()
         });
         assert_eq!(decrypt(&encrypt(&file, "k").unwrap(), "k").unwrap(), file);
     }

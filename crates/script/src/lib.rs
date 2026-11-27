@@ -33,6 +33,11 @@ use fmp12::scripts::{
 };
 
 /// FileMaker error codes the engine reports.
+/// Container steps (FileMaker step ids).
+const INSERT_PICTURE: u16 = 56;
+const INSERT_FILE: u16 = 131;
+const EXPORT_FIELD_CONTENTS: u16 = 132;
+
 pub mod error {
     pub const USER_CANCELED: u32 = 1;
     pub const UNAVAILABLE: u32 = 3;
@@ -142,6 +147,17 @@ pub trait Host {
     fn error(&mut self, step: &Step, code: u32) -> bool {
         let _ = (step, code);
         true
+    }
+    /// Insert Picture / Insert File: the file to insert, as (name, bytes);
+    /// `None` when cancelled (the default: no file system).
+    fn pick_file(&mut self, picture: bool) -> Option<(String, Vec<u8>)> {
+        let _ = picture;
+        None
+    }
+    /// Export Field Contents: saves a container's file; `false` if cancelled.
+    fn save_file(&mut self, name: &str, data: &[u8]) -> bool {
+        let _ = (name, data);
+        false
     }
     /// Steps the engine does not run itself: returns the error code
     /// (default 3, "command unavailable").
@@ -877,8 +893,11 @@ impl Engine {
                 let v = self
                     .eval_opt(host, frame, value)?
                     .unwrap_or_else(Value::empty);
-                let _ = self.repetition(host, frame, repetition)?;
-                let f = field.ok_or(error::FIELD_MISSING)?;
+                let rep = self.repetition(host, frame, repetition)?;
+                let mut f = field.ok_or(error::FIELD_MISSING)?;
+                if repetition.is_some() {
+                    f.repetition = rep as u16;
+                }
                 self.set_field(host, f, v)?;
             }
             (
@@ -1485,6 +1504,9 @@ impl Engine {
             (_, id::FREEZE_WINDOW) => host.freeze(),
             (_, id::REFRESH_WINDOW) => host.refresh(),
             (_, id::BEEP) => host.beep(),
+            (_, INSERT_PICTURE | INSERT_FILE | EXPORT_FIELD_CONTENTS) => {
+                self.container_step(host, s)?
+            }
             _ => return Err(host.other(s)),
         }
         Ok(Flow::Next)
@@ -1570,6 +1592,46 @@ impl Engine {
             .collect()
     }
 
+    /// Insert Picture, Insert File (a file from the host into the step's
+    /// field) and Export Field Contents (the field's file to the host).
+    // ponytail: the file paths and options stored in the steps are not
+    // decoded; the host asks for the file.
+    fn container_step(&mut self, host: &mut dyn Host, s: &Step) -> Result<(), u32> {
+        let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
+        if s.id != EXPORT_FIELD_CONTENTS {
+            let (name, data) = host
+                .pick_file(s.id == INSERT_PICTURE)
+                .ok_or(error::USER_CANCELED)?;
+            let file = calc::value::Container {
+                name,
+                data,
+                ..Default::default()
+            };
+            return self.set_field(host, f, Value::Container(file));
+        }
+        let (table, to, rec) = Self::context(host);
+        let db = host.db();
+        let t = db.table_of(f.to).ok_or(error::FIELD_MISSING)?.id;
+        let rec = rec.ok_or(error::RECORD_MISSING)?;
+        let r = if t == table {
+            rec
+        } else {
+            *db.related(to, rec, f.to)
+                .first()
+                .ok_or(error::RECORD_MISSING)?
+        };
+        match db.value_rep(t, r, f.field, f.repetition.max(1) as u32) {
+            Value::Container(c) if !c.data.is_empty() => {
+                if host.save_file(&c.name, &c.data) {
+                    Ok(())
+                } else {
+                    Err(error::USER_CANCELED)
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Current text of a field for the current record (or its first related record).
     fn field_value(&mut self, host: &mut dyn Host, f: FieldRef) -> Option<String> {
         let (table, to, rec) = Self::context(host);
@@ -1628,7 +1690,9 @@ impl Engine {
                 .first()
                 .ok_or(error::RECORD_MISSING)?
         };
-        let text = engine::stored_text(&v, &db.locale);
+        // Containers join the table's store (Base64Decode, Insert File…).
+        let text = db.store_value(tid, f.field, &v);
+        let key = engine::rep_key(f.field, f.repetition.max(1) as u32);
         let ti = db
             .tables
             .iter()
@@ -1638,7 +1702,7 @@ impl Engine {
             self.open = Some((tid, r, Some(db.tables[ti].records[r].clone())));
         }
         // Lookups matching on the field copy again, stamps update.
-        db.set_values(tid, r, &[(f.field, text)]);
+        db.set_values(tid, r, &[(key, text)]);
         Ok(())
     }
 }

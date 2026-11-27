@@ -108,6 +108,7 @@ fn as_file(v: &[f64], name: &str) -> Value {
     Value::Container(Container {
         name: name.into(),
         data: v.iter().flat_map(|x| (*x as f32).to_le_bytes()).collect(),
+        ..Default::default()
     })
 }
 
@@ -236,33 +237,139 @@ pub fn get_height(_: &mut Evaluator, a: &[Value]) -> R {
     Ok(image(a)?.map_or_else(Value::empty, |(_, h)| Value::int(h as i64)))
 }
 
-/// GetContainerAttribute ( field ; attributeName ) for what an in-memory
-/// container knows: filename, fileSize, MD5, width, height.
-// ponytail: storage, timestamps, media and signature attributes and "all"
-// need container metadata we do not keep; they return empty.
-pub fn get_container_attribute(_: &mut Evaluator, a: &[Value]) -> R {
-    let Value::Container(c) = &a[0] else {
-        return Ok(Value::empty());
+/// Resolution of PNG (`pHYs` in metres) or JFIF data, if given.
+fn image_dpi(d: &[u8]) -> Option<u32> {
+    let dpi = if d.starts_with(b"\x89PNG") {
+        d.windows(4).position(|w| w == b"pHYs").and_then(|at| {
+            let ppm = u32::from_be_bytes(d.get(at + 4..at + 8)?.try_into().ok()?);
+            (*d.get(at + 12)? == 1).then(|| (ppm as f64 * 0.0254).round() as u32)
+        })
+    } else if d.get(6..11) == Some(b"JFIF\0") && d.get(13) == Some(&1) {
+        d.get(14..16)
+            .map(|x| u16::from_be_bytes([x[0], x[1]]) as u32)
+    } else {
+        None
     };
-    let size = image_size(&c.data);
-    Ok(match txt(a, 1).to_ascii_lowercase().as_str() {
-        "filename" => Value::text(c.name.clone()),
-        "filesize" => Value::int(c.data.len() as i64),
-        "md5" => {
-            use md5::Digest;
-            Value::Text(
-                md5::Md5::digest(&c.data)
-                    .iter()
-                    .map(|b| format!("{b:02X}"))
-                    .collect(),
-            )
+    dpi.filter(|d| *d > 0)
+}
+
+/// Whether a picture has an alpha channel or a transparent colour.
+fn transparent(d: &[u8]) -> bool {
+    if d.starts_with(b"\x89PNG") {
+        matches!(d.get(25), Some(4 | 6)) || d.windows(4).any(|w| w == b"tRNS")
+    } else if d.starts_with(b"GIF8") {
+        // Graphic control extension with the transparency flag.
+        d.windows(4)
+            .any(|w| w[0] == 0x21 && w[1] == 0xF9 && w[2] == 4 && w[3] & 1 == 1)
+    } else {
+        false
+    }
+}
+
+/// Bytes FileMaker stores for a container: each stream plus 8 (the data,
+/// `FNAM` with the kind and the name, and `SIZE` and `DPI_` for pictures);
+/// for a reference, the path.
+fn internal_size(c: &Container, picture: bool) -> usize {
+    if !c.path.is_empty() {
+        return c.path.len();
+    }
+    let kind = if picture { 5 } else { 4 };
+    let mut n = c.data.len() + 8 + 4 + 1 + kind + 2 + c.name.len() + 8;
+    if picture {
+        n += 12;
+        if image_dpi(&c.data).is_some() {
+            n += 12;
         }
-        "width" => size.map_or_else(Value::empty, |s| Value::int(s.0 as i64)),
-        "height" => size.map_or_else(Value::empty, |s| Value::int(s.1 as i64)),
+    }
+    n
+}
+
+/// GetContainerAttribute ( field ; attributeName ): the General, Image and
+/// Photo attributes, and `all` in FileMaker 26's layout (checked against
+/// pictures and files stored by FileMaker).
+// ponytail: references report what the path says (no MD5, size or picture
+// data: the file is not read); audio, video, signature and barcode
+// attributes are empty.
+pub fn get_container_attribute(_: &mut Evaluator, a: &[Value]) -> R {
+    Ok(match &a[0] {
+        Value::Container(c) => attribute(c, &txt(a, 1)),
         _ => Value::empty(),
     })
 }
 
+fn attribute(c: &Container, attr: &str) -> Value {
+    let size = image_size(&c.data);
+    let picture = size.is_some();
+    let jpeg = c.data.starts_with(&[0xFF, 0xD8]);
+    let md5 = || -> String {
+        use md5::Digest;
+        if c.data.is_empty() {
+            return String::new();
+        }
+        md5::Md5::digest(&c.data)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect()
+    };
+    let reference = !c.path.is_empty();
+    let name = if reference {
+        c.path
+            .rsplit(['/', '\\', ':'])
+            .next()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        c.name.clone()
+    };
+    let dpi = image_dpi(&c.data).unwrap_or(72);
+    let num = |n: usize| Value::int(n as i64);
+    match attr.to_ascii_lowercase().as_str() {
+        "filename" => Value::text(name),
+        "storagetype" => Value::text(if reference {
+            "File Reference"
+        } else {
+            "Embedded"
+        }),
+        "md5" => Value::Text(md5()),
+        "filesize" => num(c.data.len()),
+        "internalsize" => num(internal_size(c, picture)),
+        "externalsize" => num(if reference { c.data.len() } else { 0 }),
+        "externalfiles" => num(reference as usize),
+        "width" => size.map_or_else(Value::empty, |s| num(s.0 as usize)),
+        "height" => size.map_or_else(Value::empty, |s| num(s.1 as usize)),
+        "dpiwidth" | "dpiheight" if picture => num(dpi as usize),
+        "transparency" if picture => num(transparent(&c.data) as usize),
+        "orientation" if jpeg => num(1),
+        "all" => {
+            let mut s = format!(
+                "[General]\rFilename: {name}\rStorage Type: {}\rMD5: {}\rFile Size: {}\rInternal Size: {}\rExternal Size: {}\rExternal Files: {}",
+                if reference {
+                    "File Reference"
+                } else {
+                    "Embedded"
+                },
+                md5(),
+                c.data.len(),
+                internal_size(c, picture),
+                if reference { c.data.len() } else { 0 },
+                reference as u8,
+            );
+            if let Some((w, h)) = size {
+                let t = transparent(&c.data);
+                s += &format!(
+                    "\r\r[Image]\rWidth: {w}\rHeight: {h}\rDPI Width: {dpi}\rDPI Height: {dpi}\rTransparency: {} ({})",
+                    t as u8,
+                    if t { "True" } else { "False" }
+                );
+            }
+            if jpeg {
+                s += "\r\r[Photo]\rOrientation: 1 (Normal)\rCreated:\rModified:\rLatitude:\rLongitude:\rMake:\rModel:";
+            }
+            Value::Text(s)
+        }
+        _ => Value::empty(),
+    }
+}
 /// VerifyContainer: 1 for embedded data, empty for an empty field.
 // ponytail: external storage is not modelled, so there is no checksum to
 // compare; embedded data always verifies.
@@ -377,7 +484,44 @@ pub fn convert_to_filemaker_path(_: &mut Evaluator, a: &[Value]) -> R {
 
 #[cfg(test)]
 mod tests {
-    use super::image_size;
+    use super::{Container, attribute, image_size};
+
+    #[test]
+    fn container_attributes_match_filemaker() {
+        // Stored by FileMaker 26 from Base64Decode; "all" as it reported.
+        let hex = "89504e470d0a1a0a0000000d4948445200000004000000030806000000b4f4aec6000000017352474200aece1ce90000000467414d410000b18f0bfc6105000000097048597300000ec300000ec301c76fa8640000001549444154185763f80f030c0c60cc80290065c0300090cc1fe1a78d04800000000049454e44ae426082";
+        let data = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let red = Container {
+            name: "red.png".into(),
+            data,
+            ..Default::default()
+        };
+        assert_eq!(
+            attribute(&red, "all").to_text(),
+            "[General]\rFilename: red.png\rStorage Type: Embedded\rMD5: 6E4B2B912593992849665A305AD7D8D0\rFile Size: 128\rInternal Size: 187\rExternal Size: 0\rExternal Files: 0\r\r[Image]\rWidth: 4\rHeight: 3\rDPI Width: 96\rDPI Height: 96\rTransparency: 1 (True)"
+        );
+        let hello = Container {
+            name: "hello.txt".into(),
+            data: b"Hello container".to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(
+            attribute(&hello, "all").to_text(),
+            "[General]\rFilename: hello.txt\rStorage Type: Embedded\rMD5: 2502DD0AC4B4D4E576C0BE6E7693CED5\rFile Size: 15\rInternal Size: 51\rExternal Size: 0\rExternal Files: 0"
+        );
+        // FileMaker reports the path's length as the internal size.
+        let path = "imagewin:/C:/photos/blue.jpg";
+        let r = Container {
+            path: path.into(),
+            ..Default::default()
+        };
+        assert_eq!(attribute(&r, "filename").to_text(), "blue.jpg");
+        assert_eq!(attribute(&r, "storageType").to_text(), "File Reference");
+        assert_eq!(attribute(&r, "internalSize").to_text(), "28");
+    }
 
     #[test]
     fn png_and_gif_sizes() {

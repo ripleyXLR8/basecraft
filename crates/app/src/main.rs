@@ -17,6 +17,7 @@ use engine::{Database, Order, Request};
 use fmp12::layouts::Layout;
 
 mod chart;
+mod container;
 mod design;
 mod i18n;
 mod look;
@@ -1027,7 +1028,17 @@ impl App {
                     ds.insert_menu(ui);
                     return;
                 }
-                ui.label(tr("Not implemented yet"));
+                // Into the container field last clicked (Browse mode).
+                let target = container::active(ui.ctx()).filter(|_| self.mode() == Mode::Browse);
+                let pick = egui::Button::new(tr("Picture or File…"));
+                if ui.add_enabled(target.is_some(), pick).clicked() {
+                    if let (Some(tg), Some(d)) = (target, self.doc.as_mut())
+                        && container::perform(&mut d.db, container::Action::Insert, tg)
+                    {
+                        self.dirty = true;
+                    }
+                    ui.close();
+                }
             });
             ui.menu_button(tr("Format"), |ui| {
                 ui.label(tr("Not implemented yet"));
@@ -1786,6 +1797,12 @@ impl script::Host for AppHost<'_> {
     fn window(&mut self) -> &mut script::Window {
         &mut self.window
     }
+    fn pick_file(&mut self, picture: bool) -> Option<(String, Vec<u8>)> {
+        container::pick_file(picture)
+    }
+    fn save_file(&mut self, name: &str, data: &[u8]) -> bool {
+        container::save_file(name, data)
+    }
 }
 
 struct DrawCtx {
@@ -1814,18 +1831,54 @@ fn draw_object(
         }
         return;
     }
-    let (Some((_, field, _)), Some((t, record))) = (o.field, owner) else {
+    let (Some((_, field, first)), Some((t, record))) = (o.field, owner) else {
         return;
     };
     let field = field as u32;
-    let is_calc = doc
-        .db
-        .table(t)
-        .and_then(|x| x.field(field))
-        .is_some_and(|f| f.calc.is_some());
+    let def = doc.db.table(t).and_then(|x| x.field(field));
+    let reps = def.map_or(1, engine::repetitions);
+    // ponytail: the object's last repetition shown is not decoded: from its
+    // first one, as many of the field's repetitions as fit in its bounds.
+    let first = (first as u32).clamp(1, reps);
+    let fit = (r.height() / (lk.font().size + 8.0)).floor().max(1.0) as u32;
+    let shown = (reps - first + 1).min(fit);
+    let h = r.height() / shown as f32;
+    for rep in first..first + shown {
+        let top = r.top() + (rep - first) as f32 * h;
+        let rr = Rect::from_min_size(egui::pos2(r.left(), top), Vec2::new(r.width(), h));
+        if shown > 1 && rep > first {
+            let line = Stroke::new(0.5, Color32::from_gray(200));
+            painter.line_segment([rr.left_top(), rr.right_top()], line);
+        }
+        let target = (t, record, field, rep);
+        draw_field(
+            ui, painter, doc, c, o, lk, rr, target, request, dirty, events,
+        );
+    }
+}
+
+/// One repetition of a field object.
+#[allow(clippy::too_many_arguments)]
+fn draw_field(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    doc: &mut Doc,
+    c: &DrawCtx,
+    o: &fmp12::layouts::LayoutObject,
+    lk: &Look,
+    r: Rect,
+    (t, record, field, rep): (u32, Option<usize>, u32, u32),
+    request: &mut BTreeMap<u32, String>,
+    dirty: &mut bool,
+    events: &mut Vec<(u64, u16)>,
+) {
+    let key = engine::rep_key(field, rep);
+    let def = doc.db.table(t).and_then(|x| x.field(field));
+    let is_calc = def.is_some_and(|f| f.calc.is_some());
+    let is_container = def.is_some_and(|f| f.data_type == fmp12::schema::DataType::Container);
     let inner = lk.content_rect(r);
     match (c.mode, record) {
-        (Mode::Find, _) if t == c.table => {
+        (Mode::Find, _) if t == c.table && rep == 1 => {
             painter.rect_stroke(
                 r,
                 0.0,
@@ -1836,8 +1889,20 @@ fn draw_object(
             ui.put(inner, lk.edit(s));
         }
         (Mode::Find | Mode::Layout | Mode::Preview, _) | (Mode::Browse, None) => {}
+        (Mode::Browse, Some(rec)) if is_container => {
+            let v = doc.db.value_rep(t, rec, field, rep);
+            if let Some(a) = container::draw(ui, painter, lk, r, &v, (t, rec, field, rep))
+                && container::perform(&mut doc.db, a, (t, rec, field, rep))
+            {
+                *dirty = true;
+            }
+        }
         (Mode::Browse, Some(rec)) if is_calc => {
-            let v = doc.db.value(t, rec, field).to_text().replace('\r', " ");
+            let v = doc
+                .db
+                .value_rep(t, rec, field, rep)
+                .to_text()
+                .replace('\r', " ");
             lk.paint_text(painter, r, &v);
         }
         (Mode::Browse, Some(rec)) => {
@@ -1854,12 +1919,12 @@ fn draw_object(
             let mut changed = false;
             let mut left = false;
             if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
-                let s = tbl.records[rec].values.entry(field).or_default();
+                let s = tbl.records[rec].values.entry(key).or_default();
                 match choices {
                     Some(values) => {
                         let mut picked = None;
                         ui.put(inner, |ui: &mut egui::Ui| {
-                            egui::ComboBox::from_id_salt(("vl", o.id, rec))
+                            egui::ComboBox::from_id_salt(("vl", o.id, rec, rep))
                                 .selected_text(s.as_str())
                                 .width(inner.width())
                                 .show_ui(ui, |ui| {
@@ -1907,11 +1972,10 @@ fn draw_object(
                 *dirty = true;
                 doc.db.touch(t, rec);
             }
-            commit_field(ui, &mut doc.db, (t, rec, field), changed, left);
+            commit_field(ui, &mut doc.db, (t, rec, key), changed, left);
         }
     }
 }
-
 /// Once a field changed and is left (or a value is picked), lookups
 /// matching on it copy again, as in FileMaker.
 fn commit_field(

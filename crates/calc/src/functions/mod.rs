@@ -717,8 +717,14 @@ fn get_repetition(ev: &mut Evaluator, a: &[Expr]) -> R {
 }
 
 fn extend(ev: &mut Evaluator, a: &[Expr]) -> R {
-    // ponytail: no repeating calculation context yet, so Extend is identity.
-    ev.eval(&a[0])
+    match &a[0] {
+        Expr::Field {
+            table,
+            name,
+            rep: None,
+        } if table.is_some() || ev.local(name).is_none() => ev.ctx.extended(table.as_deref(), name),
+        e => ev.eval(e),
+    }
 }
 
 fn last(ev: &mut Evaluator, a: &[Expr]) -> R {

@@ -32,7 +32,7 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Record values (plain and long) | ✅ |
 | Record storage: values as text in the file's locale, long/non-Latin-1 sub-path form, record-id sets, last id, field value indexes (FORMAT.md §13) | ✅ (from records typed in FileMaker) |
 | File locale (`[2]` key 13): separators, date order, AM/PM | ✅ 11 languages |
-| Repeating fields | ⏳ |
+| Repeating fields: repetition keys (`07 02`, `80 03 03`), long values, `value_rep`, `Field[n]`, GetRepetition, Last, Extend, repeating calculations | ✅ (from records set in FileMaker) |
 | Field types and options (type, data type, storage, index, auto-enter, validation) | ✅ |
 | Calculation token streams → source text (253 functions, 140 `Get()` flags, 29 design and location functions, operators, literals, field refs, Let, comments) | ✅ |
 | Calculations in scripts and layouts (contexts other than a table occurrence) | 🚧 |
@@ -51,7 +51,8 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Value lists (custom values, from field: second field, related only, sort by second field) | ✅ |
 | Themes: compiled styles, named styles, local object styles, fonts (`theme.rs`) | ✅ |
 | Custom functions, accounts and privileges | ⏳ |
-| Container data | ⏳ |
+| Container data: embedded files and pictures (store `[T].[31]`, streams FNAM, PNGf, JPEG, GIFf, FILE, SIZE, DPI_), references by path; GetContainerAttribute, GetAsText, Base64Encode | ✅ (from containers inserted in FileMaker; `all` matches) |
+| Container data stored externally (secure or open storage), thumbnails | ⏳ |
 
 Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export. Step parameters: 203 steps (319 parameter values) and 108 button actions match, templates plus a 57-step script pasted into a copy of Tasks.
 
@@ -194,7 +195,8 @@ Step catalogue: [docs/reference/script_steps.txt](docs/reference/script_steps.tx
 | Writing exact index keys (FileMaker collation tables) | ⏳ |
 | Files saved by BaseCraft, edited and saved again by FileMaker, read back | ✅ verified |
 | Auto-enter values (serials, UUIDs, stamps) on records created by BaseCraft | ⏳ |
-| Repeating fields, container data | ⏳ |
+| Repeating fields and container data (`Database::save`, `containers::save_containers`: new files, shared copies, use counts) | ✅ verified in FileMaker: it reads the repetitions and pictures BaseCraft wrote (GetContainerAttribute MD5), adds its own records, repetitions and files after them, and BaseCraft reads those back |
+| Files marked cleanly closed (page 0 flag 0x800 = `AC`, file sequence number) | ✅ verified: FileMaker opens and closes them unchanged (an unclean file gets checked and rewritten) |
 | Calculation compiler: source text → token stream (key 5) and compiled form (key 6) FileMaker evaluates (`fmp12::calc::compile`) | ✅ 1,890 FileMaker-compiled calculations and all 5,214 template calculations (fields, scripts, layouts, comments included) byte for byte; one compiler for schema and scripts |
 | Scripts (`fmp12::scripts_save`): edited step lists and parameters | ✅ verified in FileMaker: opens without warning, Save a Copy as XML shows the steps as written, the calculations evaluate |
 | New, deleted, renamed scripts | ✅ verified in FileMaker: `[17].[1]` key 8 (MD5 over the catalog members' names in id order, FORMAT.md §8) written by `save_scripts`; non-Latin names in the long form. The accounts/privileges catalogs (`[23]`) carry their own digests and are not written by BaseCraft |

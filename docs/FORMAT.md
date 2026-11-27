@@ -20,8 +20,24 @@ The file is a sequence of 4096-byte sectors. Sector 0 is the **header**:
 | 0 | 15 | magic `00 01 00 00 00 02 00 01 00 05 00 02 00 02 C0` |
 | 15 | 5 | `HBAM7` (plain) or `HBAMe` (encryption at rest, not supported) |
 | 541 | 1+n | Pascal string naming the creator, e.g. `Pro 12.0` |
+| 0x800 | 1 | **clean-close flag**: `AC` = closed cleanly; FileMaker clears it while it writes the file and checks a file without it on open |
+| 0x802 | 8 | **file sequence number** (u64 BE): FileMaker sets it on close to the largest sector write sequence number (offset 16 below) |
 
 The format version has not changed since 12, so FileMaker 26 files still say `Pro 12.0`.
+
+Only the flag and the sequence number change when FileMaker writes a file
+(the rest of sector 0 stays as created; same finding in OpenMaker's notes,
+`HBFile::WriteCleanCloseAndSCN`). Files FileMaker closed have, e.g.,
+`AC 00 … 0B FB` with 0x0BFB = 3067 = the largest sector sequence number.
+BaseCraft's writer (`write::build`) copies sector 0, sets the flag to `AC`
+and keeps a sequence number at least that of its sectors (it stamps them
+all 1), so FileMaker opens its files as cleanly closed.
+
+Checked in FileMaker Pro 26: a copy FileMaker was killed on had `00` at
+0x800 and sectors stamped up to 2162 over a file number of 2090; merely
+opening and closing it, FileMaker rewrote it (7 → 6 sectors, number 2194,
+flag `AC`): the consistency check. The same file saved by BaseCraft (`AC`)
+opened and closed byte for byte unchanged.
 
 Body sector layout:
 
@@ -832,7 +848,7 @@ two-byte functions behind prefixes F8–FE, 140 `Get` flags after `9C`).
 | `03` `04` `05` `06` `07` | `;` `(` `)` `[` `]` |
 | `0B len name 00 xx` | Let variable name |
 | `0C 13 len text 00` | whitespace or comment, emitted verbatim |
-| `10` + 19 bytes | number: `02 00 01 00 10`, u32 integer, u32 ×1e-9, u32 ×1e-18, u16 flags |
+| `10 02 n l` + groups + u16 flags | number: u16 `n` integer groups, u16 `l` decimals (16 or more), then u32 groups of nine digits: `n` for the integer part (right-aligned), ⌈(l+2)/9⌉ for the decimals |
 | `13 len text 00` | text literal; `len` counts UTF-16 units, not bytes |
 | `16 flags 04 TOref len 01 field u16 rep` | field reference (shown as `TO::Field` outside the context TO) |
 | `1E`–`23` | not, and, or, xor, True, False |
@@ -850,9 +866,15 @@ A `len` of 128 UTF-16 units or more takes two bytes, the first with its top
 bit set (`13 81 14` = 276 units). Unary minus is `26` like subtraction in
 key 5. A number literal keeps its value, not its spelling (`1,50` and
 `1.5` give the same bytes); its last two bytes are `00 20`, or `00 40`
-when it was written with an exponent. The integer part is below 10⁹ in
-every literal FileMaker accepted from a pasted script; larger literals
-are not decoded. A calculation FileMaker cannot parse is stored as one
+when it was written with an exponent. Each u32 group holds nine decimal
+digits (0–999 999 999). The integer part takes as many groups as it needs
+(`10 02 00 02 00 10 00000001 00000000 …` = 1 000 000 000;
+123456789012345678901234567890 takes 4 groups). The decimals keep 16
+digits, or as many as the literal has, plus 2 guard digits, rounded up to
+whole groups: 16 decimals take 2 groups, 17 take 3
+(`0.1234567890123456789012345`: `l` = 25, 3 groups). A negative literal is
+unary minus (`26`/`2C`) and its absolute value. From Set Variable steps
+pasted into FileMaker Pro 26 (`fixtures/compiled.tsv`). A calculation FileMaker cannot parse is stored as one
 `0D` comment holding the whole text, with key 6 = `00`.
 
 ### Compiled form (key 6)
@@ -1091,7 +1113,54 @@ Calculation results of stored calculation fields are stored like any value
 (`Units In | Out` = `25`); FileMaker does not recompute them when it opens a
 file, so a writer must store them.
 
-**Repeating fields**: none of the templates has one; not yet observed.
+**Repeating fields** (from records set by Set Field in FileMaker Pro 26):
+repetition 1 is stored like any value, at key = field id. Repetition
+*n* ≥ 2 adds a byte *n* to the key: `07 02` = field 7, repetition 2 (a
+2-byte key whose top bit is clear, ops 09–0F); `80 03 03` = field 131,
+repetition 3 (3-byte key, ops 10–17). Empty repetitions are not stored.
+Long values move to the sub-path spelled the same way
+(`[T].[5].[R].[0C 02]`). A reader that gets the 2-byte key as an integer
+loses the top bit (`07 02` and `87 02` both read as 1922), so BaseCraft
+reads it as a repetition when the field repeats that far. Stored
+calculations with repetitions store each one.
+
+### Containers
+
+A container field's value is **text** in the record:
+
+* a file stored in the file: the id of an entry of the table's container
+  store, in upper-case hex, then U+E000 (`01` + `E000` = store id 1; SCSU
+  makes it a long value);
+* a file stored by reference: its path, `imagewin:/C:/photos/blue.jpg`,
+  `filewin:/…`, `filemac:/…` (`GetAsText` gives the same text).
+
+The store `[T].[31]` (`fmp12::containers`) keeps each distinct content
+once:
+
+* `[T].[31].[5].[id]`: one node per stored file. Its **streams** are
+  long-key items (op `16`/`17`, 4-byte key) named by a tag: `FNAM`
+  (u32 1, the kind as length byte + XOR-ed text, `image` or `file`, u16
+  length + XOR-ed file name), the data (`PNGf`, `JPEG`, `GIFf`, `FILE` for
+  anything else), and for pictures `SIZE` (u16 width, u16 height) and
+  `DPI_` (u16 ×2, only when the picture says its resolution). A stream
+  over 1000 bytes moves to `[id].[tag]`: key 0 = u32 length, keys 1…n =
+  1000-byte chunks. Key 2 = directory: u16 stream count, then tag + u32
+  length per stream, in tag order. Key 4 = MD5 over each stream's tag and
+  bytes in tag order (FileMaker's dedup key). Key 18 = u32 number of
+  record values using it. Key 216 = UUID.
+* `[T].[31].[1]`: key 0 = last id (length-prefixed integer), key 4 =
+  number of stored files, key 216 = UUID, key 252 = change counter;
+  `.[7]` = the set of ids (`00 id` items), `.[8].[MD5]` = id of each MD5.
+
+`GetContainerAttribute ( f ; "all" )` reports Internal Size = Σ (stream
+length + 8); for a reference, the length of its path.
+FileMaker gives a picture inserted twice the same id (and counts its uses).
+BaseCraft's writer (`save_containers`) adds new files, recounts key 18
+from the record values and drops files no record uses; files already in
+the store keep their bytes.
+
+External storage (secure or open, `[T].[31]` with a base directory) was
+not observed.
 
 ### Locale (`[2]` key 13)
 

@@ -158,3 +158,44 @@ fn tasks_go_to_entry_field_passes_its_parameter() {
     e.perform_named(&mut h, "Go to Entry Field", Some(Value::text("Due Date")));
     assert_eq!(h.1, ["Due Date"]);
 }
+
+#[test]
+fn step_text_of_template_scripts() {
+    let Some((db, e)) = open("Tasks") else {
+        return;
+    };
+    let n = script::text::Names {
+        db: &db,
+        scripts: &e.scripts,
+    };
+    let s = e
+        .scripts
+        .iter()
+        .find(|s| s.name == "Add Related Record")
+        .unwrap();
+    let lines: Vec<String> = s
+        .steps
+        .iter()
+        .zip(script::text::indents(&s.steps))
+        .map(|(st, i)| format!("{}{}", "  ".repeat(i), script::text::step_text(st, &n)))
+        .collect();
+    let all = lines.join(
+        "
+",
+    );
+    assert!(
+        all.contains("Set Variable [ $$parentPrimaryKey ; Value: Tasks::PrimaryKey ]"),
+        "{all}"
+    );
+    assert!(all.contains("If [ "), "{all}");
+    assert!(all.contains("  Loop"), "{all}");
+    // Every calculation in every step text compiles back to the same tokens.
+    for s in &e.scripts {
+        for st in &s.steps {
+            if let fmp12::scripts::StepParams::Condition(Some(c)) = &st.params {
+                let src = n.calc(c);
+                assert_eq!(n.compile(&src).unwrap(), *c, "{src}");
+            }
+        }
+    }
+}

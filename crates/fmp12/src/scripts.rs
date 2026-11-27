@@ -8,14 +8,14 @@
 //!
 //! See `docs/FORMAT.md` §8 for the layout of each step kind.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::graph::to_ref;
 use crate::{Chunk, Error, File, int_path, path_int, pb::Msg, text};
 
 /// Size of one step record in key 4 of a script node. The last record of
 /// the list has its trailing zero bytes trimmed.
-const STEP_LEN: usize = 28;
+pub(crate) const STEP_LEN: usize = 28;
 
 /// The step catalogue, `id<TAB>name` per line (see the file's header).
 const CATALOGUE: &str = include_str!("../../../docs/reference/script_steps.txt");
@@ -51,6 +51,7 @@ pub mod id {
     pub const REVERT_RECORD: u16 = 51;
     pub const ENTER_BROWSE_MODE: u16 = 55;
     pub const INSERT_TEXT: u16 = 61;
+    pub const PAUSE_RESUME: u16 = 62;
     pub const IF: u16 = 68;
     pub const ELSE: u16 = 69;
     pub const END_IF: u16 = 70;
@@ -108,6 +109,11 @@ pub struct RawParams {
     pub kv: BTreeMap<(Vec<u32>, u32), Vec<u8>>,
     /// Byte-string keys: (relative path, key, value), e.g. find criteria.
     pub long: Vec<(Vec<u32>, Vec<u8>, Vec<u8>)>,
+    /// Nodes (relative paths) that carry a node marker; every node does.
+    pub markers: BTreeSet<Vec<u32>>,
+    /// How the file spells path elements above 127 (`80 00` or `00 00`
+    /// both read 128), so that a rewrite keeps the bytes.
+    pub spelling: BTreeMap<u32, Vec<u8>>,
 }
 
 impl RawParams {
@@ -122,6 +128,9 @@ impl RawParams {
             }
             Chunk::KvLong { key, data } => {
                 self.long.push((rel.to_vec(), key.to_vec(), data.to_vec()))
+            }
+            Chunk::Marker => {
+                self.markers.insert(rel.to_vec());
             }
             _ => {}
         }
@@ -305,6 +314,10 @@ pub enum StepParams {
         flush_joins: bool,
         flush_external: bool,
     },
+    /// Pause/Resume Script: indefinitely (`None`) or for a duration in
+    /// seconds. ponytail: storage not seen in a sample; the duration is
+    /// read as the calculation of parameter 0 like other steps.
+    Pause(Option<Calc>),
     Other,
 }
 
@@ -347,12 +360,12 @@ impl Step {
     }
 
     /// Object id of the first slot (`01` + path integer): layout, script.
-    fn inline_id(&self) -> Option<u32> {
+    pub(crate) fn inline_id(&self) -> Option<u32> {
         id_ref(&self.slot(0))
     }
 
     /// Field of the inline block: TO at 0, field at 6, repetition at 12.
-    fn inline_field(&self) -> Option<FieldRef> {
+    pub(crate) fn inline_field(&self) -> Option<FieldRef> {
         let b = self.block();
         Some(FieldRef {
             to: to_ref(&self.slot(0))?,
@@ -361,7 +374,7 @@ impl Step {
         })
     }
 
-    fn decode(&mut self) {
+    pub(crate) fn decode(&mut self) {
         let o = self.options;
         let p = &self.raw_params;
         let dialog = o & opt::NO_DIALOG == 0;
@@ -459,6 +472,7 @@ impl Step {
                 restore: o & opt::RESTORE != 0,
                 keys: p.get(&[], 10).map(|b| sort_spec(&b)).unwrap_or_default(),
             },
+            id::PAUSE_RESUME => StepParams::Pause(p.calc(0)),
             id::REFRESH_WINDOW => StepParams::RefreshWindow {
                 flush_joins: o & opt::FLUSH_JOINS != 0,
                 flush_external: o & opt::FLUSH_EXTERNAL != 0,
@@ -523,7 +537,7 @@ fn find_requests(p: &RawParams) -> Vec<FindRequest> {
 /// (length-prefixed), u16 repetition, two length-prefixed references (not
 /// decoded), u16, value list (length-prefixed, empty if none), order byte
 /// (0 ascending, 1 descending), u32.
-fn sort_spec(b: &[u8]) -> Vec<(FieldRef, SortOrder)> {
+pub(crate) fn sort_spec(b: &[u8]) -> Vec<(FieldRef, SortOrder)> {
     let mut i = 4;
     let mut out = Vec::new();
     let slot = |i: &mut usize| -> Option<Vec<u8>> {
@@ -568,7 +582,7 @@ fn sort_spec(b: &[u8]) -> Vec<(FieldRef, SortOrder)> {
 }
 
 /// Decodes a 28-byte step record (or a button's step message fields).
-fn step_from(raw: Vec<u8>, raw_params: RawParams) -> Step {
+pub(crate) fn step_from(raw: Vec<u8>, raw_params: RawParams) -> Step {
     let mut r = raw.clone();
     r.resize(STEP_LEN, 0);
     // A disabled step stores its id negated.
@@ -588,7 +602,7 @@ fn step_from(raw: Vec<u8>, raw_params: RawParams) -> Step {
 
 /// Number of the record's parameter node `[5].[n]`: bytes 0… are a
 /// length-prefixed `01` + path integer.
-fn step_number(r: &[u8]) -> Option<u32> {
+pub(crate) fn step_number(r: &[u8]) -> Option<u32> {
     id_ref(r.get(1..1 + *r.first()? as usize)?)
 }
 
@@ -620,9 +634,16 @@ struct RawScript {
 pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
     let mut out: BTreeMap<u32, Script> = BTreeMap::new();
     let mut raw: BTreeMap<u32, RawScript> = BTreeMap::new();
+    // Display order: `[17].[1].[3]` maps a u32 position to a script id.
+    let mut order: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
     file.walk(|path, c| {
         let Some(p) = int_path(path) else { return };
         match (p.as_slice(), c) {
+            ([17, 1, 3], Chunk::KvLong { key, data }) => {
+                if let Some(id) = crate::save::read_len_int(data) {
+                    order.insert(key.to_vec(), id as u32);
+                }
+            }
             ([17, 5, id], Chunk::Kv { key, data }) => {
                 let s = out.entry(*id).or_insert_with(|| Script {
                     id: *id,
@@ -649,6 +670,13 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
                     .entry(*n)
                     .or_default()
                     .add(rest, c);
+                if let Some(r) = raw.get_mut(id).and_then(|r| r.params.get_mut(n)) {
+                    for (v, e) in rest.iter().zip(&path[path.len() - rest.len()..]) {
+                        if *v > 127 {
+                            r.spelling.entry(*v).or_insert_with(|| e.to_vec());
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -669,7 +697,9 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
             })
             .collect();
     }
-    Ok(out.into_values().collect())
+    let mut list: Vec<Script> = order.values().filter_map(|id| out.remove(id)).collect();
+    list.extend(out.into_values());
+    Ok(list)
 }
 
 /// A layout object's button action (object field 16): field 3 holds the

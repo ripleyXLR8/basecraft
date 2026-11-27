@@ -350,6 +350,71 @@ value list (length-prefixed, empty if none: a custom order), order byte
 byte-string key per criterion: `00 | TO ref | 01 field` → criterion text.
 `[6].[5]` holds a value not decoded (`01`, `00000006`).
 
+Strings in parameter key 1 follow the record-value rule (§13): inline
+when one byte per UTF-16 unit and at most 1000 bytes, else in
+`[128 + p].[1]` (key 0 = byte and unit counts, keys 1… = chunks). Path
+elements above 127 are spelled `80 00` or `00 00` depending on the file
+(both read 128): a writer keeps the spelling it read. Key 134 is written
+as a 2-byte path integer (`0B 00 06`), keys 216/217 as one byte.
+
+More option bits, from steps FileMaker 26 wrote: `0x1` an inline field
+(also set for a variable target: Insert Text writes slots `01 00` and
+`01 20` with repetition 1), `0x4` a text parameter (comment with text,
+Set Variable, Show Custom Dialog), `0x8` an inline layout, `0x2` set by
+FileMaker 26 on every Go to Layout (older templates: `0x8` alone).
+Show Custom Dialog writes the commit flag `[131 + i]` k3 only for the
+buttons it has. A new Perform Find writes `[6].[5]` key 0 = `00000006`.
+
+### Writing (`fmp12::scripts_save`) 🔍
+
+* Step list: records of 28 bytes; FileMaker 26 writes the last one whole
+  (older files trim its trailing zeros: the writer keeps the length it
+  read). Bytes 0–3 name the parameter node; a new step takes the next
+  number after `[S].[5]` key 0 (last node, len-int), which is updated.
+  Bytes 4–5 are `00 00` in new steps.
+* Bytes 22–23 of control steps: If and Else If point at the next branch
+  (Else If / Else) or the End If, Else at the End If, Loop and Exit Loop
+  If at the End Loop, End Loop at its Loop, End If 0 (checked on every
+  template script).
+* Every node has a node marker; every step node has key 216 (UUID; new
+  steps written by FileMaker 26 have no 217).
+* Calculations: keys 4 (`01 00`), 5 (source tokens), 6 (prefix form, §11).
+* A new script (as FileMaker 26 writes one): `[17].[1].[7].[S]` key 16
+  name (key 240 only when not 8), a position in `[17].[1].[3]` (u32
+  position → len-int id: the display order), a name index entry in
+  `[17].[1].[1]` (collation key → len-int id), `[17].[1]` key 0 = last
+  id and key 4 = count; `[17].[5].[S]` keys 16, 19 (`00000000`), 216,
+  252 (`01 01`) and 31873–31875 (account and timestamp, copied from
+  `[17].[1]`). ponytail: `[17].[1]` keys 8 and 252 (changed by FileMaker
+  on edits) are left as is.
+* Collation keys of the name index: 2-byte primary weights, case folded,
+  then `00 00 00`; accented letters add secondary weights after `00 00`.
+  Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`
+  c `123D` d `1250` e `126B` f `12A3` g `12B0` h `12D3` i `12EC` j `1305`
+  k `131E` l `1330` m `135F` n `136D` o `138E` p `13B3` q `13C8` r `13DA`
+  s `1410` t `1433` u `1453` v `147B` w `148D` y `149C` z `14AD`. Names
+  with other characters get no index entry (ponytail).
+* Folders: options 9 (bit 0) open a folder, a "--" entry with options 2
+  or 10 (bit 1, XML `isFolder="Marker"`) closes it; the list is flat in
+  `[17].[1].[3]` order.
+
+### Script triggers (`fmp12::triggers`) 🚧
+
+A layout's triggers are in `[4].[5].[L].[48]`: key 4 `00 01`, then one
+node `[48].[5].[128 + event]` per trigger, key 1 =
+`u16 event | len 01 script | u32 modes | 6 zero bytes`. Seen: event 101
+(OnLayoutEnter, from the XML export) with modes `00000001` (Browse).
+ponytail: the other event ids follow the order of FileMaker's trigger
+name table (DBEngine): objects 1 OnObjectEnter, 2 OnObjectValidate, 3
+OnObjectExit, 4 OnObjectModify, 5 OnObjectSave, 6 OnObjectKeystroke, 7
+OnPanelSwitch; layouts 101 OnLayoutEnter, 102 OnLayoutExit, 103
+OnLayoutKeystroke, 104 OnRecordLoad, 105 OnRecordCommit, 106
+OnRecordRevert, 107 OnModeEnter, 108 OnModeExit, 109 OnViewChange; file
+201 OnFirstWindowOpen, 202 OnLastWindowClose. Mode bits 2 (Find) and 4
+(Preview), object triggers in `[4].[5].[L].[5].[obj].[48]`, file
+triggers elsewhere and the parameter calculation in
+`[…].[128 + event].[5]` are guesses: no template has them.
+
 ### Button actions
 
 A layout object's field 16 is the button. Its field 3 is the step as a

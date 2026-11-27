@@ -1938,6 +1938,7 @@ mod tests {
             layouts,
             file,
             path: None,
+            triggers: Default::default(),
         })
     }
 

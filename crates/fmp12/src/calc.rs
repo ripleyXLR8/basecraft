@@ -36,7 +36,7 @@ impl std::error::Error for CalcError {}
 
 /// A text run in a token stream: `len` counts UTF-16 units, not bytes, and
 /// the run is followed by a 0x00 byte. Returns the text and the byte length.
-fn run(b: &[u8], start: usize, len: usize) -> Option<(String, usize)> {
+pub(crate) fn run(b: &[u8], start: usize, len: usize) -> Option<(String, usize)> {
     (len..=len * 3 + 3).find_map(|n| {
         let bytes = b.get(start..start + n)?;
         let s = text(bytes);

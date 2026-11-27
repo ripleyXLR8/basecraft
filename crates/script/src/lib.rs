@@ -7,11 +7,21 @@
 //! a [`Window`] the [`Host`] owns; dialogs, field focus and redrawing go
 //! through the [`Host`] trait, so the engine runs headless in tests.
 //!
-//! Entry points: [`Engine::perform`] (run a script by id),
-//! [`Engine::perform_named`], and [`Engine::run_step`] for button actions.
+//! Scripts are resumable, so that a GUI that cannot block (egui, the web)
+//! can wait for the user: [`Engine::start`] (or [`Engine::start_step`]
+//! for a button) returns a [`Run`], and [`Run::resume`] runs it until it
+//! finishes or stops on Show Custom Dialog, a confirmation, or Pause/Resume
+//! Script ([`Status::Suspended`]); the next `resume` carries the user's
+//! [`Answer`]. No threads, so it works on `wasm32` too.
+//!
+//! [`Engine::perform`], [`Engine::perform_named`] and [`Engine::run_step`]
+//! run to the end, answering dialogs through [`Host::dialog`] (button 1 by
+//! default) and continuing pauses: the CLI and MCP server use those.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+
+pub mod text;
 
 use calc::Value;
 use engine::{Database, Request};
@@ -134,6 +144,109 @@ pub trait Host {
     }
 }
 
+/// Why a run stopped before its end.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Suspend {
+    /// Show Custom Dialog or a confirmation: answer with [`Answer::Dialog`].
+    Dialog(Dialog),
+    /// Pause/Resume Script, or a mode entered with "Pause": answer with
+    /// [`Answer::Continue`] or [`Answer::Cancel`]. The duration (seconds)
+    /// when the pause ends by itself.
+    Pause(Option<f64>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Status {
+    Suspended(Suspend),
+    Finished(Outcome),
+}
+
+/// The user's reply to a [`Suspend`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    /// First call of [`Run::resume`], nothing to answer.
+    Start,
+    Dialog(DialogAnswer),
+    Continue,
+    Cancel,
+}
+
+/// What a suspended step does with the answer.
+#[derive(Debug, Clone)]
+enum Pending {
+    /// Show Custom Dialog: input fields and whether each button commits.
+    Dialog {
+        inputs: Vec<FieldRef>,
+        commits: Vec<bool>,
+    },
+    /// Delete Record / Delete All Records confirmation (button 1 deletes).
+    Delete {
+        table: u32,
+        records: Vec<usize>,
+    },
+    Pause,
+}
+
+/// One script call on the run's stack.
+struct Call {
+    steps: Vec<Step>,
+    links: Links,
+    pc: usize,
+    frame: Frame,
+}
+
+/// A script run in progress ([`Engine::start`]).
+pub struct Run {
+    stack: Vec<Call>,
+    pending: Option<Pending>,
+    result: Value,
+    halted: bool,
+    /// Error before anything ran (script missing).
+    early: Option<u32>,
+}
+
+impl Run {
+    /// Runs until the end or the next suspension. `answer` replies to the
+    /// previous [`Status::Suspended`] ([`Answer::Start`] the first time).
+    pub fn resume(&mut self, e: &mut Engine, host: &mut dyn Host, answer: Answer) -> Status {
+        if let Some(code) = self.early.take() {
+            e.last_error = code;
+        }
+        if let Some(p) = self.pending.take() {
+            e.answer(self, host, p, answer);
+        }
+        e.drive(self, host)
+    }
+
+    /// Runs to the end, answering dialogs with [`Host::dialog`] and
+    /// continuing pauses.
+    pub fn finish(mut self, e: &mut Engine, host: &mut dyn Host) -> Outcome {
+        let mut answer = Answer::Start;
+        loop {
+            match self.resume(e, host, answer) {
+                Status::Finished(o) => return o,
+                Status::Suspended(Suspend::Dialog(d)) => answer = Answer::Dialog(host.dialog(&d)),
+                Status::Suspended(Suspend::Pause(_)) => answer = Answer::Continue,
+            }
+        }
+    }
+
+    /// Whether the run is waiting for an answer.
+    pub fn is_suspended(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+/// The trigger that started a script, for `Get ( Trigger… )`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TriggerInfo {
+    pub keystroke: String,
+    pub modifier_keys: u32,
+    pub current_panel: String,
+    pub target_panel: String,
+    pub external_event: String,
+}
+
 /// Result of a script run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -158,6 +271,11 @@ pub struct Engine {
     /// Record being edited and its values before the first change
     /// (`None` for a new record), for Revert Record.
     open: Option<(u32, usize, Option<engine::Record>)>,
+    /// Trigger information of the run (`Get ( TriggerKeystroke )`…), set
+    /// by the host before [`Engine::start`].
+    pub trigger: TriggerInfo,
+    /// `Get ( LastErrorLocation )`: script, step and line of the last error.
+    last_error_location: String,
 }
 
 /// One script call.
@@ -174,6 +292,10 @@ enum Flow {
     Jump(usize),
     Exit(Value),
     Halt,
+    /// Perform Script: script index and parameter.
+    Call(usize, Value),
+    /// Wait for the user.
+    Suspend(Suspend, Pending),
 }
 
 /// Control-flow links of a step list: `next` = next branch (If, Else If)
@@ -295,6 +417,8 @@ impl Engine {
             error_capture: false,
             allow_abort: true,
             open: None,
+            trigger: TriggerInfo::default(),
+            last_error_location: String::new(),
         }
     }
 
@@ -303,23 +427,53 @@ impl Engine {
         Ok(Engine::new(fmp12::scripts::scripts(file)?))
     }
 
-    /// Runs script `id` with an optional parameter (Perform Script).
-    pub fn perform(&mut self, host: &mut dyn Host, id: u32, parameter: Option<Value>) -> Outcome {
+    /// Starts script `id` with an optional parameter; [`Run::resume`] runs it.
+    pub fn start(&mut self, host: &mut dyn Host, id: u32, parameter: Option<Value>) -> Run {
         self.error_capture = false;
         self.allow_abort = true;
-        let Some(i) = self.scripts.iter().position(|s| s.id == id) else {
-            return Outcome {
-                result: Value::empty(),
-                last_error: error::SCRIPT_MISSING,
-                halted: false,
-            };
+        let mut run = Run {
+            stack: Vec::new(),
+            pending: None,
+            result: Value::empty(),
+            halted: false,
+            early: None,
         };
-        let (result, halted) = self.call(host, i, parameter.unwrap_or_else(Value::empty));
-        Outcome {
-            result,
-            last_error: self.last_error,
-            halted,
+        match self.scripts.iter().position(|s| s.id == id) {
+            Some(i) => self.push(host, &mut run, i, parameter.unwrap_or_else(Value::empty)),
+            None => run.early = Some(error::SCRIPT_MISSING),
         }
+        run
+    }
+
+    /// Starts one step outside a script: a layout button's action
+    /// (`LayoutObject::button`).
+    pub fn start_step(&mut self, host: &mut dyn Host, step: &Step) -> Run {
+        self.error_capture = false;
+        let steps = vec![step.clone()];
+        Run {
+            stack: vec![Call {
+                links: links(&steps),
+                steps,
+                pc: 0,
+                frame: Frame {
+                    name: String::new(),
+                    locals: HashMap::new(),
+                    parameter: Value::empty(),
+                    result: Value::empty(),
+                    original_layout: host.window().layout,
+                },
+            }],
+            pending: None,
+            result: Value::empty(),
+            halted: false,
+            early: None,
+        }
+    }
+
+    /// Runs script `id` to the end (Perform Script): dialogs are answered
+    /// by [`Host::dialog`], pauses continue.
+    pub fn perform(&mut self, host: &mut dyn Host, id: u32, parameter: Option<Value>) -> Outcome {
+        self.start(host, id, parameter).finish(self, host)
     }
 
     /// Runs the script named `name` (case-insensitive).
@@ -329,71 +483,168 @@ impl Engine {
         name: &str,
         parameter: Option<Value>,
     ) -> Outcome {
-        let id = self
-            .scripts
-            .iter()
-            .find(|s| s.name.eq_ignore_ascii_case(name) && !s.is_folder())
-            .map_or(0, |s| s.id);
+        let id = self.script_named(name).unwrap_or(0);
         self.perform(host, id, parameter)
     }
 
-    /// Runs one step outside a script: a layout button's action
-    /// (`LayoutObject::button`).
+    /// Id of the script named `name` (case-insensitive), folders excluded.
+    pub fn script_named(&self, name: &str) -> Option<u32> {
+        self.scripts
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name) && !s.is_folder())
+            .map(|s| s.id)
+    }
+
+    /// Runs one step outside a script to the end (button actions).
     pub fn run_step(&mut self, host: &mut dyn Host, step: &Step) -> Outcome {
-        self.error_capture = false;
-        let mut frame = Frame {
-            name: String::new(),
-            locals: HashMap::new(),
-            parameter: Value::empty(),
-            result: Value::empty(),
-            original_layout: host.window().layout,
-        };
-        let steps = std::slice::from_ref(step);
-        let (result, halted) = self.run(host, steps, &mut frame);
-        Outcome {
-            result,
-            last_error: self.last_error,
-            halted,
-        }
+        self.start_step(host, step).finish(self, host)
     }
 
-    /// Calls script index `i`: returns (Exit Script result, halted).
-    fn call(&mut self, host: &mut dyn Host, i: usize, parameter: Value) -> (Value, bool) {
-        let script = self.scripts[i].clone();
-        let mut frame = Frame {
-            name: script.name.clone(),
-            locals: HashMap::new(),
-            parameter,
-            result: Value::empty(),
-            original_layout: host.window().layout,
-        };
-        self.run(host, &script.steps, &mut frame)
+    /// Pushes a call of script index `i`.
+    fn push(&mut self, host: &mut dyn Host, run: &mut Run, i: usize, parameter: Value) {
+        let script = &self.scripts[i];
+        let steps = script.steps.clone();
+        run.stack.push(Call {
+            links: links(&steps),
+            steps,
+            pc: 0,
+            frame: Frame {
+                name: script.name.clone(),
+                locals: HashMap::new(),
+                parameter,
+                result: Value::empty(),
+                original_layout: host.window().layout,
+            },
+        });
     }
 
-    fn run(&mut self, host: &mut dyn Host, steps: &[Step], frame: &mut Frame) -> (Value, bool) {
-        let l = links(steps);
-        let mut pc = 0;
-        while pc < steps.len() {
-            let s = &steps[pc];
+    /// Runs steps until the run ends or suspends.
+    fn drive(&mut self, run: &mut Run, host: &mut dyn Host) -> Status {
+        loop {
+            let Some(top) = run.stack.last_mut() else {
+                return Status::Finished(Outcome {
+                    result: std::mem::replace(&mut run.result, Value::empty()),
+                    last_error: self.last_error,
+                    halted: run.halted,
+                });
+            };
+            let Some(s) = top.steps.get(top.pc) else {
+                self.ret(run, host, Value::empty(), false);
+                continue;
+            };
             if !s.enabled {
-                pc += 1;
+                top.pc += 1;
                 continue;
             }
-            let (flow, err) = self.step(host, steps, &l, pc, frame);
-            if s.id != id::COMMENT {
-                self.last_error = err;
-            }
-            if err != 0 && !self.error_capture && !host.error(s, err) {
-                return (Value::empty(), true);
-            }
-            match flow {
-                Flow::Next => pc += 1,
-                Flow::Jump(j) => pc = j,
-                Flow::Exit(v) => return (v, false),
-                Flow::Halt => return (Value::empty(), true),
+            let pc = top.pc;
+            match self.exec(host, &top.steps, &top.links, pc, &mut top.frame) {
+                Ok(Flow::Call(i, p)) => self.push(host, run, i, p),
+                Ok(Flow::Suspend(s, p)) => {
+                    run.pending = Some(p);
+                    return Status::Suspended(s);
+                }
+                Ok(flow) => self.complete(run, host, flow, 0),
+                Err(code) => self.complete(run, host, Flow::Next, code),
             }
         }
-        (Value::empty(), false)
+    }
+
+    /// Ends the current step of the top call with `flow` and error `err`.
+    fn complete(&mut self, run: &mut Run, host: &mut dyn Host, flow: Flow, err: u32) {
+        let Some(top) = run.stack.last_mut() else {
+            return;
+        };
+        let Some(s) = top.steps.get(top.pc) else {
+            return;
+        };
+        if s.id != id::COMMENT {
+            self.last_error = err;
+        }
+        if err != 0 {
+            self.last_error_location = format!(
+                "{}\r{}\r{}",
+                top.frame.name,
+                s.name().unwrap_or_default(),
+                top.pc + 1
+            );
+            if !self.error_capture && !host.error(s, err) {
+                Self::halt(run);
+                return;
+            }
+        }
+        match flow {
+            Flow::Next => top.pc += 1,
+            Flow::Jump(j) => top.pc = j,
+            Flow::Exit(v) => self.ret(run, host, v, false),
+            Flow::Halt => Self::halt(run),
+            Flow::Call(..) | Flow::Suspend(..) => top.pc += 1,
+        }
+    }
+
+    /// Halt Script (or a cancelled error): every level stops.
+    fn halt(run: &mut Run) {
+        run.stack.clear();
+        run.result = Value::empty();
+        run.halted = true;
+    }
+
+    /// Returns from the top call with `result`.
+    fn ret(&mut self, run: &mut Run, host: &mut dyn Host, result: Value, halted: bool) {
+        run.stack.pop();
+        if run.stack.is_empty() {
+            run.result = result;
+            run.halted = halted;
+            return;
+        }
+        if let Some(parent) = run.stack.last_mut() {
+            parent.frame.result = result;
+        }
+        // The Perform Script step's own error is the sub-script's last error.
+        let err = self.last_error;
+        self.complete(run, host, Flow::Next, err);
+    }
+
+    /// Applies the user's answer to a suspended step, then ends the step.
+    fn answer(&mut self, run: &mut Run, host: &mut dyn Host, p: Pending, a: Answer) {
+        match (p, a) {
+            (Pending::Pause, Answer::Cancel) => {
+                self.last_error = error::USER_CANCELED;
+                Self::halt(run);
+            }
+            (Pending::Pause, _) => self.complete(run, host, Flow::Next, 0),
+            (Pending::Dialog { inputs, commits }, a) => {
+                let a = match a {
+                    Answer::Dialog(d) => d,
+                    _ => DialogAnswer {
+                        button: 1,
+                        inputs: Vec::new(),
+                    },
+                };
+                self.last_choice = a.button;
+                let mut err = 0;
+                if commits.get(a.button.wrapping_sub(1)) == Some(&true) {
+                    for (f, v) in inputs.iter().zip(a.inputs) {
+                        if let Err(e) = self.set_field(host, *f, Value::text(v)) {
+                            err = e;
+                        }
+                    }
+                }
+                self.complete(run, host, Flow::Next, err);
+            }
+            (Pending::Delete { table, records }, a) => {
+                let yes = match a {
+                    Answer::Dialog(d) => d.button == 1,
+                    Answer::Cancel => false,
+                    _ => true,
+                };
+                if yes {
+                    delete_records(host, table, &records);
+                    self.complete(run, host, Flow::Next, 0);
+                } else {
+                    self.complete(run, host, Flow::Next, error::USER_CANCELED);
+                }
+            }
+        }
     }
 
     /// Context of the current window: (table, occurrence, record).
@@ -417,6 +668,26 @@ impl Engine {
         flags.insert("scriptresult", frame.result.clone());
         flags.insert("scriptname", Value::text(&frame.name));
         flags.insert("lasterror", num(self.last_error as usize));
+        flags.insert("lasterrorlocation", Value::text(&self.last_error_location));
+        flags.insert("lasterrordetail", Value::text(""));
+        flags.insert("scriptanimationstate", num(0));
+        flags.insert("triggerkeystroke", Value::text(&self.trigger.keystroke));
+        flags.insert(
+            "triggermodifierkeys",
+            num(self.trigger.modifier_keys as usize),
+        );
+        flags.insert(
+            "triggercurrentpanel",
+            Value::text(&self.trigger.current_panel),
+        );
+        flags.insert(
+            "triggertargetpanel",
+            Value::text(&self.trigger.target_panel),
+        );
+        flags.insert(
+            "triggerexternalevent",
+            Value::text(&self.trigger.external_event),
+        );
         flags.insert("lastmessagechoice", num(self.last_choice));
         flags.insert("errorcapturestate", num(self.error_capture as usize));
         flags.insert("allowabortstate", num(self.allow_abort as usize));
@@ -475,20 +746,6 @@ impl Engine {
         self.open = None;
     }
 
-    fn step(
-        &mut self,
-        host: &mut dyn Host,
-        steps: &[Step],
-        l: &Links,
-        pc: usize,
-        frame: &mut Frame,
-    ) -> (Flow, u32) {
-        match self.exec(host, steps, l, pc, frame) {
-            Ok(flow) => (flow, 0),
-            Err(code) => (Flow::Next, code),
-        }
-    }
-
     fn exec(
         &mut self,
         host: &mut dyn Host,
@@ -535,16 +792,7 @@ impl Engine {
                 let i = script
                     .and_then(|id| self.scripts.iter().position(|s| s.id == id))
                     .ok_or(error::SCRIPT_MISSING)?;
-                let (result, halted) = self.call(host, i, p);
-                frame.result = result;
-                if halted {
-                    return Ok(Flow::Halt);
-                }
-                // The step's own error is the sub-script's last error.
-                return match self.last_error {
-                    0 => Ok(Flow::Next),
-                    e => Err(e),
-                };
+                return Ok(Flow::Call(i, p));
             }
             (StepParams::ExitScript(c), _) => {
                 let v = self.eval_opt(host, frame, c)?.unwrap_or_else(Value::empty);
@@ -750,13 +998,18 @@ impl Engine {
                     let value = self.field_value(host, *f).unwrap_or_default();
                     d.inputs.push((*f, label, value));
                 }
-                let a = host.dialog(&d);
-                self.last_choice = a.button;
-                if commits.get(a.button.wrapping_sub(1)) == Some(&true) {
-                    for ((f, _, _), v) in d.inputs.iter().zip(a.inputs) {
-                        self.set_field(host, *f, Value::text(v))?;
-                    }
-                }
+                let inputs = d.inputs.iter().map(|i| i.0).collect();
+                return Ok(Flow::Suspend(
+                    Suspend::Dialog(d),
+                    Pending::Dialog { inputs, commits },
+                ));
+            }
+            (StepParams::Pause(duration), id::PAUSE_RESUME) => {
+                let secs = match self.eval_opt(host, frame, duration)? {
+                    Some(v) => v.to_text().trim().parse::<f64>().ok(),
+                    None => None,
+                };
+                return Ok(Flow::Suspend(Suspend::Pause(secs), Pending::Pause));
             }
             (_, id::NEW_RECORD) => {
                 self.commit();
@@ -831,8 +1084,12 @@ impl Engine {
                 } else {
                     let (table, _, rec) = Self::context(host);
                     let r = rec.ok_or(error::RECORD_MISSING)?;
-                    if *dialog && !self.confirm(host, "Permanently delete this ENTIRE record?") {
-                        return Err(error::USER_CANCELED);
+                    if *dialog {
+                        return Ok(confirm_delete(
+                            "Permanently delete this ENTIRE record?",
+                            table,
+                            vec![r],
+                        ));
                     }
                     delete_records(host, table, &[r]);
                 }
@@ -840,12 +1097,14 @@ impl Engine {
             (StepParams::Records { dialog, .. }, id::DELETE_ALL_RECORDS) => {
                 self.commit();
                 let (table, _, _) = Self::context(host);
-                if *dialog
-                    && !self.confirm(host, "Permanently delete ALL records in the found set?")
-                {
-                    return Err(error::USER_CANCELED);
-                }
                 let found = host.window().found.clone();
+                if *dialog {
+                    return Ok(confirm_delete(
+                        "Permanently delete ALL records in the found set?",
+                        table,
+                        found,
+                    ));
+                }
                 delete_records(host, table, &found);
             }
             (_, id::REVERT_RECORD) => {
@@ -861,19 +1120,27 @@ impl Engine {
                 }
             }
             (_, id::COMMIT) => self.commit(),
-            (StepParams::Mode { .. }, id::ENTER_BROWSE_MODE) => {
+            (StepParams::Mode { pause }, id::ENTER_BROWSE_MODE) => {
                 self.commit();
                 let w = host.window();
                 w.mode = Mode::Browse;
                 w.requests.clear();
+                if *pause {
+                    return Ok(Flow::Suspend(Suspend::Pause(None), Pending::Pause));
+                }
             }
-            (StepParams::Mode { .. }, id::ENTER_PREVIEW_MODE) => {
+            (StepParams::Mode { pause }, id::ENTER_PREVIEW_MODE) => {
                 self.commit();
                 host.window().mode = Mode::Preview;
+                if *pause {
+                    return Ok(Flow::Suspend(Suspend::Pause(None), Pending::Pause));
+                }
             }
             (
                 StepParams::Find {
-                    restore, requests, ..
+                    restore,
+                    requests,
+                    pause,
                 },
                 id::ENTER_FIND_MODE,
             ) => {
@@ -888,6 +1155,9 @@ impl Engine {
                     vec![Request::default()]
                 };
                 w.current_request = 0;
+                if *pause {
+                    return Ok(Flow::Suspend(Suspend::Pause(None), Pending::Pause));
+                }
             }
             (
                 StepParams::Find {
@@ -1006,15 +1276,6 @@ impl Engine {
         })
     }
 
-    fn confirm(&mut self, host: &mut dyn Host, message: &str) -> bool {
-        let d = Dialog {
-            message: message.into(),
-            buttons: vec!["Delete".into(), "Cancel".into()],
-            ..Default::default()
-        };
-        host.dialog(&d).button == 1
-    }
-
     fn eval_dest(
         &mut self,
         host: &mut dyn Host,
@@ -1128,6 +1389,16 @@ impl Engine {
         db.touch(tid, r);
         Ok(())
     }
+}
+
+/// FileMaker's delete confirmation: Delete (button 1) or Cancel.
+fn confirm_delete(message: &str, table: u32, records: Vec<usize>) -> Flow {
+    let d = Dialog {
+        message: message.into(),
+        buttons: vec!["Delete".into(), "Cancel".into()],
+        ..Default::default()
+    };
+    Flow::Suspend(Suspend::Dialog(d), Pending::Delete { table, records })
 }
 
 enum Dest {

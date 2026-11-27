@@ -753,3 +753,122 @@ fn button_runs_one_step() {
     assert_eq!(o.last_error, 0);
     assert_eq!(h.names()[0], "Button");
 }
+
+/// Resumable runs: a dialog inside a sub-script suspends the whole stack;
+/// the answer resumes it where it stopped.
+#[test]
+fn resumable_dialog_in_sub_script() {
+    let dialog = step(
+        id::SHOW_CUSTOM_DIALOG,
+        StepParams::ShowCustomDialog {
+            title: Some(c("\"Q\"")),
+            message: Some(c("Get(ScriptParameter)")),
+            buttons: vec![
+                DialogButton {
+                    label: Some(c("\"Yes\"")),
+                    commit: true,
+                },
+                DialogButton {
+                    label: Some(c("\"No\"")),
+                    commit: false,
+                },
+            ],
+            input: Some((field(CITY), Some(c("\"City\"")))),
+        },
+    );
+    let scripts = vec![
+        script(
+            1,
+            vec![
+                perform(2, Some("\"Sure?\"")),
+                exit("Get(ScriptResult) & \"/\" & People::City"),
+            ],
+        ),
+        script(2, vec![dialog, exit("Get(LastMessageChoice)")]),
+    ];
+    let mut h = TestHost::new(PEOPLE);
+    let mut e = Engine::new(scripts);
+    let mut run = e.start(&mut h, 1, None);
+    let Status::Suspended(Suspend::Dialog(d)) = run.resume(&mut e, &mut h, Answer::Start) else {
+        panic!("no dialog")
+    };
+    assert_eq!(
+        (d.message.as_str(), d.inputs[0].2.as_str()),
+        ("Sure?", "Paris")
+    );
+    assert!(run.is_suspended());
+    let answer = Answer::Dialog(DialogAnswer {
+        button: 1,
+        inputs: vec!["Lyon".into()],
+    });
+    let Status::Finished(o) = run.resume(&mut e, &mut h, answer) else {
+        panic!("not finished")
+    };
+    assert_eq!(o.result.to_text(), "1/Lyon");
+    assert!(h.dialogs.is_empty(), "the host's own dialog is not used");
+}
+
+#[test]
+fn pause_continue_and_cancel() {
+    let pause = step(id::PAUSE_RESUME, StepParams::Pause(None));
+    let steps = vec![var("$a", "1"), pause, var("$a", "2"), exit("$a")];
+    for (answer, result, halted) in [(Answer::Continue, "2", false), (Answer::Cancel, "", true)] {
+        let mut h = TestHost::new(PEOPLE);
+        let mut e = Engine::new(vec![script(1, steps.clone())]);
+        let mut run = e.start(&mut h, 1, None);
+        assert_eq!(
+            run.resume(&mut e, &mut h, Answer::Start),
+            Status::Suspended(Suspend::Pause(None))
+        );
+        let Status::Finished(o) = run.resume(&mut e, &mut h, answer) else {
+            panic!()
+        };
+        assert_eq!((o.result.to_text().as_str(), o.halted), (result, halted));
+    }
+    // perform() runs through pauses.
+    let (got, _, _) = run(vec![script(1, steps)], "");
+    assert_eq!(got, "2");
+}
+
+#[test]
+fn delete_confirmation_cancel_keeps_record() {
+    let del = step(
+        id::DELETE_RECORD,
+        StepParams::Records {
+            dialog: true,
+            count: None,
+        },
+    );
+    let mut h = TestHost::new(PEOPLE);
+    let mut e = Engine::new(vec![script(1, vec![del, exit("Get(LastError)")])]);
+    let mut run = e.start(&mut h, 1, None);
+    let Status::Suspended(Suspend::Dialog(d)) = run.resume(&mut e, &mut h, Answer::Start) else {
+        panic!()
+    };
+    assert_eq!(d.buttons, ["Delete", "Cancel"]);
+    let cancel = Answer::Dialog(DialogAnswer {
+        button: 2,
+        inputs: Vec::new(),
+    });
+    let Status::Finished(o) = run.resume(&mut e, &mut h, cancel) else {
+        panic!()
+    };
+    assert_eq!(o.result.to_text(), "1");
+    assert_eq!(h.names().len(), 4);
+}
+
+#[test]
+fn missing_script_and_sub_script_error() {
+    let mut h = TestHost::new(PEOPLE);
+    let mut e = Engine::new(vec![script(
+        1,
+        vec![
+            step(id::SET_ERROR_CAPTURE, StepParams::Switch(true)),
+            perform(9, None),
+            exit("Get(LastError)"),
+        ],
+    )]);
+    assert_eq!(e.perform(&mut h, 7, None).last_error, error::SCRIPT_MISSING);
+    let o = e.perform(&mut h, 1, None);
+    assert_eq!(o.result.to_text(), "104");
+}

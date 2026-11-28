@@ -1999,6 +1999,7 @@ pub(crate) mod tests {
             file,
             path: None,
             triggers: Default::default(),
+            related_cache: Default::default(),
         };
         let i = d.layouts.iter().position(|l| l.id == 1).unwrap();
         let mut ds = Designer::new(&d, i);

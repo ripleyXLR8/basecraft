@@ -6,6 +6,7 @@
 #
 # Prints one line per file: `OK <file>` or `BAD <file>: <error lines>`;
 # exit code 0 when every file passes. Same environment as fms_check.sh.
+# FMDeveloperTool can hang on a damaged file: each check stops after 120 s.
 set -euo pipefail
 [ $# -gt 0 ] || { echo "usage: fms_batch.sh file.fmp12 …" >&2; exit 2; }
 host=${FMS_SSH:-basecraft@127.0.0.1}
@@ -24,7 +25,7 @@ for f in "$@"; do
 done
 tar -C "$tmp" -cf - . | ssh "${opts[@]}" -p "$port" "$host" "tar -C $dir -xf -"
 rm -rf "$tmp"
-out=$(ssh "${opts[@]}" -p "$port" "$host" "cd $dir && for f in *.fmp12; do r=\$('$tool' --checkConsistency \$f 2>&1); if grep -q 'found no problems' <<<\"\$r\"; then echo \"\$f OK\"; else echo \"\$f BAD \$(grep -iE 'error|bad block' <<<\"\$r\" | tr '\\n' ' ' | cut -c1-300)\"; fi; done")
+out=$(ssh "${opts[@]}" -p "$port" "$host" "cd $dir && for f in *.fmp12; do r=\$(timeout -k 5 120 '$tool' --checkConsistency \$f 2>&1 || echo \"Error: no report (exit \$?, 124 = timed out)\"); if grep -q 'found no problems' <<<\"\$r\"; then echo \"\$f OK\"; else echo \"\$f BAD \$(grep -iE 'error|bad block' <<<\"\$r\" | tr '\\n' ' ' | cut -c1-300)\"; fi; done")
 status=0
 i=0
 for f in "$@"; do

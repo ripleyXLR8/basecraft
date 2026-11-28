@@ -46,6 +46,20 @@ fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
+/// Today as a day number (the local date), `None` on the web.
+fn today() -> Option<i64> {
+    // `SystemTime::now` panics in WebAssembly.
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    // 1970-01-01 as a FileMaker day number.
+    Some(calc::value::day_number(1970, 1, 1) + secs.div_euclid(86_400))
+}
+
 /// Whether condition `k` holds for the object's `value`.
 pub fn holds(db: &Database, k: &Condition, value: &Value, c: Context) -> bool {
     match k.op {
@@ -57,7 +71,9 @@ pub fn holds(db: &Database, k: &Condition, value: &Value, c: Context) -> bool {
     }
 }
 
-/// A value comparison ("Value is …") of condition `k`.
+/// A value comparison ("Value is …") of condition `k`, evaluated from its
+/// operator and values (the formula FileMaker stores for it compares
+/// `Self`, which is the same test).
 pub fn compares(k: &Condition, value: &Value) -> bool {
     use std::cmp::Ordering::*;
     let (a, b) = (operand(&k.value1), operand(&k.value2));
@@ -77,7 +93,25 @@ pub fn compares(k: &Condition, value: &Value) -> bool {
         op::BEGINNING => text.starts_with(&at),
         op::ENDING => text.ends_with(&at),
         op::EMPTY => value.is_empty(),
-        op::NOT_EMPTY => !value.is_empty(),
+        // Date tests against today, in days.
+        op::BEFORE_TODAY..=op::LESS_DAYS_BEFORE => {
+            let (Some(d), Some(today)) = (value.to_date(), today()) else {
+                return false;
+            };
+            let n = a.to_num().map_or(0, |x| {
+                use bigdecimal::ToPrimitive;
+                x.to_i64().unwrap_or(0)
+            });
+            match k.op {
+                op::BEFORE_TODAY => d < today,
+                op::TODAY => d == today,
+                op::AFTER_TODAY => d > today,
+                op::MORE_DAYS_AFTER => d > today + n,
+                op::MORE_DAYS_BEFORE => d < today - n,
+                op::LESS_DAYS_AFTER => d < today + n,
+                _ => d > today - n,
+            }
+        }
         _ => false,
     }
 }
@@ -120,7 +154,7 @@ mod tests {
         assert!(compares(&k(op::BETWEEN, "\"he\"", "\"z\""), &hello));
         assert!(!compares(&k(op::LESS, "\"he\"", ""), &hello));
         assert!(compares(&k(op::BEGINNING, "\"he\"", ""), &hello));
-        assert!(compares(&k(op::NOT_EMPTY, "", ""), &hello));
+        assert!(!compares(&k(op::EMPTY, "", ""), &hello));
         let ten = Value::int(10);
         assert!(compares(&k(op::GREATER, "9", ""), &ten));
         assert!(!compares(&k(op::GREATER, "11", ""), &ten));

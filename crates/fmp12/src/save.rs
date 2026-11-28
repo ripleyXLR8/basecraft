@@ -492,7 +492,7 @@ fn object_blob(entries: &[Entry], l: u32) -> Vec<u8> {
 
 /// Sub-nodes of an object node holding calculations (label, tooltip, hide
 /// condition, placeholder, web address) or conditional formats (138).
-const NODE_CALCS: [u32; 6] = [2, 3, 4, 6, 128, 138];
+const NODE_CALCS: [u32; 6] = [2, 3, 6, 128, 138, 141];
 
 #[derive(PartialEq)]
 enum NodeCalc<'a> {
@@ -507,7 +507,7 @@ fn node_calc(o: &crate::layouts::LayoutObject, sub: u32) -> Option<NodeCalc<'_>>
     Some(match sub {
         2 if o.kind != kind::TAB_PANEL => NodeCalc::Calc(o.label.as_ref()),
         3 => NodeCalc::Calc(o.tooltip.as_ref()),
-        4 => NodeCalc::Calc(o.hide.as_ref()),
+        141 => NodeCalc::Calc(o.hide.as_ref()),
         6 => NodeCalc::Calc(o.placeholder.as_ref()),
         128 if o.external.is_some_and(|e| e.0 == WEB_VIEWER) => NodeCalc::Calc(o.url.as_ref()),
         138 => NodeCalc::Conditions(&o.conditions),

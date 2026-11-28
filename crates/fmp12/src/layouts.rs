@@ -59,6 +59,14 @@ pub const HIDE_WHEN_PRINTING: u64 = 0x200;
 pub const HAS_CONDITIONS: u64 = 0x1;
 /// The object has a tooltip (node `.[3]`), checked on the templates.
 pub const HAS_TOOLTIP: u64 = 0x4000;
+/// The object has a "Hide object when" calculation (node `.[141]`).
+pub const HAS_HIDE: u64 = 0x4;
+/// "Hide object when" applies in Find mode too.
+pub const HIDE_IN_FIND: u64 = 0x100;
+/// Sliding up: "resize enclosing part" too.
+pub const RESIZE_PART: u64 = 0x40;
+/// Sliding up based on the objects directly above only (with [`SLIDE_UP`]).
+pub const SLIDE_DIRECTLY_ABOVE: u64 = 0x8000;
 
 /// Object kinds (field 1, XML `kind`).
 pub mod kind {
@@ -103,8 +111,11 @@ pub struct Condition {
     pub format: Vec<u8>,
 }
 
-/// Conditional format operators (k13 field 3), in the order of
-/// FileMaker's Conditional Formatting dialog.
+/// Conditional format operators (k13 field 3): 0 formula, then the
+/// "Value is" choices in the order of FileMaker's Conditional Formatting
+/// dialog. FileMaker also writes a value test as a formula on `Self` in
+/// `.[5]` (e.g. `Self = "hello"` for "is equal to hello"), which is what
+/// it evaluates.
 pub mod op {
     pub const FORMULA: u64 = 0;
     pub const BETWEEN: u64 = 1;
@@ -112,15 +123,60 @@ pub mod op {
     pub const EQUAL: u64 = 3;
     pub const NOT_EQUAL: u64 = 4;
     pub const GREATER: u64 = 5;
-    pub const GREATER_EQUAL: u64 = 6;
-    pub const LESS: u64 = 7;
+    pub const LESS: u64 = 6;
+    pub const GREATER_EQUAL: u64 = 7;
     pub const LESS_EQUAL: u64 = 8;
     pub const CONTAINING: u64 = 9;
     pub const NOT_CONTAINING: u64 = 10;
     pub const BEGINNING: u64 = 11;
     pub const ENDING: u64 = 12;
     pub const EMPTY: u64 = 13;
-    pub const NOT_EMPTY: u64 = 14;
+    pub const BEFORE_TODAY: u64 = 14;
+    pub const TODAY: u64 = 15;
+    pub const AFTER_TODAY: u64 = 16;
+    pub const MORE_DAYS_AFTER: u64 = 17;
+    pub const MORE_DAYS_BEFORE: u64 = 18;
+    pub const LESS_DAYS_AFTER: u64 = 19;
+    pub const LESS_DAYS_BEFORE: u64 = 20;
+}
+
+/// The formula FileMaker stores for a value test (`.[5]` of the
+/// condition), from the values as typed (numbers as they are, other
+/// values quoted). `None` for a formula condition.
+pub fn value_formula(op: u64, value1: &str, value2: &str) -> Option<String> {
+    let lit = |v: &str| {
+        let t = v.trim();
+        if !t.is_empty() && t.parse::<f64>().is_ok() {
+            t.to_string()
+        } else {
+            format!("\"{}\"", t.replace('"', "\"\""))
+        }
+    };
+    let (a, b) = (lit(value1), lit(value2));
+    let today = "Get ( CurrentDate )";
+    Some(match op {
+        op::BETWEEN => format!("Self \u{2265} {a} and Self \u{2264} {b}"),
+        op::NOT_BETWEEN => format!("Self < {a} or Self > {b}"),
+        op::EQUAL => format!("Self = {a}"),
+        op::NOT_EQUAL => format!("Self \u{2260} {a}"),
+        op::GREATER => format!("Self > {a}"),
+        op::LESS => format!("Self < {a}"),
+        op::GREATER_EQUAL => format!("Self \u{2265} {a}"),
+        op::LESS_EQUAL => format!("Self \u{2264} {a}"),
+        op::CONTAINING => format!("PatternCount ( Self ; {a} ) > 0"),
+        op::NOT_CONTAINING => format!("PatternCount ( Self ; {a} ) = 0"),
+        op::BEGINNING => format!("Left ( Self ; Length ( {a} ) ) = {a}"),
+        op::ENDING => format!("Right ( Self ; Length ( {a} ) ) = {a}"),
+        op::EMPTY => "IsEmpty ( Self )".into(),
+        op::BEFORE_TODAY => format!("Self < {today}"),
+        op::TODAY => format!("Self = {today}"),
+        op::AFTER_TODAY => format!("Self > {today}"),
+        op::MORE_DAYS_AFTER => format!("Self > {today} + {a}"),
+        op::MORE_DAYS_BEFORE => format!("Self < {today} - {a}"),
+        op::LESS_DAYS_AFTER => format!("Self < {today} + {a}"),
+        op::LESS_DAYS_BEFORE => format!("Self > {today} - {a}"),
+        _ => return None,
+    })
 }
 
 impl Condition {
@@ -257,7 +313,7 @@ pub struct LayoutObject {
     pub tooltip: Option<Vec<u8>>,
     /// Placeholder text calculation of a field (node `.[6]`).
     pub placeholder: Option<Vec<u8>>,
-    /// "Hide object when" calculation (node `.[4]`).
+    /// "Hide object when" calculation (node `.[141]`).
     pub hide: Option<Vec<u8>>,
     /// Data formatting (node key 13), see [`crate::formats`].
     pub format: Option<crate::formats::Format>,
@@ -471,7 +527,7 @@ impl LayoutObject {
         }
         self.tooltip = calc(&[3]);
         self.placeholder = calc(&[6]);
-        self.hide = calc(&[4]);
+        self.hide = calc(&[141]);
         if self.external.is_some_and(|e| e.0 == WEB_VIEWER) {
             self.url = calc(&[128]);
         }
@@ -814,9 +870,12 @@ pub fn patch_object(
 }
 
 /// Options with the bits FileMaker keeps in step with the object's node:
-/// [`HAS_CONDITIONS`] and [`HAS_TOOLTIP`].
+/// [`HAS_CONDITIONS`], [`HAS_TOOLTIP`] and [`HAS_HIDE`].
 pub fn effective_options(o: &LayoutObject) -> u64 {
-    let mut v = o.options & !(HAS_CONDITIONS | HAS_TOOLTIP);
+    let mut v = o.options & !(HAS_CONDITIONS | HAS_TOOLTIP | HAS_HIDE);
+    if o.hide.is_some() {
+        v |= HAS_HIDE;
+    }
     if !o.conditions.is_empty() {
         v |= HAS_CONDITIONS;
     }

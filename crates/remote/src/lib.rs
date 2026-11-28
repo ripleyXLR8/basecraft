@@ -206,6 +206,8 @@ pub struct FieldMeta {
     pub repetitions: u32,
     pub global: bool,
     pub value_list: Option<String>,
+    /// `editText`, `popupList` (drop-down), `popupMenu`, `checkBox`…
+    pub display: String,
 }
 
 /// Fields, portals and value lists of a layout.
@@ -400,6 +402,7 @@ fn field_meta(j: &Json) -> FieldMeta {
         repetitions: num(j.get("maxRepeat")).max(1),
         global: j["global"].as_bool().unwrap_or(false),
         value_list: j.get("valueList").map(text),
+        display: text(&j["displayType"]),
     }
 }
 
@@ -488,6 +491,12 @@ fn exchange(
         }
     }
     .map_err(transport)?;
+    reply(&mut resp)
+}
+
+/// A Data API reply: its JSON, or the FileMaker / HTTP error it carries.
+fn reply(resp: &mut ureq::http::Response<ureq::Body>) -> Result<Json> {
+    let transport = |e: ureq::Error| Error::Transport(e.to_string());
     let status = resp.status().as_u16();
     let raw = resp
         .body_mut()
@@ -778,6 +787,47 @@ impl Client {
             error: num(r.get("scriptError")),
             result: r.get("scriptResult").map(text),
         })
+    }
+
+    /// Uploads a file into a container field's repetition of a record
+    /// (`POST …/records/{id}/containers/{field}/{rep}`, multipart `upload`).
+    /// Returns the record's new modification id.
+    pub fn upload(
+        &self,
+        layout: &str,
+        id: u32,
+        field: &str,
+        rep: u32,
+        name: &str,
+        data: &[u8],
+    ) -> Result<u32> {
+        let url = format!(
+            "{}/{}/records/{id}/containers/{}/{rep}",
+            self.db_url(),
+            Self::layout_path(layout),
+            esc(field)
+        );
+        let boundary = "----basecraft-upload-7f3a9c";
+        let file = name.replace(['"', '\r', '\n'], "_");
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"upload\"; filename=\"{file}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let auth = format!("Bearer {}", self.token.as_deref().unwrap_or(""));
+        let mut resp = self
+            .agent
+            .post(&url)
+            .header("Authorization", &auth)
+            .header(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(&body[..])
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        let j = reply(&mut resp)?;
+        Ok(num(j["response"].get("modId")))
     }
 
     /// Downloads a container (the URL a record gives for it). FileMaker

@@ -48,6 +48,8 @@ fn t(key: &'static str) -> &'static str {
         "only the first records were loaded" => {
             "seuls les premiers enregistrements ont été chargés"
         }
+        "Opening" => "Ouverture de",
+        "records loaded" => "enregistrements chargés",
         _ => key,
     }
 }
@@ -74,10 +76,22 @@ struct RunDialog {
     result: Option<String>,
 }
 
+/// Login and loading running on another thread, with their progress.
+#[cfg(not(target_arch = "wasm32"))]
+struct Opening {
+    rx: std::sync::mpsc::Receiver<remote::Result<(remote::source::Remote, engine::Database)>>,
+    /// Records loaded so far.
+    loaded: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    database: String,
+    insecure: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     #[cfg(not(target_arch = "wasm32"))]
     dialog: Option<Dialog>,
+    #[cfg(not(target_arch = "wasm32"))]
+    opening: Option<Opening>,
     #[cfg(not(target_arch = "wasm32"))]
     run: Option<RunDialog>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -104,6 +118,8 @@ struct Session {
     synced: u64,
     /// Errors of the last sync, shown until the next one.
     errors: Vec<String>,
+    /// Records whose containers were downloaded (table, record).
+    fetched: std::collections::BTreeSet<(u32, usize)>,
 }
 
 impl App {
@@ -178,6 +194,7 @@ impl App {
             if self.editing.is_none() {
                 self.remote_sync();
             }
+            self.fetch_containers();
             if let Some(s) = &self.remote.session {
                 let host = s.remote.client.target.host.clone();
                 let insecure = s.insecure;
@@ -214,6 +231,9 @@ impl App {
 #[cfg(not(target_arch = "wasm32"))]
 impl App {
     fn open_remote_ui(&mut self, ctx: &egui::Context) {
+        if self.remote.opening.is_some() {
+            return self.opening_ui(ctx);
+        }
         let Some(d) = self.remote.dialog.as_mut() else {
             return;
         };
@@ -273,8 +293,8 @@ impl App {
         if !submit {
             return;
         }
-        // ponytail: login and loading block the window; a background
-        // thread with progress comes when files get large.
+        // Login and loading run on another thread: the window stays
+        // responsive and shows the records loaded so far.
         let target = remote::Target {
             host: d.host.trim().trim_end_matches('/').to_string(),
             database: d.database.trim().to_string(),
@@ -282,9 +302,64 @@ impl App {
         let options = remote::Options {
             insecure: d.insecure,
         };
-        let opened = remote::Client::login(&target, d.account.trim(), &d.password, options)
-            .and_then(remote::source::Remote::open);
-        match opened {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let loaded = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = loaded.clone();
+        let account = d.account.trim().to_string();
+        let password = std::mem::take(&mut d.password);
+        let database = target.database.clone();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let r = remote::Client::login(&target, &account, &password, options)
+                .and_then(|c| remote::source::Remote::open_counting(c, &count));
+            let _ = tx.send(r);
+            repaint.request_repaint();
+        });
+        self.remote.opening = Some(Opening {
+            rx,
+            loaded,
+            database,
+            insecure: options.insecure,
+        });
+    }
+
+    /// While the file opens: a spinner, the records loaded, Cancel; then
+    /// the file, or the error in the dialog.
+    fn opening_ui(&mut self, ctx: &egui::Context) {
+        let Some(op) = self.remote.opening.as_ref() else {
+            return;
+        };
+        let result = match op.rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let n = op.loaded.load(std::sync::atomic::Ordering::Relaxed);
+                let mut cancel = false;
+                egui::Modal::new(egui::Id::NULL.with("remote_opening")).show(ctx, |ui| {
+                    ui.set_min_width(320.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("{} « {} »…", t("Opening"), op.database));
+                    });
+                    ui.label(format!("{n} {}", t("records loaded")));
+                    if ui.button(t("Cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+                if cancel {
+                    // The thread finishes alone; its result is dropped.
+                    self.remote.opening = None;
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(remote::Error::Protocol("the login thread stopped".into()))
+            }
+        };
+        let Some(op) = self.remote.opening.take() else {
+            return;
+        };
+        match result {
             Ok((remote, db)) => {
                 let file = match fmp12::schema_edit::new_file("Remote")
                     .map_err(|e| e.to_string())
@@ -292,26 +367,47 @@ impl App {
                 {
                     Ok(f) => f,
                     Err(e) => {
-                        d.error = Some(e);
+                        if let Some(d) = self.remote.dialog.as_mut() {
+                            d.error = Some(e);
+                        }
                         return;
                     }
                 };
-                let name = target.database.clone();
                 let synced = crate::data_fingerprint(&db);
-                self.opened(name, db, file);
+                self.opened(op.database, db, file);
                 // A hosted file's scripts run on the server only.
                 self.engine = None;
                 self.remote.session = Some(Session {
                     remote,
-                    insecure: options.insecure,
+                    insecure: op.insecure,
                     synced,
                     errors: Vec::new(),
+                    fetched: Default::default(),
                 });
             }
             Err(e) => {
-                d.password.clear();
-                d.error = Some(e.to_string());
+                if let Some(d) = self.remote.dialog.as_mut() {
+                    d.error = Some(e.to_string());
+                }
             }
+        }
+    }
+
+    /// The current record's containers, downloaded once when it is shown.
+    fn fetch_containers(&mut self) {
+        let (Some(t), Some(r)) = (self.table(), self.current_record()) else {
+            return;
+        };
+        let (Some(s), Some(d)) = (self.remote.session.as_mut(), self.doc.as_mut()) else {
+            return;
+        };
+        if !s.fetched.insert((t, r)) {
+            return;
+        }
+        match s.remote.fetch_containers(&mut d.db, t, r) {
+            Ok(0) => {}
+            Ok(_) => s.synced = crate::data_fingerprint(&d.db),
+            Err(e) => s.errors = vec![e.to_string()],
         }
     }
 
@@ -350,6 +446,7 @@ impl App {
             Err(e) => s.errors = vec![e.to_string()],
         }
         s.synced = crate::data_fingerprint(&d.db);
+        s.fetched.clear();
         self.found.remove(&t);
         self.sorted.remove(&t);
         self.current.insert(t, 0);
@@ -462,6 +559,145 @@ mod tests {
 
     use super::*;
 
+    /// Runs frames until the login thread is done.
+    fn wait_open(h: &mut Harness<'static, App>) {
+        for _ in 0..400 {
+            h.run_steps(1);
+            if h.state().remote.opening.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        h.run_steps(3);
+    }
+
+    /// Serves canned Data API replies (method, path prefix, body) on
+    /// 127.0.0.1 (plain HTTP is allowed there only).
+    fn serve(routes: Vec<(&'static str, &'static str, String)>) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { continue };
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let mut len = 0;
+                loop {
+                    let mut h = String::new();
+                    r.read_line(&mut h).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':')
+                        && k.eq_ignore_ascii_case("content-length")
+                    {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; len];
+                r.read_exact(&mut body).unwrap();
+                // A little latency: the window must stay responsive.
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                let reply = routes
+                    .iter()
+                    .find(|(m, p, _)| *m == method && path.starts_with(p))
+                    .map_or("{}".to_string(), |(_, _, b)| b.clone());
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                s.write_all(head.as_bytes()).unwrap();
+            }
+        });
+        url
+    }
+
+    fn ok(response: &str) -> String {
+        format!(r#"{{"response":{response},"messages":[{{"code":"0","message":"OK"}}]}}"#)
+    }
+
+    /// Open Remote against a mock Data API: login and loading on another
+    /// thread (the spinner shows meanwhile), then the related field, the
+    /// value list as a pop-up menu and the portal's rows in Browse mode.
+    #[test]
+    fn open_remote_mock_portal_value_list() {
+        let db = "/fmi/data/vLatest/databases/Shop";
+        let records = ok(
+            r#"{"dataInfo":{"totalRecordCount":2,"foundCount":2,"returnedCount":2},"data":[{"fieldData":{"Name":"Ada","City":"London","Orders::Total":12},"portalData":{"Orders":[{"recordId":"7","Orders::Item":"Pen","Orders::Total":12,"modId":"0"},{"recordId":"8","Orders::Item":"Ink","Orders::Total":5,"modId":"0"}]},"recordId":"1","modId":"0"},{"fieldData":{"Name":"Grace","City":"Paris","Orders::Total":""},"portalData":{"Orders":[]},"recordId":"2","modId":"0"}]}"#,
+        );
+        let meta = ok(
+            r#"{"fieldMetaData":[{"name":"Name","type":"normal","displayType":"editText","result":"text","global":false,"maxRepeat":1},{"name":"City","type":"normal","displayType":"popupMenu","result":"text","valueList":"Cities","global":false,"maxRepeat":1},{"name":"Orders::Total","type":"normal","displayType":"editText","result":"number","global":false,"maxRepeat":1}],"portalMetaData":{"Orders":[{"name":"Orders::Item","type":"normal","result":"text","global":false,"maxRepeat":1},{"name":"Orders::Total","type":"normal","result":"number","global":false,"maxRepeat":1}]},"valueLists":[{"name":"Cities","type":"customList","values":[{"displayValue":"London","value":"London"},{"displayValue":"Paris","value":"Paris"}]}]}"#,
+        );
+        let routes = vec![
+            (
+                "POST",
+                "/fmi/data/vLatest/databases/Shop/sessions",
+                ok(r#"{"token":"t"}"#),
+            ),
+            (
+                "GET",
+                "/fmi/data/vLatest/databases/Shop/layouts/Clients/records",
+                records,
+            ),
+            (
+                "GET",
+                "/fmi/data/vLatest/databases/Shop/layouts/Clients",
+                meta,
+            ),
+            (
+                "GET",
+                "/fmi/data/vLatest/databases/Shop/layouts",
+                ok(r#"{"layouts":[{"name":"Clients","table":"Clients"}]}"#),
+            ),
+        ];
+        let _ = db;
+        let url = serve(routes);
+        let mut app = App::default();
+        app.remote.dialog = Some(Dialog {
+            host: url,
+            database: "Shop".into(),
+            account: "api".into(),
+            password: "pw".into(),
+            insecure: false,
+            error: None,
+        });
+        let mut h = crate::ui_tests::harness_for(app);
+        h.run_steps(2);
+        h.get_by_label(t("Open")).click();
+        h.run_steps(1);
+        // Still loading: the window draws the progress.
+        assert!(h.state().remote.opening.is_some());
+        crate::ui_tests::shot(&mut h, "m4_remote_opening");
+        wait_open(&mut h);
+        assert!(
+            h.state().hosted(),
+            "{:?}",
+            h.state()
+                .remote
+                .dialog
+                .as_ref()
+                .and_then(|d| d.error.clone())
+        );
+        crate::ui_tests::shot(&mut h, "m4_remote_portal");
+        // The City pop-up menu, the portal's rows on screen.
+        assert!(
+            h.get_all_by_role(egui::accesskit::Role::ComboBox)
+                .any(|n| format!("{n:?}").contains("London"))
+        );
+        let shown: Vec<String> = h
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .map(|n| format!("{n:?}"))
+            .collect();
+        for v in ["\"Ada\"", "\"12\"", "\"Pen\"", "\"Ink\"", "\"5\""] {
+            assert!(shown.iter().any(|s| s.contains(v)), "{v} not shown");
+        }
+    }
+
     #[test]
     fn open_remote_browse_edit_refuse() {
         let (Ok(url), Ok(account), Ok(password)) = (
@@ -494,7 +730,7 @@ mod tests {
             .build_eframe(move |_| app);
         h.run_steps(2);
         h.get_by_label(t("Open")).click();
-        h.run_steps(3);
+        wait_open(&mut h);
         assert!(
             h.state().hosted(),
             "{:?}",

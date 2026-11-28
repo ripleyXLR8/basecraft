@@ -499,3 +499,152 @@ fn source_loads_and_syncs() {
         ]
     );
 }
+
+/// A layout with a related field, a value list and a portal, in the Data
+/// API's format: the related field is read-only, the value list goes on
+/// its field as a pop-up menu, the portal rows become related records.
+#[test]
+fn source_portals_related_fields_value_lists() {
+    let (url, seen) = serve(vec![
+        login_route(),
+        (
+            "GET",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts/Clients/records",
+            200,
+            ok(
+                r#"{"dataInfo":{"totalRecordCount":2,"foundCount":2,"returnedCount":2},"data":[{"fieldData":{"Name":"Ada","City":"London","Orders::Total":12},"portalData":{"Orders":[{"recordId":"7","Orders::Item":"Pen","Orders::Total":12,"modId":"0"},{"recordId":"8","Orders::Item":"Ink","Orders::Total":5,"modId":"0"}]},"recordId":"1","modId":"0"},{"fieldData":{"Name":"Grace","City":"Paris","Orders::Total":""},"portalData":{"Orders":[]},"recordId":"2","modId":"0"}]}"#,
+            ),
+        ),
+        (
+            "GET",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts/Clients",
+            200,
+            ok(
+                r#"{"fieldMetaData":[{"name":"Name","type":"normal","displayType":"editText","result":"text","global":false,"maxRepeat":1},{"name":"City","type":"normal","displayType":"popupMenu","result":"text","valueList":"Cities","global":false,"maxRepeat":1},{"name":"Orders::Total","type":"normal","displayType":"editText","result":"number","global":false,"maxRepeat":1}],"portalMetaData":{"Orders":[{"name":"Orders::Item","type":"normal","result":"text","global":false,"maxRepeat":1},{"name":"Orders::Total","type":"normal","result":"number","global":false,"maxRepeat":1}]},"valueLists":[{"name":"Cities","type":"customList","values":[{"displayValue":"London","value":"London"},{"displayValue":"Paris","value":"Paris"}]}]}"#,
+            ),
+        ),
+        (
+            "GET",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts",
+            200,
+            ok(r#"{"layouts":[{"name":"Clients","table":"Clients"}]}"#),
+        ),
+    ]);
+    let c = Client::login(&target(&url), "api", "test123", Options::default()).unwrap();
+    let loaded = std::sync::atomic::AtomicUsize::new(0);
+    let (mut remote, mut db) = remote::source::Remote::open_counting(c, &loaded).unwrap();
+    assert_eq!(loaded.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let t = db.tables[0].id;
+    let field = |db: &engine::Database, n: &str| db.tables[0].field_by_name(n).unwrap().id;
+    // The related field: Ada's first order.
+    assert_eq!(db.value(t, 0, field(&db, "Orders::Total")).to_text(), "12");
+    // The value list, on City as a pop-up menu.
+    let vl = db
+        .value_lists
+        .iter()
+        .find(|v| v.name == "Cities")
+        .unwrap()
+        .id;
+    assert_eq!(db.value_list_values(vl), ["London", "Paris"]);
+    let city = field(&db, "City") as u64;
+    let o = db.layouts[0]
+        .objects
+        .iter()
+        .find(|o| o.field.is_some_and(|f| f.1 == city))
+        .unwrap();
+    assert_eq!((o.value_list, o.display), (Some(vl), 2));
+    // The portal: Ada's two rows, none for Grace.
+    let portal = db.layouts[0].objects.iter().find(|o| o.kind == 9).unwrap();
+    let pto = portal.portal.unwrap().0 as u32;
+    let lto = db.layouts[0].table_occurrence as u32;
+    let pt = db.table_of(pto).unwrap().id;
+    let rows = db.related(lto, 0, pto);
+    let item = db
+        .table(pt)
+        .unwrap()
+        .field_by_name("Orders::Item")
+        .unwrap()
+        .id;
+    let items: Vec<String> = rows
+        .iter()
+        .map(|r| db.value(pt, *r, item).to_text())
+        .collect();
+    assert_eq!(items, ["Pen", "Ink"]);
+    assert!(db.related(lto, 1, pto).is_empty());
+    // Editing the related field sends nothing (read-only through the API).
+    let total = field(&db, "Orders::Total");
+    db.set_values(t, 0, &[(total, "99".into())]);
+    assert!(remote.sync(&db).is_empty());
+    assert!(seen.lock().unwrap().iter().all(|s| s.method != "PATCH"));
+}
+
+/// Containers: downloaded when a record is shown (and not sent back),
+/// uploaded when a file is put in them.
+#[test]
+fn source_containers_fetch_and_upload() {
+    let (url, seen) = serve(vec![
+        login_route(),
+        (
+            "POST",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts/Clients/records/2/containers/Photo/1",
+            200,
+            ok(r#"{"modId":"5"}"#),
+        ),
+        (
+            "GET",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts/Clients/records",
+            200,
+            ok(
+                r#"{"dataInfo":{"totalRecordCount":2,"foundCount":2,"returnedCount":2},"data":[{"fieldData":{"Name":"Ada","Photo":"https://fms.example.com/Streaming_SSL/MainDB/A1B2.txt?RCType=EmbeddedRCFileProcessor"},"portalData":{},"recordId":"1","modId":"0"},{"fieldData":{"Name":"Grace","Photo":""},"portalData":{},"recordId":"2","modId":"0"}]}"#,
+            ),
+        ),
+        (
+            "GET",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts/Clients",
+            200,
+            ok(
+                r#"{"fieldMetaData":[{"name":"Name","type":"normal","result":"text","global":false,"maxRepeat":1},{"name":"Photo","type":"normal","result":"container","global":false,"maxRepeat":1}],"portalMetaData":{}}"#,
+            ),
+        ),
+        (
+            "GET",
+            "/fmi/data/vLatest/databases/BC%20Remote/layouts",
+            200,
+            ok(r#"{"layouts":[{"name":"Clients","table":"Clients"}]}"#),
+        ),
+        ("GET", "/Streaming_SSL/MainDB/A1B2.txt", 200, "hello".into()),
+    ]);
+    let c = Client::login(&target(&url), "api", "test123", Options::default()).unwrap();
+    let (mut remote, mut db) = remote::source::Remote::open(c).unwrap();
+    let t = db.tables[0].id;
+    let photo = db.tables[0].field_by_name("Photo").unwrap().id;
+    assert_eq!(remote.fetch_containers(&mut db, t, 0).unwrap(), 1);
+    match db.value(t, 0, photo) {
+        calc::Value::Container(c) => {
+            assert_eq!(c.name, "A1B2.txt");
+            assert_eq!(c.data, b"hello");
+        }
+        v => panic!("{v:?}"),
+    }
+    // Downloaded: nothing to send.
+    assert!(remote.sync(&db).is_empty());
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|s| s.method == "GET" || s.path.contains("/sessions"))
+    );
+    // A file put in Grace's Photo is uploaded.
+    db.insert_file(t, 1, photo, 1, "new.txt", b"abc".to_vec());
+    assert!(remote.sync(&db).is_empty());
+    let up = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.path.contains("/containers/"))
+        .cloned()
+        .unwrap();
+    assert_eq!(up.method, "POST");
+    assert!(up.body.contains("filename=\"new.txt\"") && up.body.contains("\r\n\r\nabc\r\n"));
+    assert!(remote.sync(&db).is_empty());
+}

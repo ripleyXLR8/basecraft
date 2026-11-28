@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
-use engine::{Database, Order, Request};
+use engine::{Database, Order};
 use fmp12::layouts::Layout;
 
 mod browse;
@@ -22,16 +22,23 @@ mod container;
 mod custom_functions;
 mod debugger;
 mod design;
+mod editing;
 mod i18n;
 mod look;
+#[cfg(test)]
+mod m4_tests;
 mod objects;
+mod prefs;
 mod preview;
 mod records;
 mod remote_ui;
 mod script_ui;
 mod security_ui;
+mod toolbar;
 #[cfg(test)]
 mod ui_tests;
+mod views;
+mod windows;
 mod workspace;
 use fmp12::triggers::event;
 use i18n::tr;
@@ -99,7 +106,6 @@ struct App {
     requests: Vec<(BTreeMap<u32, String>, bool)>,
     /// Index of the request being edited.
     req: usize,
-    sort_field: Option<u32>,
     dirty: bool,
     /// Record modified since its last commit (table, record index).
     editing: Option<(u32, usize)>,
@@ -150,6 +156,18 @@ struct App {
     security: security_ui::State,
     /// File › Open Remote… and the hosted file's session (`remote_ui.rs`).
     remote: remote_ui::State,
+    /// Background windows of this file (`windows.rs`).
+    wins: windows::State,
+    /// Other files open at once, each in its own OS window.
+    others: Vec<App>,
+    /// Status toolbar, Quick Find, find operators (`toolbar.rs`).
+    bar: toolbar::State,
+    /// Undo/Redo of field edits, auto-complete (`editing.rs`).
+    edits: editing::State,
+    /// Table view columns, widths, totals (`views.rs`).
+    views: views::State,
+    /// Edit › Preferences… being edited (`prefs.rs`).
+    prefs: Option<prefs::Prefs>,
 }
 
 impl App {
@@ -186,8 +204,49 @@ impl App {
         });
     }
 
+    /// Whether a file is open (or waiting for its login) in this window.
+    fn busy(&self) -> bool {
+        self.doc.is_some() || self.security.login.is_some()
+    }
+
+    /// Opens a file; with a file already open, in a window of its own
+    /// (FileMaker keeps several files open).
+    fn open_more(&mut self, name: String, bytes: Vec<u8>) {
+        if !self.busy() {
+            return self.open(name, bytes);
+        }
+        let mut a = App::default();
+        a.open(name, bytes);
+        self.others.push(a);
+    }
+
+    /// File › Open, File › Open Recent, the command line and dropped files.
     #[cfg(not(target_arch = "wasm32"))]
     fn open_path(&mut self, p: &std::path::Path) {
+        if self.busy() {
+            if self.others.iter().chain([&*self]).any(|a| a.is_file(p)) {
+                return;
+            }
+            let mut a = App::default();
+            a.load_path(p);
+            self.others.push(a);
+        } else {
+            self.load_path(p);
+        }
+        prefs::add_recent(p);
+    }
+
+    /// Whether this window has the file at `p` open.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn is_file(&self, p: &std::path::Path) -> bool {
+        self.doc
+            .as_ref()
+            .and_then(|d| d.path.as_ref())
+            .is_some_and(|q| q == p)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_path(&mut self, p: &std::path::Path) {
         match std::fs::read(p) {
             Ok(b) => {
                 let name = p
@@ -244,6 +303,10 @@ impl App {
                 let triggers = fmp12::triggers::triggers(&file).unwrap_or_default();
                 *self = App {
                     engine,
+                    win: script::Window {
+                        name: name.clone(),
+                        ..Default::default()
+                    },
                     doc: Some(Doc {
                         name,
                         db,
@@ -253,6 +316,8 @@ impl App {
                         triggers,
                     }),
                     incoming: self.incoming.clone(),
+                    others: std::mem::take(&mut self.others),
+                    wins: windows::State::new(),
                     ..Default::default()
                 };
                 // The first window opens on File Options' "Switch to
@@ -457,6 +522,9 @@ impl App {
         window.found = found;
         window.current = *self.current.get(&t).unwrap_or(&0);
         window.sorted = self.sorted.get(&t).copied().unwrap_or(false);
+        if window.sorted {
+            window.sort = self.last_sort.iter().map(|(f, _)| *f).collect();
+        }
         window.mode = match self.mode() {
             Mode::Find => script::Mode::Find,
             Mode::Browse | Mode::Layout => script::Mode::Browse,
@@ -886,31 +954,9 @@ impl App {
     }
 
     fn perform_find(&mut self) {
-        if !self.commit() {
-            return;
+        if self.commit() {
+            self.find_combined(None);
         }
-        self.switch_request(self.req);
-        let (Some(t), Some(d)) = (self.table(), self.doc.as_ref()) else {
-            return;
-        };
-        let reqs: Vec<Request> = self
-            .requests
-            .iter()
-            .map(|(c, omit)| Request {
-                criteria: c
-                    .iter()
-                    .filter(|(_, v)| !v.trim().is_empty())
-                    .map(|(k, v)| (*k, v.clone()))
-                    .collect(),
-                omit: *omit,
-            })
-            .collect();
-        let found = engine::find(&d.db, t, &reqs);
-        self.found.insert(t, found);
-        self.current.insert(t, 0);
-        self.mode = Some(Mode::Browse);
-        self.fire(event::MODE_ENTER);
-        self.fire(event::RECORD_LOAD);
     }
 
     /// Records › Omit Record: removes the current record from the found set.
@@ -943,23 +989,6 @@ impl App {
         let omitted: Vec<usize> = (0..n).filter(|r| !f.contains(r)).collect();
         self.found.insert(t, omitted);
         self.sorted.remove(&t);
-        self.current.insert(t, 0);
-    }
-
-    fn sort(&mut self, order: Order) {
-        if !self.commit() {
-            return;
-        }
-        let (Some(t), Some(f)) = (self.table(), self.sort_field) else {
-            return;
-        };
-        let mut found = self.found(t).clone();
-        if let Some(d) = &self.doc {
-            engine::sort(&d.db, t, &mut found, &[(f, order)]);
-        }
-        self.last_sort = vec![(f, order)];
-        self.found.insert(t, found);
-        self.sorted.insert(t, true);
         self.current.insert(t, 0);
     }
 
@@ -1014,13 +1043,18 @@ impl App {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(tr("File"), |ui| {
-                if ui.button(tr("Open…")).clicked() {
+                if ui
+                    .add(egui::Button::new(tr("Open…")).shortcut_text("Ctrl+O"))
+                    .clicked()
+                {
                     ui.close();
                     self.open_dialog(&ui.ctx().clone());
                 }
+                self.recent_menu(ui);
                 self.remote_menu(ui);
+                // FileMaker saves by itself and has no Save (Ctrl+S sorts).
                 if ui
-                    .add(egui::Button::new(tr("Save")).shortcut_text("Ctrl+S"))
+                    .add_enabled(self.doc.is_some(), egui::Button::new(tr("Save")))
                     .clicked()
                 {
                     ui.close();
@@ -1053,24 +1087,25 @@ impl App {
                     }
                 });
                 ui.separator();
-                if ui.button(tr("Close")).clicked() {
+                let close = egui::Button::new(tr("Close")).shortcut_text("Ctrl+W");
+                if ui.add_enabled(self.doc.is_some(), close).clicked() {
                     ui.close();
-                    *self = App {
-                        incoming: self.incoming.clone(),
-                        ..Default::default()
-                    };
+                    self.close_window();
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     ui.separator();
-                    if ui.button(tr("Exit")).clicked() {
+                    if ui
+                        .add(egui::Button::new(tr("Exit")).shortcut_text("Ctrl+Q"))
+                        .clicked()
+                    {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
             });
             ui.menu_button(tr("Edit"), |ui| {
                 let Some(ds) = self.designer.as_mut() else {
-                    self.edit_menu_items(ui);
+                    self.edit_menu(ui);
                     return;
                 };
                 let undo = egui::Button::new(tr("Undo")).shortcut_text("Ctrl+Z");
@@ -1133,27 +1168,35 @@ impl App {
                 }
             });
             ui.menu_button(tr("View"), |ui| {
-                if ui.button(tr("Browse Mode")).clicked() {
-                    if self.mode() == Mode::Layout {
-                        self.leave_layout(design::Then::Exit);
-                    } else {
-                        self.mode = Some(Mode::Browse);
+                let on = self.doc.is_some();
+                let browse = egui::Button::new(tr("Browse Mode")).shortcut_text("Ctrl+B");
+                if ui.add_enabled(on, browse).clicked() {
+                    self.browse_mode();
+                    ui.close();
+                }
+                let find = egui::Button::new(tr("Find Mode")).shortcut_text("Ctrl+F");
+                if ui
+                    .add_enabled(on && self.mode() != Mode::Layout, find)
+                    .clicked()
+                {
+                    if self.mode() != Mode::Find {
+                        self.enter_find();
                     }
                     ui.close();
                 }
-                if ui
-                    .add_enabled(
-                        self.mode() != Mode::Layout,
-                        egui::Button::new(tr("Find Mode")),
-                    )
-                    .clicked()
-                {
-                    self.enter_find();
+                let layout = egui::Button::new(tr("Layout Mode")).shortcut_text("Ctrl+L");
+                if ui.add_enabled(on, layout).clicked() {
+                    self.enter_layout();
                     ui.close();
                 }
-                let layout = egui::Button::new(tr("Layout Mode")).shortcut_text("Ctrl+L");
-                if ui.add_enabled(self.doc.is_some(), layout).clicked() {
-                    self.enter_layout();
+                let preview = egui::Button::new(tr("Preview Mode")).shortcut_text("Ctrl+U");
+                if ui
+                    .add_enabled(on && self.mode() != Mode::Layout, preview)
+                    .clicked()
+                {
+                    if self.mode() != Mode::Preview {
+                        self.toggle_preview();
+                    }
                     ui.close();
                 }
                 self.view_menu_more(ui);
@@ -1174,6 +1217,7 @@ impl App {
                     }
                     ui.close();
                 }
+                self.insert_menu_items(ui);
             });
             ui.menu_button(tr("Format"), |ui| {
                 match (self.designer.as_mut(), self.doc.as_ref()) {
@@ -1188,7 +1232,11 @@ impl App {
                 ui.menu_button(tr("Layouts"), |ui| ds.layouts_menu(ui, d));
                 ui.menu_button(tr("Arrange"), |ui| ds.arrange_menu(ui));
             }
-            ui.menu_button(tr("Records"), |ui| self.records_menu(ui));
+            if self.mode() == Mode::Find {
+                ui.menu_button(toolbar::tx("Requests"), |ui| self.requests_menu(ui));
+            } else {
+                ui.menu_button(tr("Records"), |ui| self.records_menu(ui));
+            }
             ui.menu_button(tr("Scripts"), |ui| {
                 let ws = egui::Button::new(tr("Script Workspace…")).shortcut_text("Ctrl+Shift+S");
                 if ui.add_enabled(self.engine.is_some(), ws).clicked() {
@@ -1237,11 +1285,10 @@ impl App {
                     ui.close();
                 }
             });
-            for m in ["Window", "Help"] {
-                ui.menu_button(tr(m), |ui| {
-                    ui.label(tr("Not implemented yet"));
-                });
-            }
+            ui.menu_button(tr("Window"), |ui| self.window_menu(ui));
+            ui.menu_button(tr("Help"), |ui| {
+                ui.label(tr("Not implemented yet"));
+            });
         });
     }
 
@@ -1251,254 +1298,13 @@ impl App {
         }
     }
 
-    /// Status toolbar: navigation, counts, record commands.
-    fn status_toolbar(&mut self, ui: &mut egui::Ui) {
-        if matches!(
-            self.active.as_ref().map(|a| &a.wait),
-            Some(script::Suspend::Pause(_))
-        ) {
-            let now = ui.input(|i| i.time);
-            ui.horizontal(|ui| {
-                ui.colored_label(Color32::from_rgb(0, 90, 180), tr("Script paused"));
-                if ui.button(tr("Continue")).clicked() {
-                    self.answer(script::Answer::Continue, now);
-                }
-                if ui.button(tr("Cancel")).clicked() {
-                    self.answer(script::Answer::Cancel, now);
-                }
-            });
-            ui.separator();
-        }
-        if let Some(ds) = self.designer.as_mut() {
-            ui.horizontal(|ui| ds.tools(ui));
-            return;
-        }
-        let Some(t) = self.table() else { return };
-        let total = self
-            .doc
-            .as_ref()
-            .and_then(|d| d.db.table(t))
-            .map_or(0, |x| x.records.len());
-        let found = self.found(t).len();
-        let pos = *self.current.get(&t).unwrap_or(&0);
-        ui.horizontal(|ui| {
-            if ui.button("◀").clicked() && pos > 0 && self.commit() {
-                self.current.insert(t, pos - 1);
-                self.fire(event::RECORD_LOAD);
-            }
-            if ui.button("▶").clicked() && pos + 1 < found && self.commit() {
-                self.current.insert(t, pos + 1);
-                self.fire(event::RECORD_LOAD);
-            }
-            ui.label(if found == 0 {
-                "0".to_string()
-            } else {
-                (pos + 1).to_string()
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.label(format!("{found} / {total}"));
-                let s = if self.sorted.get(&t).copied().unwrap_or(false) {
-                    "Sorted"
-                } else {
-                    "Unsorted"
-                };
-                ui.label(format!("{} ({})", tr("Total"), tr(s)));
-            });
-            ui.separator();
-            match self.mode() {
-                Mode::Browse => {
-                    if ui.button(tr("Show All")).clicked() {
-                        self.show_all();
-                    }
-                    if ui.button(tr("New Record")).clicked() {
-                        self.new_record();
-                    }
-                    if ui
-                        .add_enabled(found > 0, egui::Button::new(tr("Delete Record")))
-                        .clicked()
-                    {
-                        self.confirm_delete();
-                    }
-                    if ui.button(tr("Find")).clicked() {
-                        self.enter_find();
-                    }
-                    let fields: Vec<(u32, String)> = self
-                        .doc
-                        .as_ref()
-                        .and_then(|d| d.db.table(t))
-                        .map(|x| x.fields.iter().map(|f| (f.id, f.name.clone())).collect())
-                        .unwrap_or_default();
-                    let label = self
-                        .sort_field
-                        .and_then(|id| fields.iter().find(|f| f.0 == id))
-                        .map_or(tr("Sort"), |f| f.1.as_str());
-                    egui::ComboBox::from_id_salt("sortfield")
-                        .selected_text(label)
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &fields {
-                                ui.selectable_value(&mut self.sort_field, Some(*id), name);
-                            }
-                        });
-                    if ui.button("↑").clicked() {
-                        self.sort(Order::Ascending);
-                    }
-                    if ui.button("↓").clicked() {
-                        self.sort(Order::Descending);
-                    }
-                }
-                Mode::Layout => {}
-                Mode::Preview => {
-                    if ui.button("◀").clicked() && self.page > 0 {
-                        self.page -= 1;
-                    }
-                    ui.label(format!(
-                        "{} {}/{}",
-                        tr("Page"),
-                        self.page + 1,
-                        self.pages.max(1)
-                    ));
-                    if ui.button("▶").clicked() && self.page + 1 < self.pages {
-                        self.page += 1;
-                    }
-                    if ui.button(tr("Exit Preview")).clicked() {
-                        self.mode = Some(Mode::Browse);
-                        self.fire(event::MODE_ENTER);
-                    }
-                }
-                Mode::Find => {
-                    if ui.button(tr("Perform Find")).clicked() {
-                        self.perform_find();
-                    }
-                    let n = self.requests.len().max(self.req + 1);
-                    if ui.button("◀").clicked() && self.req > 0 {
-                        self.switch_request(self.req - 1);
-                    }
-                    ui.label(format!("{} {}/{n}", tr("Request"), self.req + 1));
-                    if ui.button("▶").clicked() && self.req + 1 < n {
-                        self.switch_request(self.req + 1);
-                    }
-                    if ui.button(tr("New Request")).clicked() {
-                        self.switch_request(n);
-                    }
-                    ui.checkbox(&mut self.omit, tr("Omit"));
-                    if ui.button(tr("Cancel")).clicked() {
-                        self.mode = Some(Mode::Browse);
-                        self.fire(event::MODE_ENTER);
-                    }
-                }
-            }
-            if self.dirty {
-                ui.colored_label(Color32::from_rgb(180, 90, 0), tr("Unsaved changes"));
-            }
-        });
-    }
-
-    fn layout_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(doc) = &self.doc else {
-            return;
-        };
-        let names: Vec<String> = doc.layouts.iter().map(|l| l.name.clone()).collect();
-        let mut chosen = None;
-        if self.mode() == Mode::Layout {
-            let mut then = None;
-            ui.horizontal(|ui| {
-                ui.label(tr("Layout:"));
-                let current = names.get(self.layout).map_or("", |n| n.as_str());
-                egui::ComboBox::from_id_salt("layout")
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        for (i, n) in names.iter().enumerate() {
-                            if ui.selectable_label(i == self.layout, n).clicked()
-                                && i != self.layout
-                            {
-                                then = Some(design::Then::Switch(i));
-                            }
-                        }
-                    });
-                if ui.button(tr("New Layout/Report")).clicked()
-                    && let (Some(ds), Some(d)) = (self.designer.as_mut(), self.doc.as_ref())
-                {
-                    ds.open_new_layout(d);
-                }
-                if ui.button(tr("Layout Setup…")).clicked()
-                    && let Some(ds) = self.designer.as_mut()
-                {
-                    ds.open_setup();
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(tr("Exit Layout")).clicked() {
-                        then = Some(design::Then::Exit);
-                    }
-                });
-            });
-            if let Some(t) = then {
-                self.leave_layout(t);
-            }
-            return;
-        }
-        ui.horizontal(|ui| {
-            ui.label(tr("Layout:"));
-            let current = names.get(self.layout).map_or("", |n| n.as_str());
-            egui::ComboBox::from_id_salt("layout")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    for (i, n) in names.iter().enumerate() {
-                        if ui.selectable_label(i == self.layout, n).clicked() {
-                            chosen = Some(i);
-                        }
-                    }
-                });
-            ui.label(tr("View As:"));
-            for (v, label) in [
-                (View::Form, "Form"),
-                (View::List, "List"),
-                (View::Table, "Table"),
-            ] {
-                if ui.selectable_label(self.view == v, tr(label)).clicked() {
-                    self.view = v;
-                }
-            }
-            let in_preview = self.mode() == Mode::Preview;
-            if ui
-                .add_enabled(
-                    self.mode() != Mode::Layout,
-                    egui::Button::selectable(in_preview, tr("Preview")),
-                )
-                .clicked()
-            {
-                if in_preview {
-                    self.mode = Some(Mode::Browse);
-                    self.fire(event::MODE_ENTER);
-                } else if self.commit() {
-                    self.mode = Some(Mode::Preview);
-                    self.page = 0;
-                    self.fire(event::MODE_ENTER);
-                }
-            }
-            let mut edit = false;
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                edit = ui.button(tr("Edit Layout")).clicked();
-            });
-            if edit {
-                chosen = None;
-                self.enter_layout();
-            }
-        });
-        if let Some(i) = chosen.filter(|i| *i != self.layout && self.commit()) {
-            self.fire(event::LAYOUT_EXIT);
-            self.layout = i;
-            self.fire(event::LAYOUT_ENTER);
-            self.fire(event::RECORD_LOAD);
-        }
-    }
-
     /// Draws the current layout: form (current record), list (body part
     /// repeated per record) or table (one row per record).
     fn content(&mut self, ui: &mut egui::Ui) {
         let Some(t) = self.table() else { return };
         let record = self.current_record();
         let found = self.found(t).clone();
+        let pos = self.current.get(&t).copied().unwrap_or(0);
         let mode = self.mode();
         let view = self.view;
         let Some(doc) = self.doc.as_mut() else { return };
@@ -1531,7 +1337,7 @@ impl App {
             &fmp12::theme::ObjectStyle::of_layout(&layout),
         );
         if view == View::Table && mode == Mode::Browse {
-            table_view(ui, doc, t, &layout, &found, &mut self.dirty);
+            self.table_view(ui, t, &layout, &found);
             return;
         }
         let (btop, bh) = layout
@@ -1593,6 +1399,34 @@ impl App {
                 ],
                 Stroke::new(0.5, Color32::from_gray(210)),
             );
+        }
+        // List view: the current record's band highlighted, with
+        // FileMaker's dark bar on its left; a click selects a record.
+        let mut clicked_row = None;
+        if view == View::List && mode == Mode::Browse && bh > 0.0 {
+            let band = |i: usize| {
+                Rect::from_min_size(
+                    origin + Vec2::new(0.0, (btop + i as f64 * bh) as f32),
+                    Vec2::new(layout.width as f32, bh as f32),
+                )
+            };
+            let cur = band(pos);
+            painter.rect_filled(cur, 0.0, Color32::from_rgba_unmultiplied(0, 90, 180, 24));
+            painter.rect_filled(
+                Rect::from_min_size(cur.min, Vec2::new(4.0, cur.height())),
+                0.0,
+                Color32::from_gray(40),
+            );
+            if let Some(p) =
+                ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()))
+                && resp.rect.contains(p)
+                && ui.ctx().layer_id_at(p) == Some(ui.layer_id())
+            {
+                let i = ((p.y - origin.y) as f64 - btop) / bh;
+                if i >= 0.0 && (i as usize) < rows.len() {
+                    clicked_row = Some(i as usize);
+                }
+            }
         }
         let ctx = DrawCtx { table: t, mode };
         let layout_to = (layout.table_occurrence & 0xFFF) as u32;
@@ -1795,7 +1629,7 @@ impl App {
                     13 if chart::draw(ui.ctx(), &painter, doc, &layout, o, r, &found, rec) => {}
                     _ => {
                         if let Some(step) = o.button.as_ref().filter(|_| mode == Mode::Browse) {
-                            let id = ui.scope_id().with(("button", o.id));
+                            let id = ui.scope_id().with(("button", o.id, rec));
                             if ui
                                 .interact(r, id, egui::Sense::click())
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1834,6 +1668,9 @@ impl App {
                     }
                 }
             }
+        }
+        if let Some(i) = clicked_row.filter(|i| *i != pos) {
+            self.go_to(i);
         }
         if let Some((tc, p)) = clicked_tab {
             self.tabs.insert(tc, p);
@@ -2098,7 +1935,17 @@ fn draw_field(
                 StrokeKind::Inside,
             );
             let s = request.entry(field).or_default();
-            ui.put(inner, lk.edit(s));
+            let id = ui.scope_id().with(("find", o.id, field));
+            if ui.put(inner, lk.edit(s).id(id)).has_focus() {
+                toolbar::set_focus(
+                    ui.ctx(),
+                    toolbar::Focus {
+                        id,
+                        record: None,
+                        find: Some(field),
+                    },
+                );
+            }
         }
         (Mode::Find | Mode::Layout | Mode::Preview, _) | (Mode::Browse, None) => {}
         // FileMaker draws <No Access> for a field the account cannot see.
@@ -2107,7 +1954,12 @@ fn draw_field(
         }
         (Mode::Browse, Some(rec)) if is_container => {
             let v = doc.db.value_rep(t, rec, field, rep);
-            if let Some(a) = container::draw(ui, painter, lk, r, &v, (t, rec, field, rep))
+            // Scoped by object: a field shown twice is two widgets.
+            if let Some(a) = ui
+                .push_id(o.id, |ui| {
+                    container::draw(ui, painter, lk, r, &v, (t, rec, field, rep))
+                })
+                .inner
                 && container::perform(&mut doc.db, a, (t, rec, field, rep))
             {
                 *dirty = true;
@@ -2136,7 +1988,7 @@ fn draw_field(
                 .as_ref()
                 .map(|l| doc.db.eval_tokens(l, t, 0, Some(rec)).to_text());
             // Data formats show while the field is not being edited.
-            let edit_id = egui::Id::NULL.with(("field", o.id, rec, rep));
+            let edit_id = ui.scope_id().with(("field", o.id, rec, rep));
             let shown = if ui.memory(|m| m.has_focus(edit_id)) {
                 None
             } else {
@@ -2155,6 +2007,7 @@ fn draw_field(
             let mut left = false;
             if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
                 let s = tbl.records[rec].values.entry(key).or_default();
+                let before = s.clone();
                 match choices {
                     Some(values) => {
                         let mut picked = None;
@@ -2172,6 +2025,16 @@ fn draw_field(
                                 .response
                         });
                         if let Some(v) = picked {
+                            editing::record(
+                                ui.ctx(),
+                                editing::Edit {
+                                    table: t,
+                                    record: rec,
+                                    key,
+                                    before: before.clone(),
+                                    after: v.clone(),
+                                },
+                            );
                             *s = v;
                             changed = true;
                             left = true;
@@ -2208,8 +2071,34 @@ fn draw_field(
                         if let Some(tip) = &tip {
                             r.clone().on_hover_text(tip.as_str());
                         }
+                        let was = edit_id.with("before");
                         if r.gained_focus() {
                             events.push((o.id, event::OBJECT_ENTER));
+                            ui.data_mut(|d| d.insert_temp(was, before.clone()));
+                        }
+                        if r.has_focus() {
+                            toolbar::set_focus(
+                                ui.ctx(),
+                                toolbar::Focus {
+                                    id: edit_id,
+                                    record: Some((t, rec, key)),
+                                    find: None,
+                                },
+                            );
+                        }
+                        if r.lost_focus()
+                            && let Some(b) = ui.data_mut(|d| d.remove_temp::<String>(was))
+                        {
+                            editing::record(
+                                ui.ctx(),
+                                editing::Edit {
+                                    table: t,
+                                    record: rec,
+                                    key,
+                                    before: b,
+                                    after: s.clone(),
+                                },
+                            );
                         }
                         if r.changed() {
                             changed = true;
@@ -2253,76 +2142,38 @@ fn commit_field(
     db.set_values(t, rec, &[(field, v)]);
 }
 
-/// Table view: one column per field of the layout's body, one row per record.
-fn table_view(
-    ui: &mut egui::Ui,
-    doc: &mut Doc,
-    t: u32,
-    layout: &Layout,
-    found: &[usize],
-    dirty: &mut bool,
-) {
-    let mut cols: Vec<(f64, u32)> = layout
-        .objects
-        .iter()
-        .filter(|o| o.kind == 1)
-        .filter_map(|o| {
-            let (to, f, _) = o.field?;
-            (doc.db.table_of((to & 0xFFF) as u32)?.id == t).then_some((o.bounds.left, f as u32))
-        })
-        .collect();
-    cols.sort_by(|a, b| a.0.total_cmp(&b.0));
-    cols.dedup_by_key(|c| c.1);
-    egui::Grid::new("table_view").striped(true).show(ui, |ui| {
-        for (_, f) in &cols {
-            let name = doc
-                .db
-                .table(t)
-                .and_then(|x| x.field(*f))
-                .map_or(String::new(), |f| f.name.clone());
-            ui.strong(name);
-        }
-        ui.end_row();
-        for &rec in found {
-            for (_, f) in &cols {
-                let is_calc = doc
-                    .db
-                    .table(t)
-                    .and_then(|x| x.field(*f))
-                    .is_some_and(|f| f.calc.is_some());
-                if is_calc {
-                    ui.label(doc.db.value(t, rec, *f).to_text());
-                } else if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
-                    let s = tbl.records[rec].values.entry(*f).or_default();
-                    let r = ui.text_edit_singleline(s);
-                    if r.changed() {
-                        *dirty = true;
-                    }
-                    commit_field(ui, &mut doc.db, (t, rec, *f), r.changed(), r.lost_focus());
-                }
-            }
-            ui.end_row();
-        }
-    });
-}
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        windows::begin_frame(ui.ctx());
+        self.file_frame(ui);
+    }
+}
+
+impl App {
+    /// One frame of an open file: its scripts and dialogs, then its windows
+    /// (`windows.rs`), then the other open files in their own OS windows.
+    fn file_frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let picked = self.incoming.borrow_mut().take();
         if let Some((name, bytes)) = picked {
-            self.open(name, bytes);
+            self.open_more(name, bytes);
         }
-        // Drag and drop: read synchronously on desktop, asynchronously in the browser.
-        for f in ctx.input(|i| i.raw.dropped_files.clone()) {
+        // Drag and drop (Preferences › Allow drag and drop): read
+        // synchronously on desktop, asynchronously in the browser.
+        let drops = ctx.input(|i| i.raw.dropped_files.clone());
+        for f in drops.into_iter().filter(|_| prefs::get().drag_drop) {
             let name = f
                 .path()
                 .file_name()
                 .map_or("BaseCraft".into(), |n| n.to_string_lossy().into_owned());
             #[cfg(not(target_arch = "wasm32"))]
-            match f.bytes() {
-                Ok(b) => self.open(name, b),
-                Err(e) => self.error = Some(e),
+            if f.path().is_file() {
+                self.open_path(f.path());
+            } else {
+                match f.bytes() {
+                    Ok(b) => self.open_more(name, b),
+                    Err(e) => self.error = Some(e),
+                }
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -2336,37 +2187,14 @@ impl eframe::App for App {
                 });
             }
         }
-        if self.engine.is_some()
-            && ctx.input_mut(|i| {
-                i.consume_key(
-                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                    egui::Key::S,
-                )
-            })
-        {
-            self.open_workspace();
-            focus_tool_window(&ctx, workspace::KEY);
-        }
-        if self.doc.is_some()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
-        {
-            self.save(&ctx, false);
-        }
-        if self.doc.is_some()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::L))
-        {
-            if self.mode() == Mode::Layout {
-                self.leave_layout(design::Then::Exit);
-            } else {
-                self.enter_layout();
-            }
-        }
         self.layout_dialogs(&ctx);
         objects::url_confirmation(&ctx, &mut self.objs);
         self.records_dialogs(&ctx);
         self.m5_frame(&ctx);
         self.security_dialogs(&ctx);
         self.custom_functions_dialog(&ctx);
+        self.prefs_dialog(&ctx);
+        self.editing_frame(&ctx);
         for (o, ev) in std::mem::take(&mut self.obj_events) {
             if ev == event::OBJECT_ENTER {
                 self.m8.focus = Some(o);
@@ -2422,6 +2250,53 @@ impl eframe::App for App {
             });
         }
         self.data_viewer_window(&ctx);
+        self.windows_frame(ui);
+        self.others_frame(&ctx);
+    }
+
+    /// Keyboard shortcuts of a window (FileMaker 26 on Windows).
+    fn window_keys(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers as M};
+        let key = |m: M, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        if self.engine.is_some() && key(M::COMMAND | M::SHIFT, Key::S) {
+            self.open_workspace();
+            focus_tool_window(ctx, workspace::KEY);
+        }
+        if key(M::COMMAND, Key::O) {
+            self.open_dialog(ctx);
+        }
+        if key(M::COMMAND, Key::Q) {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        }
+        if self.doc.is_none() {
+            return;
+        }
+        if key(M::COMMAND, Key::W) {
+            self.close_window();
+            return;
+        }
+        if key(M::COMMAND, Key::L) {
+            if self.mode() == Mode::Layout {
+                self.leave_layout(design::Then::Exit);
+            } else {
+                self.enter_layout();
+            }
+        }
+        // Shift and Alt combinations first: Ctrl+F would take Ctrl+Shift+F.
+        self.edit_keys(ctx);
+        self.record_keys(ctx);
+        if self.mode() != Mode::Layout {
+            self.mode_keys(ctx);
+        }
+    }
+
+    /// One window of the file: menus, status toolbar, layout bar and the
+    /// layout (or Layout mode). `keys`: this window takes the keyboard.
+    fn window_ui(&mut self, ui: &mut egui::Ui, keys: bool) {
+        let ctx = ui.ctx().clone();
+        if keys {
+            self.window_keys(&ctx);
+        }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         self.remote_frame(ui);
         if self.doc.is_some() && self.win.toolbar {
@@ -2444,9 +2319,9 @@ impl eframe::App for App {
                 }
                 egui::ScrollArea::both().show(ui, |ui| ds.canvas(ui, d));
             });
-            ds.keys(&ctx);
-            let title = format!("{} — {}", d.name, tr("Layout Mode"));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            if keys {
+                ds.keys(&ctx);
+            }
             return;
         }
         egui::CentralPanel::default().show(ui, |ui| {
@@ -2475,11 +2350,24 @@ impl eframe::App for App {
             }
             self.dirty |= was_dirty;
         });
-        let title = self
-            .doc
-            .as_ref()
-            .map_or("BaseCraft".to_string(), |d| d.name.clone());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    /// Title of the front window: the window name (the file's name for
+    /// its first window), and the mode in Layout mode.
+    fn window_title(&self) -> String {
+        let Some(d) = self.doc.as_ref() else {
+            return "BaseCraft".into();
+        };
+        let name = if self.win.name.is_empty() {
+            d.name.clone()
+        } else {
+            self.win.name.clone()
+        };
+        if self.designer.is_some() {
+            format!("{name} — {}", tr("Layout Mode"))
+        } else {
+            name
+        }
     }
 }
 
@@ -2567,8 +2455,8 @@ const DATA_VIEWER: &str = "data_viewer";
 
 fn creator(app: App) -> eframe::AppCreator<'static> {
     Box::new(|cc| {
-        // FileMaker's desktop UI is light.
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
+        // FileMaker's desktop UI is light (Preferences › Theme).
+        prefs::visuals(&cc.egui_ctx);
         Ok(Box::new(app))
     })
 }

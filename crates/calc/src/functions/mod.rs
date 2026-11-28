@@ -12,7 +12,7 @@ mod number;
 mod sql;
 mod text;
 
-pub use datetime::builtin_get;
+pub use datetime::{builtin_get, set_user_name};
 pub(crate) use text::base_key;
 
 use crate::ast::Expr;

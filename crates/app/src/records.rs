@@ -818,7 +818,6 @@ impl App {
         if let Some((name, bytes)) = picked {
             self.start_import(name, bytes);
         }
-        self.record_keys(ctx);
         self.confirm_ui(ctx);
         self.omit_ui(ctx);
         self.find_replace_ui(ctx);
@@ -827,7 +826,8 @@ impl App {
         self.export_ui(ctx);
     }
 
-    fn record_keys(&mut self, ctx: &egui::Context) {
+    /// Records menu shortcuts (Browse mode), in the window that has the keyboard.
+    pub(crate) fn record_keys(&mut self, ctx: &egui::Context) {
         if self.doc.is_none() || self.mode() != Mode::Browse || self.active.is_some() {
             return;
         }

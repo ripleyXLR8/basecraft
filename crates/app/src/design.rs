@@ -2393,20 +2393,29 @@ impl Designer {
             abs.bottom - abs.top,
         ];
         let before = v;
+        // Shown in the units of Preferences › Layout (points inside).
+        let (k, unit) = crate::prefs::unit();
+        let mut shown = v.map(|x| x / k);
+        let was = shown;
         egui::Grid::new("position").num_columns(4).show(ui, |ui| {
             for row in [[0usize, 1], [2, 3], [4, 5]] {
                 for i in row {
                     ui.label(tr(["Left", "Top", "Right", "Bottom", "Width", "Height"][i]));
                     ui.add(
-                        egui::DragValue::new(&mut v[i])
-                            .speed(1.0)
-                            .max_decimals(1)
-                            .suffix(" pt"),
+                        egui::DragValue::new(&mut shown[i])
+                            .speed(1.0 / k)
+                            .max_decimals(if k == 1.0 { 1 } else { 3 })
+                            .suffix(unit),
                     );
                 }
                 ui.end_row();
             }
         });
+        for i in 0..6 {
+            if shown[i] != was[i] {
+                v[i] = shown[i] * k;
+            }
+        }
         if v != before && !Self::locked(&o) {
             self.touch("position");
             let mut b = abs.clone();

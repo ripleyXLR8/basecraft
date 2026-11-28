@@ -560,18 +560,49 @@ pub fn tables(file: &File) -> Result<Vec<Table>, Error> {
 /// record that are not fields of the table (e.g. 252, a modification
 /// count) are left out.
 pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
+    Ok(raw_values(file, table, true)?
+        .into_iter()
+        .map(|(r, vals)| (r, vals.into_iter().map(|(f, b)| (f, text(&b))).collect()))
+        .collect())
+}
+
+/// Values of the table's global fields, by value key (as a record's):
+/// FileMaker keeps them once per table at `[T].[8]`, stored like a
+/// record's values (FORMAT.md §13, "Global fields").
+pub fn globals(file: &File, table: &Table) -> Result<BTreeMap<u32, String>, Error> {
+    Ok(raw_values(file, table, false)?
+        .remove(&0)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(f, b)| (f, text(&b)))
+        .collect())
+}
+
+/// Raw values under `[T].[5].[R]` (`records`, by record id) or `[T].[8]`
+/// (the globals, as record 0).
+fn raw_values(
+    file: &File,
+    table: &Table,
+    records: bool,
+) -> Result<BTreeMap<u32, BTreeMap<u32, Vec<u8>>>, Error> {
     let t = table.id;
     let mut raw: BTreeMap<u32, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
     file.walk(|path, c| {
-        let [tp, five, rec, rest @ ..] = path else {
+        let [tp, sub, rest @ ..] = path else {
             return;
         };
         // (A table occurrence element `D0 hi lo` is 3 bytes long.)
-        if tp.len() > 2 || path_int(tp) != Some(t) || path_int(five) != Some(5) {
+        let want = if records { 5 } else { 8 };
+        if tp.len() > 2 || path_int(tp) != Some(t) || path_int(sub) != Some(want) {
             return;
         }
-        let Some(r) = path_int(rec) else {
-            return;
+        let (r, rest) = match rest {
+            [rec, rest @ ..] if records => match path_int(rec) {
+                Some(r) => (r, rest),
+                None => return,
+            },
+            _ if records => return,
+            _ => (0, rest),
         };
         match (rest, c) {
             ([], Chunk::Kv { key, data }) => {
@@ -607,10 +638,7 @@ pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
             _ => {}
         }
     })?;
-    Ok(raw
-        .into_iter()
-        .map(|(r, vals)| (r, vals.into_iter().map(|(f, b)| (f, text(&b))).collect()))
-        .collect())
+    Ok(raw)
 }
 
 /// Order of day, month and year in the file's date format.

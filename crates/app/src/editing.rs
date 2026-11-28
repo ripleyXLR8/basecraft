@@ -201,10 +201,9 @@ impl App {
         let Some(tbl) = d.db.tables.iter_mut().find(|x| x.id == t) else {
             return;
         };
-        let Some(r) = tbl.records.get_mut(rec) else {
+        let Some(s) = tbl.raw_mut(rec, key) else {
             return;
         };
-        let s = r.values.entry(key).or_default();
         let before = s.clone();
         insert_at_cursor(ctx, f.id, s, text);
         let after = s.clone();

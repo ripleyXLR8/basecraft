@@ -1371,7 +1371,13 @@ impl App {
             .themes
             .iter()
             .find(|x| x.number == layout.theme)
-            .cloned();
+            .cloned()
+            // With the styles saved in the layout itself.
+            .map(|mut t| {
+                let own = fmp12::theme::Theme::parse_styles(&layout.styles_raw);
+                t.styles.extend(own);
+                t
+            });
         let looks: Vec<Look> = layout
             .objects
             .iter()
@@ -1579,12 +1585,18 @@ impl App {
                             .iter()
                             .filter(|p| p.parent == Some(o.id))
                             .collect();
-                        panels.sort_by_key(|p| p.id);
+                        // In the order and at the place of their tabs (offset,
+                        // width); a panel without them after the others.
+                        panels.sort_by_key(|p| (p.tab.is_none(), p.tab.map(|t| t.0), p.id));
                         for p in panels {
                             let label = p.text.clone().unwrap_or_default();
                             let w = (label.chars().count() as f32 * 8.0 + 32.0).max(60.0);
+                            let (tx, w) = match p.tab {
+                                Some((off, tw)) if tw > 0 => (r.left() + off as f32, tw as f32),
+                                _ => (x, w),
+                            };
                             let tab =
-                                Rect::from_min_size(egui::pos2(x, r.top()), Vec2::new(w, 30.0));
+                                Rect::from_min_size(egui::pos2(tx, r.top()), Vec2::new(w, 30.0));
                             let on = active == Some(p.id);
                             painter.rect_filled(
                                 tab,
@@ -1612,7 +1624,7 @@ impl App {
                             if ui.interact(tab, id, egui::Sense::click()).clicked() {
                                 clicked_tab = Some((o.id, p.id));
                             }
-                            x += w;
+                            x = tab.right();
                         }
                     }
                     // Portal: one row per related record.
@@ -1666,6 +1678,13 @@ impl App {
                                         (c.bounds.bottom - c.bounds.top) as f32,
                                     ),
                                 );
+                                // Merge fields show the row's record.
+                                if let Some(txt) = c.text.as_ref().filter(|x| x.contains("<<")) {
+                                    let merged = merge_fields(doc, &globals, txt, ptable, pto, rr);
+                                    looks[ci].paint_box(&painter, cr);
+                                    looks[ci].paint_text(&painter, cr, &merged);
+                                    continue;
+                                }
                                 draw_object(
                                     ui,
                                     &painter,
@@ -1824,15 +1843,21 @@ fn merge_fields(
             rest = &rest[a + b + 2..];
             continue;
         }
+        // By reference (older files), else `TO::Field` or `Field` by name.
+        let by_ref = fmp12::layouts::merge_field_ref(name);
         let (to_name, field) = name.split_once("::").unwrap_or(("", name));
-        let to = doc
-            .db
-            .occurrences
-            .iter()
-            .find(|o| o.name.eq_ignore_ascii_case(to_name))
-            .map_or(layout_to, |o| o.id);
+        let to = by_ref.map(|r| r.0).unwrap_or_else(|| {
+            doc.db
+                .occurrences
+                .iter()
+                .find(|o| o.name.eq_ignore_ascii_case(to_name))
+                .map_or(layout_to, |o| o.id)
+        });
         let value = doc.db.table_of(to).and_then(|tbl| {
-            let f = tbl.field_by_name(field)?;
+            let f = match by_ref {
+                Some((_, id)) => tbl.field(id)?,
+                None => tbl.field_by_name(field)?,
+            };
             let r = if to == layout_to {
                 rec?
             } else {
@@ -1863,7 +1888,10 @@ fn owner_of(
     let (to, _, _) = o.field?;
     let to = (to & 0xFFF) as u32;
     let ft = doc.db.table_of(to)?.id;
-    if to == layout_to || ft == t && doc.db.table_of(layout_to).map(|x| x.id) == Some(ft) {
+    // Another occurrence of the layout's table shows the layout's record
+    // only when no relationship leads to it.
+    let same = ft == t && doc.db.table_of(layout_to).map(|x| x.id) == Some(ft);
+    if to == layout_to || same && !doc.db.is_related(layout_to, to) {
         return Some((t, rec));
     }
     let first = rec.and_then(|r| doc.db.related(layout_to, r, to).first().copied());
@@ -2031,7 +2059,10 @@ fn draw_field(
                 {
                     *s = v;
                 }
-            } else if ui.put(inner, lk.edit(s).id(id)).has_focus() {
+            } else if ui
+                .put(lk.edit_rect(ui.ctx(), inner), lk.edit(s).id(id))
+                .has_focus()
+            {
                 toolbar::set_focus(
                     ui.ctx(),
                     toolbar::Focus {
@@ -2104,6 +2135,13 @@ fn draw_field(
                 (1..=4, Some(vl)) => Some(doc.db.value_list_values(vl)),
                 _ => None,
             };
+            // Lists showing only their second field's values show those.
+            let labels = match (o.display, o.value_list) {
+                (1 | 2, Some(vl)) => doc.db.value_list_labels(vl),
+                _ => None,
+            }
+            .unwrap_or_default();
+            let label = |v: &String| labels.get(v).cloned().unwrap_or_else(|| v.clone());
             // A drop-down calendar writes the day in the file's date format.
             let calendar = (o.display == 6).then(|| doc.db.locale.clone());
             let cal_id = edit_id.with("calendar");
@@ -2123,8 +2161,13 @@ fn draw_field(
             };
             let mut changed = false;
             let mut left = false;
-            if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
-                let s = tbl.records[rec].values.entry(key).or_default();
+            if let Some(s) = doc
+                .db
+                .tables
+                .iter_mut()
+                .find(|x| x.id == t)
+                .and_then(|x| x.raw_mut(rec, key))
+            {
                 let before = s.clone();
                 match choices {
                     Some(values) => {
@@ -2136,13 +2179,36 @@ fn draw_field(
                                 })
                                 .inner;
                         } else {
+                            // A drop-down list without "Include arrow icon"
+                            // looks like an edit box (the field's own look).
+                            let plain = o.display == 1
+                                && o.field_flags & fmp12::layouts::field_flags::ARROW == 0;
                             ui.put(inner, |ui: &mut egui::Ui| {
-                                egui::ComboBox::from_id_salt(("vl", o.id, rec, rep))
-                                    .selected_text(s.as_str())
+                                if plain {
+                                    let w = &mut ui.visuals_mut().widgets;
+                                    for v in [
+                                        &mut w.inactive,
+                                        &mut w.hovered,
+                                        &mut w.active,
+                                        &mut w.open,
+                                    ] {
+                                        v.weak_bg_fill = Color32::TRANSPARENT;
+                                        v.bg_stroke = Stroke::NONE;
+                                        v.fg_stroke.color = lk.color;
+                                    }
+                                }
+                                let combo = egui::ComboBox::from_id_salt(("vl", o.id, rec, rep));
+                                let combo = if plain {
+                                    combo.icon(|_, _, _, _| {})
+                                } else {
+                                    combo
+                                };
+                                combo
+                                    .selected_text(egui::RichText::new(label(s)).font(lk.font()))
                                     .width(inner.width())
                                     .show_ui(ui, |ui| {
                                         for v in &values {
-                                            if ui.selectable_label(s == v, v).clicked() {
+                                            if ui.selectable_label(s == v, label(v)).clicked() {
                                                 picked = Some(v.clone());
                                             }
                                         }
@@ -2193,7 +2259,7 @@ fn draw_field(
                                 click
                             }
                             None => ui.put(
-                                inner,
+                                lk.edit_rect(ui.ctx(), inner),
                                 lk.edit(s).id(edit_id).password(controls::concealed(o)),
                             ),
                         };
@@ -2599,8 +2665,10 @@ impl App {
                 });
             return;
         }
+        let full = ui.max_rect().size();
         egui::CentralPanel::default().show(ui, |ui| {
             let content = ui.max_rect().size();
+            self.wins.chrome = Some(full - content);
             let (screen, m) = ui.input(|i| (i.viewport().monitor_size, i.modifiers));
             self.seen = script::HostInfo {
                 content: Some((content.x as f64, content.y as f64)),

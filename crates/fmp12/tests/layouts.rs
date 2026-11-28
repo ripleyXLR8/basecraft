@@ -409,3 +409,18 @@ fn layout_setup_settings_roundtrip() {
     assert!(fmp12::layouts::layouts(&f3).unwrap()[l].triggers.is_empty());
     assert_eq!(kv_at(&f3, &[4, 1, 7, 3], 48).unwrap(), [0, 0, 0, 0]);
 }
+
+/// A merge field stored by reference (files from older versions): the
+/// occurrence and field of a part's break field reference, in hex.
+#[test]
+fn merge_field_by_reference() {
+    let r = fmp12::layouts::merge_field_ref;
+    assert_eq!(r("\u{1}\u{2}\u{e}0003D000020108"), Some((130, 8)));
+    // A field id of two bytes (path-integer spelling).
+    assert_eq!(r("\u{1}\u{2}\u{10}0003D0000202800C"), Some((130, 140)));
+    assert_eq!(r("Contacts::Name"), None);
+    // Round trip with the break field writer.
+    let b = fmp12::layouts::break_field_bytes(131, 12);
+    let hex: String = b[2..].iter().map(|x| format!("{x:02X}")).collect();
+    assert_eq!(r(&format!("\u{1}\u{2}\u{e}{hex}")), Some((131, 12)));
+}

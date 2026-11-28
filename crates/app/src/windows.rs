@@ -52,6 +52,11 @@ pub struct State {
     last_front: String,
     /// OS windows that had the focus last frame.
     focused: BTreeMap<String, bool>,
+    /// Size (width, height) of the first OS window's content last set.
+    root_size: Option<(f64, f64)>,
+    /// What a window draws around the layout (menu bar, toolbar, margins),
+    /// as last measured.
+    pub chrome: Option<egui::Vec2>,
 }
 
 impl State {
@@ -302,6 +307,17 @@ impl App {
         }
         let keys = !embedded || root == front;
         self.draw_window(ui, &root, keys);
+        // Adjust Window, Move/Resize Window: the first OS window follows its
+        // window's size once a script changes it.
+        if let Some(size) = self.content_of(&root) {
+            let first = self.wins.root_size.is_none();
+            let default = script::Window::default();
+            let changed = self.wins.root_size.replace(size) != Some(size);
+            if changed && (!first || size != (default.width, default.height)) {
+                let inner = self.inner_size(size);
+                ctx.send_viewport_cmd_to(root_vp, egui::ViewportCommand::InnerSize(inner));
+            }
+        }
         if root_vp == egui::ViewportId::ROOT || !embedded {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title_of(&root)));
         }
@@ -315,9 +331,12 @@ impl App {
                     viewport: vp,
                 },
             );
+            let size = self
+                .content_of(name)
+                .map_or(egui::vec2(1000.0, 760.0), |s| self.inner_size(s));
             let b = egui::ViewportBuilder::default()
                 .with_title(self.title_of(name))
-                .with_inner_size([1000.0, 760.0])
+                .with_inner_size(size)
                 .with_app_id("basecraft");
             let keys = !embedded || *name == front;
             ctx.show_viewport_immediate(vp, b, |ui, _| {
@@ -349,6 +368,23 @@ impl App {
             // The user chose it: no focus command back to it.
             self.wins.last_front = self.front_name();
         }
+    }
+
+    /// Content size (width, height) a window's script state asks for.
+    fn content_of(&self, name: &str) -> Option<(f64, f64)> {
+        let w = if name == self.front_name() {
+            &self.win
+        } else {
+            self.engine.as_ref()?.windows.get(self.bg_index(name)?)?
+        };
+        (w.width > 0.0 && w.height > 0.0).then_some((w.width, w.height))
+    }
+
+    /// The OS window size showing `content`: the content plus the chrome.
+    fn inner_size(&self, (w, h): (f64, f64)) -> egui::Vec2 {
+        // Before any measure: the menu bar and the panel margins.
+        let chrome = self.wins.chrome.unwrap_or(egui::vec2(16.0, 41.0));
+        egui::vec2(w as f32, h as f32) + chrome
     }
 
     fn viewport_of(&self, name: &str, root: egui::ViewportId) -> egui::ViewportId {

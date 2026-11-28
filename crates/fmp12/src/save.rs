@@ -378,6 +378,49 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
     Ok(write::build(&file.bytes()[..crate::SECTOR], &entries))
 }
 
+/// Rebuilds `file` with new values of global fields (table id → value key
+/// → text) for the tables given: `[T].[8]` is written like a record's
+/// values (FORMAT.md §13, "Global fields"); empty values are not stored.
+/// Tables whose globals are unchanged keep their bytes.
+pub fn save_globals(
+    file: &File,
+    data: &BTreeMap<u32, BTreeMap<u32, String>>,
+) -> Result<Vec<u8>, Error> {
+    let tables = schema::tables(file)?;
+    let mut entries = write::entries(file)?;
+    let mut changed = false;
+    for (&t, new) in data {
+        let Some(table) = tables.iter().find(|x| x.id == t) else {
+            continue;
+        };
+        let new: BTreeMap<u32, String> = new
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        if schema::globals(file, table)? == new {
+            continue;
+        }
+        changed = true;
+        let node = vec![path_elem(t), vec![8]];
+        entries.retain(|e| !e.path.starts_with(&node));
+        if !new.is_empty() {
+            entries.push(Entry {
+                path: node.clone(),
+                item: vec![0x80],
+            });
+        }
+        for (k, v) in &new {
+            entries.extend(value_entries(&node, *k, v));
+        }
+    }
+    if !changed {
+        return Ok(file.bytes().to_vec());
+    }
+    write::sort(&mut entries);
+    Ok(write::build(&file.bytes()[..crate::SECTOR], &entries))
+}
+
 /// `[3].[16].[5].[T]` key 251: incremented by FileMaker whenever the
 /// table's records change (once per transaction).
 fn table_counter(file: &File, table: u32) -> Result<u32, Error> {

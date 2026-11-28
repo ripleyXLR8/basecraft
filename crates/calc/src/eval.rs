@@ -14,6 +14,43 @@ use std::sync::Arc;
 
 pub type R = Result<Value, EvalError>;
 
+/// A custom function (File › Manage › Custom Functions).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    /// The calculation; `None` when it does not parse.
+    pub body: Option<Expr>,
+}
+
+impl CustomFunction {
+    /// Parses `formula`; `custom(name)` tells the other custom functions
+    /// it may call.
+    pub fn new(
+        name: &str,
+        params: Vec<String>,
+        formula: &str,
+        custom: &dyn Fn(&str) -> bool,
+    ) -> Self {
+        CustomFunction {
+            name: name.into(),
+            params,
+            body: crate::parser::parse_with(formula, &|n| {
+                n.eq_ignore_ascii_case(name) || custom(n)
+            })
+            .ok(),
+        }
+    }
+}
+
+/// Custom function calls one calculation may make: FileMaker Pro 26
+/// returns "?" on the 50,000th (nested or not; an Evaluate counts its
+/// own), and EvaluationError cannot catch it.
+pub const CUSTOM_CALL_LIMIT: u32 = 50_000;
+
+/// Message of the error past [`CUSTOM_CALL_LIMIT`].
+pub const CUSTOM_LIMIT: &str = "custom functions called too many times";
+
 /// What the engine needs from its host. Field and table names arrive as
 /// written in the formula; FileMaker treats them case-insensitively.
 pub trait Context {
@@ -41,6 +78,12 @@ pub trait Context {
     /// repetition 1). Defaults to the plain reference.
     fn extended(&mut self, table: Option<&str>, name: &str) -> R {
         self.field(table, name, 1)
+    }
+
+    /// The file's custom function `name` (case-insensitive).
+    fn custom_function(&self, name: &str) -> Option<Arc<CustomFunction>> {
+        let _ = name;
+        None
     }
 
     /// `Get(flag)`; `None` falls back to the engine's built-in flags.
@@ -144,6 +187,8 @@ pub struct MemoryContext {
     /// GetSummary results keyed `summary|break` (lower-case field keys).
     pub summaries: HashMap<String, Value>,
     pub self_value: Option<Value>,
+    /// Custom functions by lower-case name.
+    pub custom: HashMap<String, Arc<CustomFunction>>,
 }
 
 fn field_key(table: Option<&str>, name: &str) -> String {
@@ -161,6 +206,10 @@ impl MemoryContext {
 }
 
 impl Context for MemoryContext {
+    fn custom_function(&self, name: &str) -> Option<Arc<CustomFunction>> {
+        self.custom.get(&name.to_lowercase()).cloned()
+    }
+
     fn field(&mut self, table: Option<&str>, name: &str, repetition: usize) -> R {
         match self.fields.get(&field_key(table, name)) {
             Some(v) => Ok(v
@@ -272,6 +321,10 @@ pub struct Evaluator<'a> {
     /// Nesting of Evaluate() calls, bounded so self-evaluating text fails
     /// instead of overflowing the stack.
     pub(crate) evaluate_depth: u32,
+    /// Custom function calls made so far ([`CUSTOM_CALL_LIMIT`]).
+    pub(crate) custom_calls: u32,
+    /// Custom function calls not returned yet.
+    custom_depth: u32,
 }
 
 /// Named constants usable as bare words in formulas.
@@ -337,10 +390,23 @@ impl<'a> Evaluator<'a> {
             scale: num::DEFAULT_SCALE,
             max_iterations: 50_000,
             evaluate_depth: 0,
+            custom_calls: 0,
+            custom_depth: 0,
         }
     }
 
     pub fn eval(&mut self, e: &Expr) -> R {
+        // Recursive custom functions nest 50,000 calls deep: grow the
+        // stack instead of overflowing it.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            stacker::maybe_grow(256 * 1024, 16 * 1024 * 1024, || self.eval_node(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.eval_node(e)
+    }
+
+    fn eval_node(&mut self, e: &Expr) -> R {
         match e {
             Expr::Number(n) => Ok(Value::Number(n.clone())),
             Expr::Text(s) => Ok(Value::Text(s.clone())),
@@ -354,7 +420,16 @@ impl<'a> Evaluator<'a> {
                 rep: None,
             } => match self.local(name) {
                 Some(v) => Ok(v),
-                None => self.ctx.field(None, name, 1),
+                None => match self.ctx.field(None, name, 1) {
+                    // A custom function without parameters is written bare.
+                    Err(e) if e.code == code::FIELD_MISSING => {
+                        match self.ctx.custom_function(name) {
+                            Some(f) => self.call_custom(&f, &[]),
+                            None => Err(e),
+                        }
+                    }
+                    r => r,
+                },
             },
             Expr::Field { table, name, rep } => {
                 let rep = self.repetition(rep)?;
@@ -386,6 +461,49 @@ impl<'a> Evaluator<'a> {
                 }
             },
         }
+    }
+
+    /// Calls custom function `f`: its parameters are evaluated here, then
+    /// its calculation runs with only them as variables.
+    pub fn call_custom(&mut self, f: &CustomFunction, args: &[Expr]) -> R {
+        match args.len().cmp(&f.params.len()) {
+            Ordering::Less => {
+                return Err(EvalError::new(
+                    code::TOO_FEW_PARAMS,
+                    format!("too few parameters in {}", f.name),
+                ));
+            }
+            Ordering::Greater => {
+                return Err(EvalError::new(
+                    code::TOO_MANY_PARAMS,
+                    format!("too many parameters in {}", f.name),
+                ));
+            }
+            Ordering::Equal => {}
+        }
+        self.custom_calls += 1;
+        // ponytail: without stacker (wasm) the stack bounds the nesting;
+        // 2,000 calls fit in the browser's default stack.
+        let deep = cfg!(target_arch = "wasm32") && self.custom_depth >= 2_000;
+        if self.custom_calls >= CUSTOM_CALL_LIMIT || deep {
+            return Err(EvalError::generic(CUSTOM_LIMIT));
+        }
+        let mut scope = HashMap::new();
+        for (p, a) in f.params.iter().zip(args) {
+            scope.insert(p.to_lowercase(), self.eval(a)?);
+        }
+        let Some(body) = &f.body else {
+            return Err(EvalError::new(
+                code::GENERIC,
+                format!("{} has a calculation error", f.name),
+            ));
+        };
+        let saved = std::mem::replace(&mut self.scopes, vec![scope]);
+        self.custom_depth += 1;
+        let r = self.eval(body);
+        self.custom_depth -= 1;
+        self.scopes = saved;
+        r
     }
 
     /// A bare name that is a Let variable or a named constant.

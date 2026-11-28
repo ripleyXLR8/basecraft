@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use calc::Value;
 use fmp12::schema::{DataType, FieldKind};
-use fmp12::schema_edit::{EditError, Editor, FieldSpec, RelationshipSpec};
+use fmp12::schema_edit::{CustomFunctionSpec, EditError, Editor, FieldSpec, RelationshipSpec};
 
 pub use find::{Request, find};
 pub use fmp12::containers::Stored;
@@ -106,6 +106,46 @@ pub struct Database {
     pub locale: fmp12::schema::Locale,
     /// The logged-in account and the last action its privileges refused.
     pub access: Access,
+    /// File › Manage › Custom Functions.
+    pub custom_functions: CustomFunctions,
+    /// Base directories of external container storage: (id, path relative
+    /// to the database's folder), [`fmp12::containers::base_directories`].
+    pub base_directories: Vec<(u32, String)>,
+}
+
+/// The file's custom functions, as listed and as the calculation engine
+/// calls them.
+#[derive(Debug, Clone, Default)]
+pub struct CustomFunctions {
+    /// Folders included, in display order.
+    pub list: Vec<fmp12::custom_functions::CustomFunction>,
+    /// Calculation of each function (by id) as FileMaker shows it.
+    pub formulas: BTreeMap<u32, String>,
+    /// By lower-case name, parsed.
+    pub by_name: std::collections::HashMap<String, std::sync::Arc<calc::CustomFunction>>,
+}
+
+impl CustomFunctions {
+    fn load(file: &fmp12::File, names: &EvalNames) -> Result<Self, fmp12::Error> {
+        use fmp12::custom_functions::Kind;
+        let list = fmp12::custom_functions::read(file)?;
+        let fns: Vec<_> = list.iter().filter(|f| f.kind == Kind::Function).collect();
+        let lower: Vec<String> = fns.iter().map(|f| f.name.to_lowercase()).collect();
+        let shown = fmp12::calc::FileNames::load(file)?;
+        let mut out = CustomFunctions::default();
+        for f in fns {
+            out.formulas.insert(f.id, f.formula(&shown));
+            // The engine's spelling of field names (`${…}`).
+            let src = fmp12::calc::decompile(&f.tokens, 0, names).unwrap_or_default();
+            let c = calc::CustomFunction::new(&f.name, f.params.clone(), &src, &|n| {
+                lower.contains(&n.to_lowercase())
+            });
+            out.by_name
+                .insert(f.name.to_lowercase(), std::sync::Arc::new(c));
+        }
+        out.list = list;
+        Ok(out)
+    }
 }
 
 pub use access::{
@@ -132,6 +172,7 @@ pub struct Access {
 struct EvalNames<'a> {
     tables: &'a [fmp12::schema::Table],
     tos: &'a [fmp12::graph::TableOccurrence],
+    customs: Vec<(u32, String)>,
 }
 
 impl fmp12::calc::Names for EvalNames<'_> {
@@ -145,6 +186,10 @@ impl fmp12::calc::Names for EvalNames<'_> {
             "${{{}}}",
             self.tos.iter().find(|t| t.id == to)?.name
         ))
+    }
+    fn custom_function(&self, id: u32) -> Option<String> {
+        let (_, n) = self.customs.iter().find(|(i, _)| *i == id)?;
+        Some(n.clone())
     }
 }
 
@@ -189,7 +234,12 @@ impl Database {
         let names = EvalNames {
             tables: &schema,
             tos: &occurrences,
+            customs: fmp12::custom_functions::read(file)?
+                .into_iter()
+                .map(|f| (f.id, f.name))
+                .collect(),
         };
+        let custom_functions = CustomFunctions::load(file, &names)?;
         let mut tables = Vec::new();
         for t in &schema {
             let fields = t
@@ -245,6 +295,8 @@ impl Database {
             privilege_sets: fmp12::security::privilege_sets(file)?,
             locale: fmp12::schema::locale(file)?,
             occurrences,
+            custom_functions,
+            base_directories: fmp12::containers::base_directories(file)?,
             access: Access {
                 session,
                 denied: None,
@@ -286,6 +338,93 @@ impl Database {
         *self = fresh;
         *file = new;
         Ok(out)
+    }
+
+    /// Adds a custom function; returns its id.
+    pub fn add_custom_function(
+        &mut self,
+        file: &mut fmp12::File,
+        spec: &CustomFunctionSpec,
+    ) -> Result<u32, EditError> {
+        self.edit_schema(file, |ed| ed.add_custom_function(spec))
+    }
+
+    /// Replaces custom function `id`.
+    pub fn set_custom_function(
+        &mut self,
+        file: &mut fmp12::File,
+        id: u32,
+        spec: &CustomFunctionSpec,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.set_custom_function(id, spec))
+    }
+
+    /// Deletes custom function `id`.
+    pub fn delete_custom_function(
+        &mut self,
+        file: &mut fmp12::File,
+        id: u32,
+    ) -> Result<(), EditError> {
+        self.edit_schema(file, |ed| ed.delete_custom_function(id))
+    }
+
+    /// Reads the files of containers kept in open external storage, from
+    /// the folder `dir` of the database (FORMAT.md §13). Files that are
+    /// missing stay unread (FileMaker then shows the file name only);
+    /// secure storage is encrypted and is not read.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_external_containers(&mut self, dir: &std::path::Path) {
+        let base = self.external_base(dir);
+        for t in self.tables.iter_mut() {
+            for s in t.containers.values_mut() {
+                if let Some(p) = s.external().and_then(|x| x.path()) {
+                    s.external_data = std::fs::read(base.join(p)).ok();
+                }
+            }
+        }
+    }
+
+    /// Writes the files of containers kept in open external storage into
+    /// the folder `dir` of the database the records were saved to, in
+    /// FileMaker's layout (`<base directory>/<Table>/<Field>/<name>`).
+    /// Files already there are left alone. Returns the files written.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn write_external_containers(
+        &self,
+        dir: &std::path::Path,
+    ) -> std::io::Result<Vec<std::path::PathBuf>> {
+        let base = self.external_base(dir);
+        let mut out = Vec::new();
+        for t in &self.tables {
+            for s in t.containers.values() {
+                let (Some(p), Some(data)) = (s.external().and_then(|x| x.path()), &s.external_data)
+                else {
+                    continue;
+                };
+                let path = base.join(p);
+                if path.exists() {
+                    continue;
+                }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, data)?;
+                out.push(path);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Folder of the first base directory ("[database location]/…").
+    // ponytail: other base directories and absolute ones are not used.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn external_base(&self, dir: &std::path::Path) -> std::path::PathBuf {
+        let rel = self
+            .base_directories
+            .iter()
+            .min_by_key(|(id, _)| *id)
+            .map_or("", |(_, p)| p.as_str());
+        dir.join(rel)
     }
 
     /// Adds a table (with its occurrence and layout); returns its id.
@@ -575,7 +714,19 @@ impl Database {
             .is_some_and(|f| f.data_type == DataType::Container);
         match v {
             Value::Container(c) if container && c.path.is_empty() && !c.data.is_empty() => {
-                let s = Stored::new(&c.name, c.data.clone());
+                let open = t.field(field).is_some_and(|f| {
+                    f.def.external_storage() == Some(fmp12::containers::Storage::Open)
+                });
+                let s = if open {
+                    // ponytail: FileMaker's default folder ("Table/Field/");
+                    // a folder calculation of the field is not evaluated.
+                    let fname = t.field(field).map(|f| f.name.clone()).unwrap_or_default();
+                    let dir = format!("{}/{}/", t.name, fname);
+                    let file = external_name(t, &dir, &c.name, &c.data);
+                    Stored::new_open(&c.name, &file, &dir, c.data.clone())
+                } else {
+                    Stored::new(&c.name, c.data.clone())
+                };
                 let hash = s.hash();
                 let id = match t.containers.iter().find(|(_, o)| o.hash() == hash) {
                     Some((id, _)) => *id,
@@ -723,6 +874,12 @@ impl Database {
         let names = EvalNames {
             tables: &schema,
             tos: &self.occurrences,
+            customs: self
+                .custom_functions
+                .list
+                .iter()
+                .map(|f| (f.id, f.name.clone()))
+                .collect(),
         };
         let src = fmp12::calc::decompile(tokens, to, &names)
             .map_err(|e| calc::EvalError::new(calc::error::code::GENERIC, e.to_string()))?;
@@ -1337,6 +1494,32 @@ pub fn stored_text(v: &Value, loc: &fmp12::schema::Locale) -> String {
     }
 }
 
+/// File name for `data` in folder `dir` of open external storage: its own
+/// name, or `name_1.ext`, `name_2.ext`… when another file has it (as
+/// FileMaker Pro 26 names a second red.png red_1.png).
+fn external_name(t: &Table, dir: &str, name: &str, data: &[u8]) -> String {
+    let taken = |f: &str| {
+        t.containers.values().any(|s| {
+            s.external().is_some_and(|x| {
+                x.dir == dir
+                    && x.file.eq_ignore_ascii_case(f)
+                    && s.external_data.as_deref() != Some(data)
+            })
+        })
+    };
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    let mut n = name.to_string();
+    let mut i = 1;
+    while taken(&n) {
+        n = format!("{stem}_{i}{ext}");
+        i += 1;
+    }
+    n
+}
+
 /// Number of repetitions of a field (1 for a non-repeating one).
 pub fn repetitions(f: &Field) -> u32 {
     (f.def.max_repetitions() as u32).max(1)
@@ -1503,6 +1686,14 @@ impl RecordContext<'_, '_> {
 }
 
 impl calc::Context for RecordContext<'_, '_> {
+    fn custom_function(&self, name: &str) -> Option<std::sync::Arc<calc::CustomFunction>> {
+        self.db
+            .custom_functions
+            .by_name
+            .get(&name.to_lowercase())
+            .cloned()
+    }
+
     fn field(
         &mut self,
         table: Option<&str>,
@@ -1813,6 +2004,8 @@ pub(crate) mod tests {
             access: Default::default(),
             privilege_sets: vec![],
             locale: Locale::default(),
+            custom_functions: Default::default(),
+            base_directories: vec![],
         }
     }
 

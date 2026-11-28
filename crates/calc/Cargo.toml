@@ -39,3 +39,12 @@ des = "0.9.0"
 
 [lints]
 workspace = true
+
+# Recursive custom functions nest up to 50,000 calls, far deeper than a
+# thread's stack: stacker (what rustc uses) grows the stack on demand. Not
+# on wasm, where its assembly does not build (calls nest less deep there).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+stacker = "0.1.25"
+# Pinned: psm 0.1.24+ builds with ar_archive_writer, whose licence
+# (Apache-2.0 WITH LLVM-exception) deny.toml does not list.
+psm = "=0.1.23"

@@ -16,6 +16,15 @@ from files we authored ourselves.
   export) with 16-byte values in `<name>.raw` (`fmdump <file> raw`), which
   maps each XML catalog to its binary path.
 * `Test-FmOpen <file>` (in `fmui.ps1`): opens a file and reports `OPEN` or the text of the blocking dialog.
+* Custom functions (FORMAT.md §16): File › Manage › Custom Functions is
+  `Click-Fm 32 40; Click-Fm 50 243; Click-Fm 330 383` (Containers: `295 363`).
+  Custom functions paste into its list with `Set-FmClip "Mac-XMFN"` and the
+  classic `<CustomFunction functionArity="1" visible="True" parameters="n"
+  name="Fact"><Calculation>…` snippet (`<Group name>` = folder). Results were
+  read with `Invoke-FmCalcs` (calc_oracle.ps1). External storage was set in
+  Field Options › "Autres options" (`IDC_STORAGE_CONTAINER_EXTERNAL`,
+  `…_OPEN_RADIO`, `…_SECURE_LESS_CHECKBOX`) and filled by `Base64Decode`
+  in pasted Set Field steps; `basecraft-cli new … Field=@file` writes files.
 * `Add-FmScriptSteps <snippet.xml>` (in `fmui.ps1`): pastes the steps of an
   `fmxmlsnippet` into a new script of the open file through the clipboard
   (`Set-FmClip`, format `Mac-XMSS` = u32 LE length + UTF-8 XML); `Close-Fm`

@@ -16,6 +16,10 @@ pub trait Resolve {
     fn occurrences(&self) -> Vec<(u32, String)>;
     /// Fields (id, name) of the base table behind occurrence `to`.
     fn fields(&self, to: u32) -> Vec<(u32, String)>;
+    /// Custom functions: (id, name).
+    fn custom_functions(&self) -> Vec<(u32, String)> {
+        Vec::new()
+    }
 }
 
 /// Keys 5 and 6 of a calculation node.
@@ -54,7 +58,28 @@ fn err<T>(at: usize, message: impl Into<String>) -> Res<T> {
 /// Compiles `src` for a calculation evaluated from occurrence `context`
 /// (0 for scripts and layouts: every field is then written `TO::Field`).
 pub fn compile(src: &str, context: u32, names: &dyn Resolve) -> Result<Compiled, CompileError> {
-    let (compiled, p) = parse(lex(src, context, names)?)?;
+    compile_with(src, context, &[], names)
+}
+
+/// Compiles the calculation of a custom function with parameters
+/// `params`: a parameter is written like a Let variable (`0B` name in key
+/// 5, `18 slot` in key 6), numbered from 0 in order. No context: fields
+/// are written `TO::Field`.
+pub fn compile_function(
+    src: &str,
+    params: &[String],
+    names: &dyn Resolve,
+) -> Result<Compiled, CompileError> {
+    compile_with(src, 0, params, names)
+}
+
+fn compile_with(
+    src: &str,
+    context: u32,
+    params: &[String],
+    names: &dyn Resolve,
+) -> Result<Compiled, CompileError> {
+    let (compiled, p) = parse(lex(src, context, names)?, params)?;
     let tokens = p.toks.iter().flat_map(|t| t.k5.iter().copied()).collect();
     let mut fields: Vec<(u32, u32)> = p
         .toks
@@ -76,7 +101,7 @@ pub fn compile(src: &str, context: u32, names: &dyn Resolve) -> Result<Compiled,
 /// Key 6 of a stored token stream (key 5). Scripts keep only key 5 in
 /// memory ([`crate::scripts::Calc`]); the writer derives key 6 with this.
 pub fn compiled(tokens: &[u8]) -> Result<Vec<u8>, CompileError> {
-    Ok(parse(scan(tokens)?)?.0)
+    Ok(parse(scan(tokens)?, &[])?.0)
 }
 
 /// Every function name the compiler knows, and every `Get` flag, sorted
@@ -96,11 +121,26 @@ pub fn function_names() -> (Vec<&'static str>, Vec<&'static str>) {
     (f, g)
 }
 
-fn parse(toks: Vec<Tok>) -> Res<(Vec<u8>, Parser)> {
+fn parse(toks: Vec<Tok>, params: &[String]) -> Res<(Vec<u8>, Parser)> {
+    // A custom function's parameters are the outermost variables.
+    let frames = if params.is_empty() {
+        Vec::new()
+    } else {
+        vec![Frame {
+            count: params.len() as u16,
+            names: params
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.clone(), i as u16))
+                .collect(),
+        }]
+    };
     let mut p = Parser {
         toks,
         pos: 0,
-        frames: Vec::new(),
+        frames,
+        // The whole calculation is in result position (FORMAT.md §16).
+        tail: true,
     };
     p.skip();
     if p.pos >= p.toks.len() {
@@ -164,6 +204,13 @@ fn scan(b: &[u8]) -> Res<Vec<Tok>> {
                     .find(|(l, x, _)| l.as_slice() == lib && *x == idx)
                     .ok_or_else(|| bad(i))?;
                 (ident(n), 10)
+            }
+            0x1B => {
+                let (id, n) = b
+                    .get(i + 1..)
+                    .and_then(crate::calc::custom_ref)
+                    .ok_or_else(|| bad(i))?;
+                ((Kind::Custom(id), String::new()), 1 + n)
             }
             0x1A => {
                 let units = *b.get(i + 1).ok_or_else(|| bad(i))? as usize;
@@ -271,6 +318,8 @@ enum Kind {
     /// `$local` / `$$global`.
     Var,
     Ident,
+    /// Custom function call (its id).
+    Custom(u32),
     Punct(&'static str),
 }
 
@@ -432,6 +481,7 @@ fn lex(src: &str, context: u32, names: &dyn Resolve) -> Res<Vec<Tok>> {
         }
     }
     fields.sort_by_key(|f| std::cmp::Reverse(f.0.chars().count()));
+    let customs = names.custom_functions();
     let mut out = Vec::new();
     let mut i = 0;
     let text = |a: usize, b: usize| s[a..b].iter().collect::<String>();
@@ -606,6 +656,13 @@ fn lex(src: &str, context: u32, names: &dyn Resolve) -> Res<Vec<Tok>> {
                 k5,
                 text: w,
             });
+        } else if let Some((id, _)) = customs.iter().find(|(_, n)| n.eq_ignore_ascii_case(&w)) {
+            out.push(Tok {
+                kind: Kind::Custom(*id),
+                at,
+                k5: custom_token(*id),
+                text: w,
+            });
         } else {
             out.push(Tok {
                 kind: Kind::Ident,
@@ -616,6 +673,14 @@ fn lex(src: &str, context: u32, names: &dyn Resolve) -> Res<Vec<Tok>> {
         }
     }
     Ok(out)
+}
+
+/// Key 5 of a custom function call: `1B 14 len 01 id`.
+fn custom_token(id: u32) -> Vec<u8> {
+    let f = path_elem(id);
+    let mut out = vec![0x1B, 0x14, 1 + f.len() as u8, 1];
+    out.extend(f);
+    out
 }
 
 /// Function token classes.
@@ -713,6 +778,10 @@ struct Parser {
     toks: Vec<Tok>,
     pos: usize,
     frames: Vec<Frame>,
+    /// The expression parsed next gives the calculation's result (a custom
+    /// function called there is compiled `1C`, elsewhere `1B`). Taken
+    /// (reset) by whatever parses next.
+    tail: bool,
 }
 
 fn u16b(n: usize) -> [u8; 2] {
@@ -795,7 +864,15 @@ impl Parser {
 
     /// Precedence climbing; all binary operators are left-associative.
     fn expr(&mut self, min: u8) -> Res<Vec<u8>> {
+        let tail = std::mem::take(&mut self.tail);
+        let start = self.pos;
+        self.tail = tail;
         let mut lhs = self.unary()?;
+        // An operand of an operator is not the result: parse it again.
+        if tail && self.binop().is_some_and(|(_, l)| l >= min) {
+            self.pos = start;
+            lhs = self.unary()?;
+        }
         while let Some((op, level)) = self.binop().filter(|(_, l)| *l >= min) {
             let i = self.bump();
             if let Some((_, b)) = [("and", 0x1F), ("or", 0x20), ("xor", 0x21)]
@@ -812,6 +889,7 @@ impl Parser {
 
     /// Prefix operators bind tighter than `^`.
     fn unary(&mut self) -> Res<Vec<u8>> {
+        let tail = std::mem::take(&mut self.tail);
         let op = if self.is_punct("-") {
             Some(0x2C)
         } else if self.is_punct("+") {
@@ -828,11 +906,21 @@ impl Parser {
                 self.bump();
                 Ok([vec![op], self.unary()?].concat())
             }
-            None => self.primary(),
+            None => {
+                self.tail = tail;
+                self.primary()
+            }
         }
     }
 
+    /// Parses an expression that is (`tail`) or is not the result.
+    fn expr_tail(&mut self, tail: bool) -> Res<Vec<u8>> {
+        self.tail = tail;
+        self.expr(0)
+    }
+
     fn primary(&mut self) -> Res<Vec<u8>> {
+        let tail = std::mem::take(&mut self.tail);
         let at = self.at();
         let Some(t) = self.peek().cloned() else {
             return err(at, "unexpected end of calculation");
@@ -852,9 +940,30 @@ impl Parser {
             }
             Kind::Punct("(") => {
                 self.bump();
-                let e = self.expr(0)?;
+                let e = self.expr_tail(tail)?;
                 self.expect(")")?;
                 Ok(e)
+            }
+            // A Let variable or parameter may shadow a custom function.
+            Kind::Custom(_) if self.slot_of(&t.text).is_some() => {
+                let i = self.pos;
+                self.toks[i].kind = Kind::Ident;
+                self.ident(tail)
+            }
+            Kind::Custom(id) => {
+                self.bump();
+                let args = if self.is_punct("(") {
+                    self.args()?
+                } else {
+                    Vec::new()
+                };
+                let f = path_elem(*id);
+                let mut c = vec![if tail { 0x1C } else { 0x1B }];
+                c.extend(u16b(args.len()));
+                c.extend([0x14, 1 + f.len() as u8, 1]);
+                c.extend(f);
+                c.extend(args.iter().rev().flat_map(|a| a.code.iter().copied()));
+                Ok(c)
             }
             Kind::Var => {
                 self.bump();
@@ -869,7 +978,7 @@ impl Parser {
             } if self.slot_of(&t.text).is_some() => {
                 let i = self.pos;
                 self.toks[i].kind = Kind::Ident;
-                self.ident()
+                self.ident(tail)
             }
             Kind::Field {
                 to,
@@ -885,7 +994,7 @@ impl Parser {
                     None => Ok(t.k5),
                 }
             }
-            Kind::Ident => self.ident(),
+            Kind::Ident => self.ident(tail),
             _ => err(at, format!("unexpected {:?}", t.text)),
         }
     }
@@ -911,7 +1020,7 @@ impl Parser {
         })
     }
 
-    fn ident(&mut self) -> Res<Vec<u8>> {
+    fn ident(&mut self, tail: bool) -> Res<Vec<u8>> {
         let i = self.pos;
         let at = self.toks[i].at;
         let name = self.toks[i].text.clone();
@@ -956,8 +1065,8 @@ impl Parser {
                 self.expect(")")?;
                 Ok(vec![0x9B, flag])
             }
-            Func::One(0xDF) => self.let_(),
-            Func::Two(0xF8, 0) => self.while_(),
+            Func::One(0xDF) => self.let_(tail),
+            Func::Two(0xF8, 0) => self.while_(tail),
             _ if !self.is_punct("(") => {
                 if constant(f) {
                     Ok(f.bytes())
@@ -966,7 +1075,13 @@ impl Parser {
                 }
             }
             _ => {
-                let args = self.args()?;
+                // If, Case and Choose pass the result position to their results.
+                let results: fn(usize, bool) -> bool = match f {
+                    Func::One(0x4B | 0x4D) => |i, _| i > 0,
+                    Func::One(0x4C) => |i, last| i % 2 == 1 || last,
+                    _ => |_, _| false,
+                };
+                let args = self.args_tail(tail, results)?;
                 Ok(emit_call(f, args))
             }
         }
@@ -974,6 +1089,12 @@ impl Parser {
 
     /// `( a ; b ; … )`; an argument may be a `[ … ]` list.
     fn args(&mut self) -> Res<Vec<Arg>> {
+        self.args_tail(false, |_, _| false)
+    }
+
+    /// [`Self::args`]; argument `i` is in result position when `tail` and
+    /// `result(i, is the last argument)`.
+    fn args_tail(&mut self, tail: bool, result: fn(usize, bool) -> bool) -> Res<Vec<Arg>> {
         self.expect("(")?;
         let mut out = Vec::new();
         if self.is_punct(")") {
@@ -1003,7 +1124,14 @@ impl Parser {
                 });
             } else {
                 let start = self.pos;
-                let code = self.expr(0)?;
+                let i = out.len();
+                let mut code = self.expr_tail(tail && result(i, true))?;
+                // Whether it was the last argument shows only now.
+                let last = !self.is_punct(";");
+                if tail && result(i, true) != result(i, last) {
+                    self.pos = start;
+                    code = self.expr_tail(result(i, last))?;
+                }
                 let single = self.toks[start..self.pos]
                     .iter()
                     .filter(|t| t.kind != Kind::Trivia)
@@ -1112,7 +1240,7 @@ impl Parser {
         Ok([u16b(items.len()).to_vec(), items.concat()].concat())
     }
 
-    fn let_(&mut self) -> Res<Vec<u8>> {
+    fn let_(&mut self, tail: bool) -> Res<Vec<u8>> {
         self.expect("(")?;
         self.frames.push(Frame {
             count: 0,
@@ -1120,13 +1248,13 @@ impl Parser {
         });
         let b = self.bindings()?;
         self.expect(";")?;
-        let body = self.expr(0)?;
+        let body = self.expr_tail(tail)?;
         self.expect(")")?;
         self.frames.pop();
         Ok([vec![0xDF], b, body].concat())
     }
 
-    fn while_(&mut self) -> Res<Vec<u8>> {
+    fn while_(&mut self, tail: bool) -> Res<Vec<u8>> {
         self.expect("(")?;
         self.frames.push(Frame {
             count: 0,
@@ -1138,7 +1266,7 @@ impl Parser {
         self.expect(";")?;
         let lp = self.bindings()?;
         self.expect(";")?;
-        let result = self.expr(0)?;
+        let result = self.expr_tail(tail)?;
         self.expect(")")?;
         self.frames.pop();
         Ok([vec![0xF8, 0], init, cond, lp, result].concat())

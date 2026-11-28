@@ -772,3 +772,95 @@ fn registry_coverage() {
     assert_eq!(reference.len(), 234);
     assert_eq!(flags.len(), 139); // plus the "Get ( flag )" header line
 }
+
+/// The custom functions pasted into FileMaker Pro 26 to check these
+/// results (FORMAT.md §16).
+fn custom_ctx() -> MemoryContext {
+    let defs: [(&str, &str, &str); 7] = [
+        ("Fact", "n", "If ( n <= 1 ; 1 ; n * Fact ( n - 1 ) )"),
+        ("AddTwo", "a;b", "a + b"),
+        ("Hello", "", "\"Hello\""),
+        (
+            "WhoAmI",
+            "",
+            "Get ( AccountName ) & \"/\" & Get ( RecordNumber )",
+        ),
+        ("Deep", "n", "If ( n <= 0 ; 0 ; 1 + Deep ( n - 1 ) )"),
+        (
+            "Tail",
+            "n;acc",
+            "If ( n <= 0 ; acc ; Tail ( n - 1 ; acc + 1 ) )",
+        ),
+        ("Sq", "x", "x * x // square"),
+    ];
+    let names: Vec<String> = defs.iter().map(|d| d.0.to_lowercase()).collect();
+    let mut c = MemoryContext::default();
+    for (name, params, formula) in defs {
+        let params = params
+            .split(';')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
+        let f = crate::CustomFunction::new(name, params, formula, &|n| {
+            names.contains(&n.to_lowercase())
+        });
+        c.custom.insert(name.to_lowercase(), std::sync::Arc::new(f));
+    }
+    c.flags.insert("accountname".into(), Value::text("Admin"));
+    c.flags.insert("recordnumber".into(), Value::int(0));
+    c
+}
+
+#[test]
+fn custom_functions_match_filemaker() {
+    let cases = [
+        ("Fact ( 5 )", "120"),
+        ("Fact ( 20 )", "2432902008176640000"),
+        ("AddTwo ( 2 ; 3 )", "5"),
+        ("AddTwo ( \"a\" ; 1 )", "1"),
+        ("Hello", "Hello"),
+        ("Hello & \"!\"", "Hello!"),
+        ("WhoAmI", "Admin/0"),
+        ("Sq ( 7 )", "49"),
+        ("Deep ( 100 )", "100"),
+        ("Tail ( 10001 ; 0 )", "10001"),
+        ("Let ( n = 3 ; Fact ( n ) + n )", "9"),
+        ("Fact ( Fact ( 3 ) )", "720"),
+        ("Fact ( -1 )", "1"),
+        ("Sq ( \"abc\" )", "0"),
+        ("If ( 1 ; 2 ; Tail ( 49999 ; 0 ) )", "2"),
+        ("Evaluate ( \"Fact ( 4 )\" )", "24"),
+    ];
+    let mut failures = vec![];
+    for (src, want) in cases {
+        let got = eval_text(src, &mut custom_ctx());
+        if got != want {
+            failures.push(format!("{src}: want {want:?}, got {got:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let err = |src: &str| evaluate(src, &mut custom_ctx()).unwrap_err().code;
+    assert_eq!(err("AddTwo ( 1 )"), code::TOO_FEW_PARAMS);
+    assert_eq!(err("Hello ( 1 )"), code::TOO_MANY_PARAMS);
+    assert_eq!(err("AddTwo ( 1 ; 2 ; 3 )"), code::TOO_MANY_PARAMS);
+}
+
+/// FileMaker allows 49,999 custom function calls in one calculation, deep
+/// or not; the 50,000th makes it "?", which EvaluationError does not catch.
+/// An Evaluate counts its own calls.
+#[test]
+fn custom_function_call_limit() {
+    let r = |src: &str| eval_text(src, &mut custom_ctx());
+    assert_eq!(r("Tail ( 49998 ; 0 )"), "49998");
+    assert_eq!(r("Deep ( 49998 )"), "49998");
+    assert_eq!(r("Tail ( 49999 ; 0 )"), "?");
+    assert_eq!(r("Deep ( 49999 )"), "?");
+    assert_eq!(r("Tail ( 20000 ; 0 ) & \"|\" & Tail ( 29998 ; 0 )"), "?");
+    assert_eq!(r("EvaluationError ( Tail ( 49999 ; 0 ) )"), "?");
+    assert_eq!(r("IsEmpty ( Tail ( 49999 ; 0 ) )"), "?");
+    assert_eq!(
+        r("Evaluate ( \"Tail ( 30000 ; 0 )\" ) + Evaluate ( \"Tail ( 30000 ; 0 )\" )"),
+        "60000"
+    );
+    assert_eq!(r("EvaluationError ( Deep ( 20000 ) )"), "0");
+}

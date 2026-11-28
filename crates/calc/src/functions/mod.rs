@@ -378,6 +378,9 @@ pub fn exists(name: &str) -> bool {
 
 pub fn call(ev: &mut Evaluator, name: &str, args: &[Expr]) -> R {
     let Some(f) = lookup(name) else {
+        if let Some(c) = ev.ctx.custom_function(name) {
+            return ev.call_custom(&c, args);
+        }
         let known = REFERENCE
             .lines()
             .any(|l| reference_name(l).eq_ignore_ascii_case(name));
@@ -547,12 +550,16 @@ fn evaluate(ev: &mut Evaluator, a: &[Expr]) -> R {
     if src.trim().is_empty() {
         return Ok(Value::empty());
     }
-    let expr = crate::parser::parse(&src)?;
+    let ctx = &*ev.ctx;
+    let expr = crate::parser::parse_with(&src, &|n| ctx.custom_function(n).is_some())?;
     if ev.evaluate_depth >= 32 {
         return Err(EvalError::generic("Evaluate is nested too deeply"));
     }
     ev.evaluate_depth += 1;
+    // The evaluated text counts its own custom function calls.
+    let calls = std::mem::take(&mut ev.custom_calls);
     let r = ev.isolated(|ev| ev.eval(&expr));
+    ev.custom_calls = calls;
     ev.evaluate_depth -= 1;
     r
 }
@@ -562,19 +569,30 @@ fn evaluate(ev: &mut Evaluator, a: &[Expr]) -> R {
 fn evaluation_error(ev: &mut Evaluator, a: &[Expr]) -> R {
     match ev.eval(&a[0]) {
         Ok(_) => Ok(Value::int(0)),
-        Err(e) if e.message == WHILE_LIMIT => Err(e),
+        Err(e) if fatal(&e) => Err(e),
         Err(e) => Ok(Value::int(e.code as i64)),
     }
 }
 
 const WHILE_LIMIT: &str = "While exceeded its iteration limit";
 
+/// A While or custom function limit: no function catches it.
+fn fatal(e: &EvalError) -> bool {
+    e.message == WHILE_LIMIT || e.message == crate::eval::CUSTOM_LIMIT
+}
+
 fn is_empty(ev: &mut Evaluator, a: &[Expr]) -> R {
-    Ok(Value::bool(ev.eval(&a[0]).map_or(true, |v| v.is_empty())))
+    match ev.eval(&a[0]) {
+        Err(e) if fatal(&e) => Err(e),
+        r => Ok(Value::bool(r.map_or(true, |v| v.is_empty()))),
+    }
 }
 
 fn is_valid(ev: &mut Evaluator, a: &[Expr]) -> R {
-    Ok(Value::bool(ev.eval(&a[0]).is_ok()))
+    match ev.eval(&a[0]) {
+        Err(e) if fatal(&e) => Err(e),
+        r => Ok(Value::bool(r.is_ok())),
+    }
 }
 
 /// Valid when it parses and every field it names exists (Let and While

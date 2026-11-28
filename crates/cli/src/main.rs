@@ -9,7 +9,7 @@
 //! basecraft-cli records <file> <table> [--find Field=criterion]… [--omit Field=criterion]…
 //!                       [--sort Field[:desc]]… [--limit N]
 //! basecraft-cli eval    <file> <calculation> [--table T] [--record ID]
-//! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place)
+//! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place; Container=@file inserts a file)
 //! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)
 //! basecraft-cli export  <file> <table> [-o out.csv|.tab|.mer|.xml|.xlsx|.json] [--format F]
@@ -25,6 +25,8 @@
 //!                       add-valuelist|set-valuelist|rename|delete <file> …   (-o out | --in-place)
 //! basecraft-cli accounts [add|set|delete] <file> …   privileges [add|set|delete] <file> …
 //!                       (File › Manage › Security; see `security.rs`)
+//! basecraft-cli functions [add|set|delete] <file> …   (File › Manage › Custom Functions;
+//!                       see `functions.rs`)
 //! basecraft-cli new-file <out.fmp12> [--table Name]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
 //! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
@@ -40,6 +42,7 @@
 
 use std::io::{BufRead, Write};
 
+mod functions;
 mod hosted;
 mod io;
 mod mcp;
@@ -73,6 +76,11 @@ impl Doc {
             }
             e => format!("{path}: {e}"),
         })?;
+        let mut db = db;
+        // Container files kept in open external storage next to the file.
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            db.read_external_containers(dir);
+        }
         Ok(Doc {
             path: path.to_string(),
             file,
@@ -141,6 +149,11 @@ impl Doc {
     fn save(&mut self, out: &str) -> Res<Json> {
         let bytes = self.db.save(&self.file).map_err(|e| e.to_string())?;
         std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+        if let Some(dir) = std::path::Path::new(out).parent() {
+            self.db
+                .write_external_containers(dir)
+                .map_err(|e| format!("{out}: container files: {e}"))?;
+        }
         self.file = fmp12::File::from_bytes(bytes).map_err(|e| e.to_string())?;
         Ok(json!({ "saved": out }))
     }
@@ -329,11 +342,27 @@ fn eval(d: &Doc, src: &str, table: Option<&str>, record: Option<u32>) -> Res<Jso
 
 fn set_fields(d: &mut Doc, table: u32, idx: usize, values: &[(String, String)]) -> Res<()> {
     let t = d.db.table(table).ok_or("no table")?;
-    let ids: Vec<(u32, String)> = values
-        .iter()
-        .map(|(f, v)| Ok((d.field_id(t, f)?, v.clone())))
-        .collect::<Res<_>>()?;
+    let mut ids: Vec<(u32, String)> = Vec::new();
+    // `Container=@path`: inserts that file, as Insert File does.
+    let mut files: Vec<(u32, String)> = Vec::new();
+    for (f, v) in values {
+        let id = d.field_id(t, f)?;
+        let container = t
+            .field(id)
+            .is_some_and(|x| x.data_type == fmp12::schema::DataType::Container);
+        match v.strip_prefix('@') {
+            Some(p) if container => files.push((id, p.to_string())),
+            _ => ids.push((id, v.clone())),
+        }
+    }
     d.db.set_values(table, idx, &ids);
+    for (id, p) in files {
+        let data = std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?;
+        let name = std::path::Path::new(&p)
+            .file_name()
+            .map_or(p.clone(), |n| n.to_string_lossy().into_owned());
+        d.db.insert_file(table, idx, id, 1, &name, data);
+    }
     denied(d)
 }
 
@@ -519,6 +548,7 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
         "print-pdf" => io::print_pdf(d, &arg(0, "layout")?, o),
         "scripts" => scripting::list(d),
         "schema" => schema::run(d, &o.rest),
+        "functions" => functions::run(d, &o.rest),
         "accounts" => security::accounts(d, &o.rest),
         "privileges" => security::privileges(d, &o.rest),
         "run-script" => scripting::run(
@@ -602,7 +632,8 @@ fn main_inner() -> Res<Json> {
     let args = match args.as_slice() {
         [s, sub, file, rest @ ..]
             if s == "schema"
-                || (matches!(s.as_str(), "accounts" | "privileges") && sec_sub(sub)) =>
+                || (matches!(s.as_str(), "accounts" | "privileges" | "functions")
+                    && sec_sub(sub)) =>
         {
             [vec![s.clone(), file.clone(), sub.clone()], rest.to_vec()].concat()
         }
@@ -617,7 +648,7 @@ fn main_inner() -> Res<Json> {
     }
     let o = opts(rest)?;
     let result = run(&mut d, cmd, &o)?;
-    let security_write = matches!(cmd.as_str(), "accounts" | "privileges")
+    let security_write = matches!(cmd.as_str(), "accounts" | "privileges" | "functions")
         && o.rest.first().is_some_and(|s| s != "list");
     if security_write
         || matches!(

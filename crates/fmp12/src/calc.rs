@@ -5,7 +5,9 @@
 //! A calculation node holds key 4 (context table occurrence), key 5 (token
 //! stream that keeps the source formatting) and key 6 (compiled form).
 
-pub use crate::calc_compile::{CompileError, Compiled, Resolve, compile, compiled, function_names};
+pub use crate::calc_compile::{
+    CompileError, Compiled, Resolve, compile, compile_function, compiled, function_names,
+};
 use crate::calc_tables::{EXTERNAL, FUNCTIONS, FUNCTIONS2, GET_FLAGS, OPS};
 use crate::graph::to_ref;
 use crate::{path_int, text};
@@ -16,6 +18,24 @@ pub trait Names {
     fn field(&self, to: u32, field: u32) -> Option<String>;
     /// Name of table occurrence `to`.
     fn occurrence(&self, to: u32) -> Option<String>;
+    /// Name of custom function `id` (File › Manage › Custom Functions).
+    fn custom_function(&self, id: u32) -> Option<String> {
+        let _ = id;
+        None
+    }
+}
+
+/// Custom function reference after a `1B` token: `14 len 01 id` (the
+/// id spelled as a path element). Returns (id, bytes).
+pub(crate) fn custom_ref(b: &[u8]) -> Option<(u32, usize)> {
+    if *b.first()? != 0x14 {
+        return None;
+    }
+    let n = *b.get(1)? as usize;
+    if n < 2 || *b.get(2)? != 1 {
+        return None;
+    }
+    Some((path_int(b.get(3..2 + n)?)?, 2 + n))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +201,15 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
                 out.push_str(name);
                 i += 10;
             }
+            // Custom function: 1B 14 len 01 id (FORMAT.md §16).
+            0x1B => {
+                let (id, n) = custom_ref(&b[i + 1..]).ok_or_else(|| err(i))?;
+                let name = names
+                    .custom_function(id)
+                    .unwrap_or_else(|| "<Function Missing>".into());
+                out.push_str(&name);
+                i += 1 + n;
+            }
             // Variable ($local, $$global): 1A len name, no terminator.
             0x1A => {
                 let len = get(i + 1).ok_or_else(|| err(i))? as usize;
@@ -260,6 +289,8 @@ pub fn decompile(b: &[u8], context: u32, names: &dyn Names) -> Result<String, Ca
 pub struct FileNames {
     pub tables: Vec<crate::schema::Table>,
     pub occurrences: Vec<crate::graph::TableOccurrence>,
+    /// Custom functions: (id, name).
+    pub custom_functions: Vec<(u32, String)>,
 }
 
 impl FileNames {
@@ -267,6 +298,11 @@ impl FileNames {
         Ok(FileNames {
             tables: crate::schema::tables(file)?,
             occurrences: crate::graph::table_occurrences(file)?,
+            custom_functions: crate::custom_functions::read(file)?
+                .into_iter()
+                .filter(|f| f.kind == crate::custom_functions::Kind::Function)
+                .map(|f| (f.id, f.name))
+                .collect(),
         })
     }
 
@@ -283,6 +319,10 @@ impl Names for FileNames {
     fn occurrence(&self, to: u32) -> Option<String> {
         Some(self.occurrences.iter().find(|t| t.id == to)?.name.clone())
     }
+    fn custom_function(&self, id: u32) -> Option<String> {
+        let (_, n) = self.custom_functions.iter().find(|(i, _)| *i == id)?;
+        Some(n.clone())
+    }
 }
 
 impl Resolve for FileNames {
@@ -296,6 +336,9 @@ impl Resolve for FileNames {
         self.table(to).map_or_else(Vec::new, |t| {
             t.fields.iter().map(|(i, f)| (*i, f.name.clone())).collect()
         })
+    }
+    fn custom_functions(&self) -> Vec<(u32, String)> {
+        self.custom_functions.clone()
     }
 }
 

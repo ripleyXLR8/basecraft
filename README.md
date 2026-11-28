@@ -74,12 +74,12 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 | Milestone | Weight | Done |
 |-----------|-------:|-----:|
 | M0 Bootstrap | 2 | 100 % |
-| M1 Read `.fmp12` | 15 | 92 % |
+| M1 Read `.fmp12` | 15 | 95 % |
 | M2 Calculation engine | 12 | 90 % |
 | M3 Data engine | 12 | 85 % |
-| M4 GUI (browse/find/views) | 15 | 55 % |
+| M4 GUI (browse/find/views) | 15 | 80 % |
 | M5 Script engine | 12 | 90 % |
-| M6 Layout mode | 10 | 80 % |
+| M6 Layout mode | 10 | 90 % |
 | M7 Write `.fmp12` | 10 | 85 % |
 | M8 Import/export, print, security… | 12 | 85 % |
 

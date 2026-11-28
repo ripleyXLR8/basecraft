@@ -229,6 +229,8 @@ impl Remote {
                 ..Default::default()
             },
             access: Default::default(),
+            custom_functions: Default::default(),
+            base_directories: Vec::new(),
         };
         let mut layouts = Vec::new();
         for name in names {

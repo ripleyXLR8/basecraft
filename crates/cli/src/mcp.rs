@@ -143,6 +143,26 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
             s(json!({ "name": { "type": "string" } }), &["name"]),
         ),
         (
+            "list_custom_functions",
+            "Custom functions of the open file (File › Manage › Custom Functions): name, parameters, calculation, availability, folder.",
+            s(json!({}), &[]),
+        ),
+        (
+            "set_custom_function",
+            "Create (`create`: true) or change a custom function: `name`, `rename`, `parameters` (names, in order), `calculation` (FileMaker syntax; it may call itself and other custom functions; a parameter is used like a Let variable), `full_access_only` (availability). Changes stay in memory until save_file.",
+            s(
+                json!({ "name": { "type": "string" }, "create": { "type": "boolean" }, "rename": { "type": "string" },
+                   "parameters": { "type": "array", "items": { "type": "string" } },
+                   "calculation": { "type": "string" }, "full_access_only": { "type": "boolean" } }),
+                &["name"],
+            ),
+        ),
+        (
+            "delete_custom_function",
+            "Delete a custom function. Calculations that call it then show <Function Missing>. Changes stay in memory until save_file.",
+            s(json!({ "name": { "type": "string" } }), &["name"]),
+        ),
+        (
             "set_privileges",
             "Create (`create`: true, optionally `copy_of` a set) or change a privilege set. `records`: all, view, none or a list like \"create,view,edit\"; `tables`: {Table: actions}; `limits`: [\"Table:edit=calculation\"]; `fields`: {\"Table::Field\": modifiable|view|none}; `layouts`/`scripts`/`value_lists`: default access (modifiable, view or executable, none); `layout_access`/`script_access`: {name: access}; `menus`: all, editing, minimum; `allow`/`deny`: print, export, change-password, manage-extended, override-validation, create-layouts, create-scripts, create-value-lists; `extended`: keywords such as fmapp. Needs full access. Changes stay in memory until save_file.",
             s(
@@ -630,6 +650,31 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
             a["privilege_sets"] = crate::security::privileges(d, &[])?["privilege_sets"].take();
             return Ok(a);
         }
+        "list_custom_functions" => return Ok(crate::functions::list(d)),
+        "set_custom_function" | "delete_custom_function" => {
+            let sub = match (name, flag("create")) {
+                ("delete_custom_function", _) => "delete",
+                (_, Some(true)) => "add",
+                _ => "set",
+            };
+            args.push(sub.into());
+            args.push(str_of("name").ok_or("name is required")?);
+            if let Some(v) = str_of("rename") {
+                args.extend(["--name".into(), v]);
+            }
+            if let Some(v) = str_of("calculation") {
+                args.extend(["--calc".into(), v]);
+            }
+            if a.get("parameters").is_some() {
+                args.extend(["--params".into(), list("parameters").join(";")]);
+            }
+            match flag("full_access_only") {
+                Some(true) => args.push("--full-access-only".into()),
+                Some(false) => args.push("--all-accounts".into()),
+                None => {}
+            }
+            return crate::functions::run(d, &args);
+        }
         "add_account" | "update_account" | "delete_account" => {
             args.push(
                 match name {
@@ -826,6 +871,63 @@ mod tests {
         let t = db.tables.iter().find(|t| t.name == "People").unwrap();
         let label = t.field_by_name("Label").unwrap().id;
         assert_eq!(t.records[0].values[&label], "#1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn custom_functions() {
+        let dir = std::env::temp_dir().join(format!("basecraft-mcp-cf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cf.fmp12").to_string_lossy().to_string();
+        let mut doc = None;
+        let mut call_ok = |name: &str, args: Json| {
+            let r = handle(
+                &mut doc,
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name": name, "arguments": args}}),
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], false, "{name}: {r}");
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        call_ok("new_file", json!({"path": path, "table": "Notes"}));
+        call_ok(
+            "set_custom_function",
+            json!({"name": "Fact", "create": true, "parameters": ["n"],
+                   "calculation": "If ( n <= 1 ; 1 ; n * Fact ( n - 1 ) )"}),
+        );
+        call_ok(
+            "set_custom_function",
+            json!({"name": "Twice", "create": true, "parameters": ["x"], "calculation": "x * 2",
+                   "full_access_only": true}),
+        );
+        call_ok(
+            "set_custom_function",
+            json!({"name": "Twice", "rename": "Double", "calculation": "x + x"}),
+        );
+        let r = call_ok(
+            "evaluate",
+            json!({"calculation": "Fact ( 5 ) & \"/\" & Double ( 4 )"}),
+        );
+        assert!(r.contains("120/8"), "{r}");
+        call_ok("save_file", json!({}));
+        let r = call_ok("list_custom_functions", json!({}));
+        assert!(r.contains("\"Double\"") && r.contains("x + x"), "{r}");
+        call_ok("delete_custom_function", json!({"name": "Double"}));
+        let r = call_ok("list_custom_functions", json!({}));
+        assert!(!r.contains("Double"), "{r}");
+        let db = engine::Database::open(&path).unwrap();
+        let names: Vec<_> = db
+            .custom_functions
+            .list
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert_eq!(names, ["Fact", "Double"]);
+        assert!(db.custom_functions.list[1].full_access_only);
         std::fs::remove_dir_all(&dir).ok();
     }
 

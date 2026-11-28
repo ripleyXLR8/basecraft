@@ -162,6 +162,7 @@ pub fn set_json(d: &Doc, sec: &Security, s: &PrivilegeSet) -> Json {
             })
             .collect(),
         occurrences: db.occurrences.clone(),
+        ..Default::default()
     };
     let tables: Vec<Json> = s
         .tables

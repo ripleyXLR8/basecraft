@@ -25,6 +25,8 @@
 //!                       add-valuelist|set-valuelist|rename|delete <file> …   (-o out | --in-place)
 //! basecraft-cli accounts [add|set|delete] <file> …   privileges [add|set|delete] <file> …
 //!                       (File › Manage › Security; see `security.rs`)
+//! basecraft-cli functions [add|set|delete] <file> …   (File › Manage › Custom Functions;
+//!                       see `functions.rs`)
 //! basecraft-cli new-file <out.fmp12> [--table Name]
 //! basecraft-cli session <file>     JSON-lines commands on stdin, one reply per line
 //! basecraft-cli mcp [file]         Model Context Protocol server on stdio (for AI agents)
@@ -36,6 +38,7 @@
 
 use std::io::{BufRead, Write};
 
+mod functions;
 mod io;
 mod mcp;
 mod schema;
@@ -68,6 +71,11 @@ impl Doc {
             }
             e => format!("{path}: {e}"),
         })?;
+        let mut db = db;
+        // Container files kept in open external storage next to the file.
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            db.read_external_containers(dir);
+        }
         Ok(Doc {
             path: path.to_string(),
             file,
@@ -136,6 +144,11 @@ impl Doc {
     fn save(&mut self, out: &str) -> Res<Json> {
         let bytes = self.db.save(&self.file).map_err(|e| e.to_string())?;
         std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+        if let Some(dir) = std::path::Path::new(out).parent() {
+            self.db
+                .write_external_containers(dir)
+                .map_err(|e| format!("{out}: container files: {e}"))?;
+        }
         self.file = fmp12::File::from_bytes(bytes).map_err(|e| e.to_string())?;
         Ok(json!({ "saved": out }))
     }
@@ -514,6 +527,7 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
         "print-pdf" => io::print_pdf(d, &arg(0, "layout")?, o),
         "scripts" => scripting::list(d),
         "schema" => schema::run(d, &o.rest),
+        "functions" => functions::run(d, &o.rest),
         "accounts" => security::accounts(d, &o.rest),
         "privileges" => security::privileges(d, &o.rest),
         "run-script" => scripting::run(
@@ -592,7 +606,8 @@ fn main_inner() -> Res<Json> {
     let args = match args.as_slice() {
         [s, sub, file, rest @ ..]
             if s == "schema"
-                || (matches!(s.as_str(), "accounts" | "privileges") && sec_sub(sub)) =>
+                || (matches!(s.as_str(), "accounts" | "privileges" | "functions")
+                    && sec_sub(sub)) =>
         {
             [vec![s.clone(), file.clone(), sub.clone()], rest.to_vec()].concat()
         }
@@ -607,7 +622,7 @@ fn main_inner() -> Res<Json> {
     }
     let o = opts(rest)?;
     let result = run(&mut d, cmd, &o)?;
-    let security_write = matches!(cmd.as_str(), "accounts" | "privileges")
+    let security_write = matches!(cmd.as_str(), "accounts" | "privileges" | "functions")
         && o.rest.first().is_some_and(|s| s != "list");
     if security_write
         || matches!(

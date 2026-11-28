@@ -207,6 +207,22 @@ impl Field {
     pub fn stored(&self) -> bool {
         !self.bit(9, 1)
     }
+    /// Container data stored outside the file ("Store container data
+    /// externally"): byte 8 bit 4, open storage bit 5; secure storage
+    /// "with fewer folders" byte 7 bit 2 (FORMAT.md §13).
+    pub fn external_storage(&self) -> Option<crate::containers::Storage> {
+        use crate::containers::Storage;
+        let b = self.byte(8);
+        (b & 0x10 != 0).then(|| {
+            if b & 0x20 != 0 {
+                Storage::Open
+            } else {
+                Storage::Secure {
+                    fewer_folders: self.byte(7) & 0x04 != 0,
+                }
+            }
+        })
+    }
     pub fn max_repetitions(&self) -> u16 {
         u16::from_be_bytes([self.byte(24), self.byte(25)])
     }

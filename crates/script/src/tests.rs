@@ -211,6 +211,8 @@ fn db(people: &[(&str, &str, &str)]) -> Database {
             ..Default::default()
         }],
         relationships: vec![],
+        custom_functions: Default::default(),
+        base_directories: vec![],
         layouts: vec![layout(1, "People"), layout(2, "People List")],
         themes: vec![],
         accounts: vec![],

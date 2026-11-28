@@ -118,6 +118,8 @@ fn db(rows: &[(&str, &str, &str)]) -> Database {
             ..Default::default()
         }],
         relationships: vec![],
+        custom_functions: Default::default(),
+        base_directories: vec![],
         layouts: vec![layout],
         themes: vec![],
         value_lists: vec![],

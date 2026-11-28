@@ -9,6 +9,13 @@
 //! of the streams (key 4) and the number of record values using it
 //! (key 18); `[T].[31].[1]` is the catalog header (last id, count, id set,
 //! MD5 index).
+//!
+//! A field may store its files outside the database, in a folder next to
+//! it ([`Storage`]): the store then keeps a reference (`REMO` and the data
+//! stream, [`External`]) and the file lies at
+//! `<database folder>/<base directory>/<REMO folder>/<file name>`. Secure
+//! storage encrypts the files and their folder names; only open storage
+//! can be read and written here.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +27,56 @@ use crate::{Chunk, Error, File, path_int};
 pub const REF_END: char = '\u{E000}';
 
 /// Streams FileMaker stores next to the data, not the data itself.
-const META: [&[u8; 4]; 3] = [b"FNAM", b"SIZE", b"DPI_"];
+const META: [&[u8; 4]; 5] = [b"FNAM", b"SIZE", b"DPI_", b"REMO", b"ENCR"];
+
+/// How a container field stores its data outside the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    /// Encrypted, in folders named by an encrypted id: `Secure/52/97/
+    /// ABAB0061/B4723A60/0D3C544B/E855_130` (`<n>/<28 hex>/<4 hex>_<table>`
+    /// with fewer folders).
+    Secure { fewer_folders: bool },
+    /// The file as it is, in a folder given by a calculation
+    /// (`"Table/Field/"` by default).
+    Open,
+}
+
+/// Where a container stored outside the file lies (FORMAT.md §13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct External {
+    pub storage: Storage,
+    /// Folder under the base directory (open storage), `Table/Field/`.
+    pub dir: String,
+    /// File name (open storage), or `_<table>` (secure storage).
+    pub file: String,
+    pub size: u64,
+    /// MD5 of the file (open storage) or its encrypted id (secure).
+    pub md5: [u8; 16],
+}
+
+impl External {
+    /// Path of an open-storage file relative to the base directory.
+    pub fn path(&self) -> Option<String> {
+        (self.storage == Storage::Open).then(|| format!("{}{}", self.dir, self.file))
+    }
+}
+
+/// The base directories of external container storage (`[38].[5].[id]`
+/// key 16, File › Manage › Containers): (id, path). A relative path is
+/// relative to the database's folder (`Files/<file name>/` by default).
+pub fn base_directories(file: &File) -> Result<Vec<(u32, String)>, Error> {
+    let mut out = Vec::new();
+    file.walk(|path, c| {
+        if let ([cat, five, id], Chunk::Kv { key: 16, data }) = (path, c)
+            && path_int(cat) == Some(38)
+            && path_int(five) == Some(5)
+            && let Ok(id) = <[u8; 4]>::try_from(*id)
+        {
+            out.push((u32::from_be_bytes(id), crate::text(data)));
+        }
+    })?;
+    Ok(out)
+}
 
 /// One stored container: its name and streams.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -32,6 +88,9 @@ pub struct Stored {
     pub streams: BTreeMap<[u8; 4], Vec<u8>>,
     /// Number of record values using it (key 18), as read from the file.
     pub uses: u32,
+    /// The file of a container stored outside the database, once read
+    /// from its folder (or given when it was inserted).
+    pub external_data: Option<Vec<u8>>,
 }
 
 impl Stored {
@@ -64,15 +123,87 @@ impl Stored {
             name: name.into(),
             streams,
             uses: 0,
+            external_data: None,
         }
     }
 
     /// The content: the first stream that is not metadata.
     pub fn data(&self) -> &[u8] {
+        if self.streams.contains_key(b"REMO") {
+            return self.external_data.as_deref().unwrap_or(&[]);
+        }
         self.streams
             .iter()
             .find(|(t, _)| !META.contains(t))
             .map_or(&[], |(_, d)| d.as_slice())
+    }
+
+    /// A new container of a field with open external storage: the file
+    /// goes to `dir` (under the base directory, `Table/Field/`) as
+    /// `file_name`; the store keeps a reference, as FileMaker Pro 26 writes
+    /// it: `REMO` = 8 zero bytes then the folder and `00`; the data stream
+    /// (the embedded tag with its case swapped: `pngF`, `jpeg`, `gifF`, `file`) = u64 LE size,
+    /// the file's MD5, the file name and `00`.
+    pub fn new_open(name: &str, file_name: &str, dir: &str, data: Vec<u8>) -> Stored {
+        let mut s = Stored::new(name, Vec::new());
+        let image = image_tag(&data);
+        s.streams.clear();
+        s.kind = if image.is_some() { "image" } else { "file" }.into();
+        if image.is_some() {
+            if let Some((w, h)) = image_size(&data) {
+                let mut x = (w as u16).to_be_bytes().to_vec();
+                x.extend((h as u16).to_be_bytes());
+                s.streams.insert(*b"SIZE", x);
+            }
+            if let Some(dpi) = image_dpi(&data) {
+                let mut x = dpi.to_be_bytes().to_vec();
+                x.extend(dpi.to_be_bytes());
+                s.streams.insert(*b"DPI_", x);
+            }
+        }
+        let mut remo = vec![0; 8];
+        remo.extend(dir.as_bytes());
+        remo.push(0);
+        s.streams.insert(*b"REMO", remo);
+        let mut r = (data.len() as u64).to_le_bytes().to_vec();
+        r.extend(md5::Md5::digest(&data));
+        r.extend(file_name.as_bytes());
+        r.push(0);
+        // The tag of the embedded data with its case swapped: pngF, file.
+        let tag = image.unwrap_or(*b"FILE").map(|c| c ^ 0x20);
+        s.streams.insert(tag, r);
+        s.streams.insert(*b"FNAM", fnam(&s.kind, name));
+        s.external_data = Some(data);
+        s
+    }
+
+    /// Where the file lies when it is stored outside the database.
+    pub fn external(&self) -> Option<External> {
+        let remo = self.streams.get(b"REMO")?;
+        let flags = *remo.first()?;
+        let storage = if flags & 1 != 0 {
+            Storage::Secure {
+                fewer_folders: flags & 8 != 0,
+            }
+        } else {
+            Storage::Open
+        };
+        let z = |b: &[u8]| {
+            let end = b.iter().position(|x| *x == 0).unwrap_or(b.len());
+            String::from_utf8_lossy(&b[..end]).into_owned()
+        };
+        let d = self
+            .streams
+            .iter()
+            .find(|(t, _)| !META.contains(t))
+            .map(|(_, d)| d)?;
+        Some(External {
+            storage,
+            dir: z(remo.get(8..)?),
+            file: z(d.get(24..)?),
+            size: u64::from_le_bytes(d.get(..8)?.try_into().ok()?),
+            md5: d.get(8..24)?.try_into().ok()?,
+        })
     }
 
     /// Tag of the content stream (`PNGf`, `JPEG`, `FILE`…).
@@ -81,9 +212,17 @@ impl Stored {
     }
 
     /// Key 4: MD5 over every stream's tag and bytes, in tag order.
+    /// For a file stored outside, the reference stream counts as the
+    /// embedded stream would (`PNGf` + the file's bytes).
     pub fn hash(&self) -> [u8; 16] {
+        let mut streams: BTreeMap<[u8; 4], &[u8]> =
+            self.streams.iter().map(|(t, d)| (*t, d.as_slice())).collect();
+        if let (Some(data), Some(tag)) = (&self.external_data, self.tag()) {
+            streams.remove(&tag);
+            streams.insert(tag.map(|c| c ^ 0x20), data);
+        }
         let mut h = md5::Md5::new();
-        for (t, d) in &self.streams {
+        for (t, d) in streams {
             h.update(t);
             h.update(d);
         }
@@ -419,6 +558,39 @@ mod tests {
         assert_eq!(ref_text(10), "0A\u{E000}");
         assert_eq!(ref_id("imagewin:/C:/x.jpg"), None);
         assert_eq!(ref_name("imagewin:/C:/x/blue.jpg"), "blue.jpg");
+    }
+
+    // red.png (4 × 3) and hello.txt set by Base64Decode in a field with
+    // open external storage in FileMaker Pro 26 (Tasks, field ExtOpen).
+    #[test]
+    fn open_storage_matches_filemaker() {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let red = (0..)
+            .step_by(2)
+            .take_while(|i| *i < 146)
+            .map(|i| u8::from_str_radix(&"89504e470d0a1a0a0000000d49484452000000040000000308020000003b9639910000001049444154789c63f8cfc000470c383900f5310bf5357bfb820000000049454e44ae426082"[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>();
+        let s = Stored::new_open("red.png", "red.png", "Tasks/ExtOpen/", red.clone());
+        assert_eq!(
+            hex(&s.directory()),
+            "0004464e414d0000001352454d4f0000001753495a4500000004706e674600000020"
+        );
+        assert_eq!(hex(&s.hash()), "bdaa7438230af90639571f8b304e0d53");
+        assert_eq!(s.data(), red.as_slice());
+        let x = s.external().unwrap();
+        assert_eq!(x.path().as_deref(), Some("Tasks/ExtOpen/red.png"));
+        assert_eq!(x.size, 73);
+        let t = Stored::new_open(
+            "hello.txt",
+            "hello.txt",
+            "Tasks/ExtOpen/",
+            b"Hello BaseCraft".to_vec(),
+        );
+        assert_eq!(
+            hex(&t.directory()),
+            "0003464e414d0000001452454d4f0000001766696c6500000022"
+        );
+        assert_eq!(hex(&t.hash()), "9adc3a3aa97ed944589b65bab0c5f920");
     }
 
     #[test]

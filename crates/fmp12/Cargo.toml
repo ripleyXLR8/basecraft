@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `std::time::SystemTime::now` panics in the browser; web-time reads the
+# JavaScript clock there and is std on native (already in the tree via eframe).
+web-time = "1.1.0"
 hmac = "0.13.0"
 md-5 = "0.11.0"
 sha1 = "0.11.0"

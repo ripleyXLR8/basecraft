@@ -323,10 +323,7 @@ impl App {
                 for (i, path) in recent.iter().enumerate() {
                     let (row, resp) =
                         ui.allocate_exact_size(vec2(list.width(), ROW_H), Sense::click());
-                    let p = std::path::Path::new(path);
-                    let name = p
-                        .file_stem()
-                        .map_or(path.clone(), |s| s.to_string_lossy().into_owned());
+                    let name = stem(path);
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
                     if resp.clicked() {
                         self.launch.selected = Some(i);
@@ -483,12 +480,7 @@ fn favorites_tab(ui: &mut egui::Ui, favorites: &[String], act: &mut Option<Act>)
         let id = egui::Id::NULL.with(("favorite", i));
         let (label, path) = match i.checked_sub(1).and_then(|j| favorites.get(j)) {
             None => (t("Add App").to_string(), None),
-            Some(p) => (
-                std::path::Path::new(p)
-                    .file_stem()
-                    .map_or(p.clone(), |s| s.to_string_lossy().into_owned()),
-                Some(p),
-            ),
+            Some(p) => (stem(p), Some(p)),
         };
         let enabled = path.is_some() || cfg!(not(target_arch = "wasm32"));
         let sense = if enabled {
@@ -717,4 +709,11 @@ fn create_icon(p: &egui::Painter, c: Pos2) {
         Color32::from_rgb(200, 200, 200),
         s,
     ));
+}
+
+/// File name without folder or extension, for Windows and Unix paths alike
+/// (the preferences may come from either).
+fn stem(path: &str) -> String {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.').map_or(name, |(s, _)| s).to_string()
 }

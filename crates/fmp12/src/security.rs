@@ -452,8 +452,8 @@ impl Stamp {
 
     /// Now, in UTC, to the second, keeping `flags` (microseconds).
     pub fn now(flags: u32) -> Stamp {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let secs = web_time::SystemTime::now()
+            .duration_since(web_time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
         let z = (secs / 86_400) as i64 + 719_468;

@@ -65,14 +65,10 @@ fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// Today as a day number (the local date), `None` on the web.
+/// Today as a day number (UTC date).
 fn today() -> Option<i64> {
-    // `SystemTime::now` panics in WebAssembly.
-    if cfg!(target_arch = "wasm32") {
-        return None;
-    }
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let secs = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .ok()?
         .as_secs() as i64;
     // 1970-01-01 as a FileMaker day number.

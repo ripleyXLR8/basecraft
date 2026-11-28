@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# `std::time::SystemTime::now` panics in the browser; web-time reads the
+# JavaScript clock there and is std on native (already in the tree via eframe).
+web-time = "1.1.0"
 # FileMaker numbers are decimals with up to 400 significant digits; f64 cannot
 # represent them. bigdecimal (and the num-bigint it re-exports) gives exact
 # + - * and the integer arithmetic we build division and rounding on.

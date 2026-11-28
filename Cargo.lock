@@ -651,6 +651,7 @@ dependencies = [
  "sha1",
  "sha2",
  "stacker",
+ "web-time",
 ]
 
 [[package]]
@@ -1448,6 +1449,7 @@ dependencies = [
  "md-5",
  "roxmltree",
  "sha1",
+ "web-time",
 ]
 
 [[package]]
@@ -3134,6 +3136,7 @@ dependencies = [
  "engine",
  "fmp12",
  "image",
+ "web-time",
 ]
 
 [[package]]

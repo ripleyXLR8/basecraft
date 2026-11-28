@@ -265,8 +265,8 @@ pub fn get_as_timestamp(_: &mut Evaluator, a: &[Value]) -> R {
 // ---- Get() flags that need no database -----------------------------------------
 
 fn now_utc_micros() -> i128 {
-    let since = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let since = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default();
     let epoch = (day_number(1970, 1, 1) - 1) as i128 * 86_400_000_000;
     epoch + since.as_micros() as i128

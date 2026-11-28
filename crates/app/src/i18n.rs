@@ -121,7 +121,6 @@ pub fn tr(key: &'static str) -> &'static str {
         }
         "Accept anyway" => "Accepter quand même",
         "Save a Copy As…" => "Enregistrer une copie sous…",
-        "or drop a .fmp12 file here" => "ou déposez un fichier .fmp12 ici",
         "Layout Mode" => "Mode Modèle",
         "Exit Layout" => "Quitter le modèle",
         "New Layout/Report" => "Nouveau modèle/rapport",

@@ -61,6 +61,8 @@ pub struct Prefs {
     pub recent_max: usize,
     /// Most recent first.
     pub recent: Vec<String>,
+    /// Launch Center › Favorites (paths).
+    pub favorites: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -73,6 +75,7 @@ impl Default for Prefs {
             drag_drop: true,
             recent_max: 10,
             recent: Vec::new(),
+            favorites: Vec::new(),
         }
     }
 }
@@ -99,6 +102,9 @@ impl Prefs {
         for r in &self.recent {
             s += &format!("recent={r}\n");
         }
+        for r in &self.favorites {
+            s += &format!("favorite={r}\n");
+        }
         s
     }
 
@@ -122,6 +128,7 @@ impl Prefs {
                 "drag_drop" => p.drag_drop = v != "false",
                 "recent_max" => p.recent_max = v.parse().unwrap_or(10),
                 "recent" => p.recent.push(v.to_string()),
+                "favorite" => p.favorites.push(v.to_string()),
                 _ => {}
             }
         }
@@ -348,6 +355,7 @@ mod tests {
             drag_drop: false,
             recent_max: 3,
             recent: vec!["C:\\a.fmp12".into(), "/b/c.fmp12".into()],
+            favorites: vec!["/d.fmp12".into()],
         };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         assert_eq!(Prefs::from_text(""), Prefs::default());

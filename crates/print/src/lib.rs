@@ -12,6 +12,7 @@
 
 pub mod chart;
 pub mod look;
+pub mod merge;
 pub mod pdf;
 
 use std::ops::Range;

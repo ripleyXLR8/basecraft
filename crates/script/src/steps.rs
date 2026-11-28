@@ -96,9 +96,9 @@ pub mod sid {
 /// [`error::UNAVAILABLE`] as FileMaker does on Windows (FORMAT.md §8).
 pub const UNSUPPORTED: &[u16] = &[
     3, 32, 38, 57, 59, 64, 67, 88, 96, 105, 106, 107, 108, 109, 112, 113, 114, 115, 118, 129, 139,
-    140, 142, 149, 151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201,
-    202, 203, 208, 210, 211, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 225, 226,
-    227, 239, 240, 241,
+    140, 142, 149, 151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201, 202,
+    203, 208, 210, 211, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 225, 226, 227, 239,
+    240, 241,
 ];
 
 /// Option bits of these steps (record bytes 24–27, FORMAT.md §8).
@@ -1121,7 +1121,8 @@ fn apply_geometry(w: &mut Window, [h, wd, t, l]: [Option<f64>; 4]) {
 
 /// Whether a step stores any parameter node (`[128 + p]`).
 pub(crate) fn has_params(p: &fmp12::scripts::RawParams) -> bool {
-    p.kv.keys().any(|(path, _)| path.first().is_some_and(|x| *x >= 128))
+    p.kv.keys()
+        .any(|(path, _)| path.first().is_some_and(|x| *x >= 128))
 }
 
 /// A step that only the application can do and that goes on when done.

@@ -3,7 +3,8 @@
 //! Sort Records with dialog, Insert from Index, Get Folder Path, Print
 //! (to PDF), Save Records as PDF / Excel, Export Field Contents, Save a
 //! Copy as, Import / Export Records, New / Open / Close File, Adjust
-//! Window. The run waits until the answer is ready.
+//! Window, writes of the data file steps outside the file's folder, PDF
+//! documents. The run waits until the answer is ready.
 
 use eframe::egui;
 use script::{Adjust, Answer, UiRequest};
@@ -21,6 +22,11 @@ fn t(key: &'static str) -> &'static str {
         "Insert from Index" => "Insérer d'après l'index",
         "OK" => "OK",
         "Cancel" => "Annuler",
+        "Write a file" => "Écrire un fichier",
+        "A script wants to write outside the file's folder:" => {
+            "Un script veut écrire hors du dossier du fichier :"
+        }
+        "Allow" => "Autoriser",
         k => tr(k),
     }
 }
@@ -42,6 +48,8 @@ pub struct State {
     pub after: Option<After>,
     /// Last URL handed to the OS (tests).
     pub opened: Option<String>,
+    /// Data file steps: the file's folder, writes the user agreed to.
+    pub disk: script::files::Disk,
 }
 
 /// Schemes Open URL hands to the OS.
@@ -100,6 +108,13 @@ impl App {
             UiRequest::NewFile => self.after_run(After::New),
             UiRequest::OpenFile => self.after_run(After::Open),
             UiRequest::CloseFile => self.after_run(After::Close),
+            UiRequest::ConfirmFile { path } => self.confirm_file(ctx, path),
+            // Print PDF and Close PDF without a path: saved where the user
+            // says (BaseCraft prints to PDF).
+            UiRequest::PdfDocument { path, data, .. } => {
+                self.write_output(ctx, path.as_deref(), true, "pdf", data.clone());
+                Some(Answer::Continue)
+            }
             UiRequest::Adjust(a) => {
                 let cmd = match a {
                     Adjust::Maximize => egui::ViewportCommand::Maximized(true),
@@ -172,6 +187,26 @@ impl App {
         } else {
             Answer::Cancel
         })
+    }
+
+    /// A data file step writes outside the file's folder: ask first.
+    fn confirm_file(&mut self, ctx: &egui::Context, path: &str) -> Option<Answer> {
+        let mut answer = None;
+        egui::Modal::new(egui::Id::NULL.with("confirm_file")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading(t("Write a file"));
+            ui.label(t("A script wants to write outside the file's folder:"));
+            ui.monospace(path);
+            ui.horizontal(|ui| {
+                if ui.button(t("Allow")).clicked() {
+                    answer = Some(Answer::Continue);
+                }
+                if ui.button(t("Cancel")).clicked() {
+                    answer = Some(Answer::Cancel);
+                }
+            });
+        });
+        answer
     }
 
     fn pick_index(&mut self, ctx: &egui::Context, values: &[String]) -> Option<Answer> {

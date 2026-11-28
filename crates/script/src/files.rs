@@ -93,10 +93,12 @@ pub fn encode_path_list(paths: &[&str]) -> Vec<u8> {
     let x = |v: &str| v.bytes().map(|c| c ^ 0x5A).collect::<Vec<u8>>();
     let mut b = (paths.len() as u32).to_be_bytes().to_vec();
     for p in paths {
-        let (kind, path) = ["file", "filewin", "filemac", "image", "imagewin", "imagemac"]
-            .iter()
-            .find_map(|k| p.strip_prefix(k)?.strip_prefix(':').map(|r| (*k, r)))
-            .unwrap_or(("", p));
+        let (kind, path) = [
+            "file", "filewin", "filemac", "image", "imagewin", "imagemac",
+        ]
+        .iter()
+        .find_map(|k| p.strip_prefix(k)?.strip_prefix(':').map(|r| (*k, r)))
+        .unwrap_or(("", p));
         b.push(kind.len() as u8);
         b.extend(x(kind));
         b.extend((path.len() as u16).to_be_bytes());
@@ -107,7 +109,9 @@ pub fn encode_path_list(paths: &[&str]) -> Vec<u8> {
 
 /// Every non-empty line of a FileMaker path list.
 pub fn candidates(list: &str) -> impl Iterator<Item = &str> {
-    list.split(['\r', '\n']).map(str::trim).filter(|l| !l.is_empty())
+    list.split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
 }
 
 /// Removes `.` and `..` without touching the disk.
@@ -174,6 +178,10 @@ impl Disk {
         if folders && let Some(dir) = p.parent() {
             std::fs::create_dir_all(dir).map_err(|_| FILE_WRITE)?;
         }
+        // A missing folder: "file missing", as FileMaker 26 answers.
+        if p.parent().is_some_and(|d| !d.is_dir()) {
+            return Err(FILE_MISSING);
+        }
         std::fs::write(p, data).map_err(|_| FILE_WRITE)
     }
 
@@ -223,7 +231,9 @@ mod tests {
             assert_eq!(r("file:/tmp/x").unwrap(), (PathBuf::from("/tmp/x"), false));
         }
         // Bytes FileMaker 26 wrote for `file:a.txt` and `$p`.
-        let a = [0, 0, 0, 1, 4, 0x3c, 0x33, 0x36, 0x3f, 0, 5, 0x3b, 0x74, 0x2e, 0x22, 0x2e];
+        let a = [
+            0, 0, 0, 1, 4, 0x3c, 0x33, 0x36, 0x3f, 0, 5, 0x3b, 0x74, 0x2e, 0x22, 0x2e,
+        ];
         assert_eq!(decode_path_list(&a), ["file:a.txt"]);
         assert_eq!(encode_path_list(&["file:a.txt"]), a);
         let v = [0, 0, 0, 1, 0, 0, 2, 0x7e, 0x2a];

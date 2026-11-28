@@ -1124,4 +1124,5 @@ fn commit_enforces_validation() {
     assert_eq!(h.errors, [509]);
 }
 
+mod datafiles;
 mod steps;

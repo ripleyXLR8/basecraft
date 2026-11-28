@@ -439,11 +439,18 @@ impl App {
         let d = self.doc.as_mut()?;
         let mut engine = self.engine.take()?;
         let before = data_fingerprint(&d.db);
+        let mut disk = std::mem::take(&mut self.steps_ui.disk);
+        disk.folder = d
+            .path
+            .as_ref()
+            .and_then(|p| p.parent().map(|x| x.to_path_buf()));
         let mut host = AppHost {
             db: &mut d.db,
             window,
+            disk,
         };
         let out = f(&mut engine, &mut host);
+        self.steps_ui.disk = host.disk;
         let window = host.window;
         self.engine = Some(engine);
         self.view = window.view;
@@ -681,6 +688,7 @@ impl App {
                 let mut host = AppHost {
                     db: &mut d.db,
                     window,
+                    disk: Default::default(),
                 };
                 self.watches
                     .iter()
@@ -1879,6 +1887,8 @@ fn data_fingerprint(db: &Database) -> u64 {
 struct AppHost<'a> {
     db: &'a mut Database,
     window: script::Window,
+    /// Data file steps: the file's folder and the writes the user agreed to.
+    disk: script::files::Disk,
 }
 
 impl script::Host for AppHost<'_> {
@@ -1893,6 +1903,24 @@ impl script::Host for AppHost<'_> {
     }
     fn save_file(&mut self, name: &str, data: &[u8]) -> bool {
         container::save_file(name, data)
+    }
+    fn file_stat(&mut self, path: &str) -> Result<Option<script::FileStat>, u32> {
+        self.disk.stat(path)
+    }
+    fn file_read(&mut self, path: &str) -> Result<Vec<u8>, u32> {
+        self.disk.read(path)
+    }
+    fn file_write(&mut self, path: &str, data: &[u8], folders: bool) -> Result<(), u32> {
+        self.disk.write(path, data, folders)
+    }
+    fn file_delete(&mut self, path: &str) -> Result<(), u32> {
+        self.disk.delete(path)
+    }
+    fn file_rename(&mut self, from: &str, to: &str) -> Result<(), u32> {
+        self.disk.rename(from, to)
+    }
+    fn file_confirm(&mut self, path: &str) {
+        self.disk.confirm(path);
     }
 }
 

@@ -22,7 +22,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 mod accounts;
-mod datafiles;
+pub mod datafiles;
 pub mod files;
 mod steps;
 pub mod text;
@@ -663,6 +663,8 @@ pub struct Engine {
     pub clipboard: Option<String>,
     /// Open Transaction: the tables, found set and record before it.
     transaction: Option<(Vec<engine::Table>, Vec<usize>, usize)>,
+    /// Open data files, the PDF being built, persistent data.
+    pub more: datafiles::State,
 }
 
 /// Install OnTimer Script.
@@ -822,6 +824,7 @@ impl Engine {
             redo: None,
             clipboard: None,
             transaction: None,
+            more: Default::default(),
         }
     }
 
@@ -2029,6 +2032,7 @@ impl Engine {
             ) => self.account_step(host, frame, s)?,
             // Export Field Contents goes through the host UI (`exec_more`).
             (_, INSERT_PICTURE | INSERT_FILE) => self.container_step(host, s)?,
+            (_, x) if datafiles::handles(x) => return self.exec_files(host, frame, s),
             _ => {
                 return match self.exec_more(host, frame, s) {
                     Some(r) => r,

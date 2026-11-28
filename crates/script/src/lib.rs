@@ -22,6 +22,8 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 mod accounts;
+mod datafiles;
+pub mod files;
 mod steps;
 pub mod text;
 
@@ -240,6 +242,37 @@ pub trait Host {
     fn set_clipboard(&mut self, text: String) {
         let _ = text;
     }
+    /// Data file steps. Paths are FileMaker paths (`file:x.txt`, relative
+    /// to the database file's folder; [`files::resolve`]). `None`: no
+    /// such file or folder. A host with no file system (the default)
+    /// answers 3; [`files::Disk`] is the local one.
+    fn file_stat(&mut self, path: &str) -> Result<Option<FileStat>, u32> {
+        let _ = path;
+        Err(error::UNAVAILABLE)
+    }
+    fn file_read(&mut self, path: &str) -> Result<Vec<u8>, u32> {
+        let _ = path;
+        Err(error::UNAVAILABLE)
+    }
+    /// Writes (replaces) a whole file; `folders` creates missing folders.
+    /// [`files::CONFIRM`] when the path leaves the file's folder and the
+    /// user has not agreed yet ([`Host::file_confirm`]).
+    fn file_write(&mut self, path: &str, data: &[u8], folders: bool) -> Result<(), u32> {
+        let _ = (path, data, folders);
+        Err(error::UNAVAILABLE)
+    }
+    fn file_delete(&mut self, path: &str) -> Result<(), u32> {
+        let _ = path;
+        Err(error::UNAVAILABLE)
+    }
+    fn file_rename(&mut self, from: &str, to: &str) -> Result<(), u32> {
+        let _ = (from, to);
+        Err(error::UNAVAILABLE)
+    }
+    /// The user agreed to let the script write `path`.
+    fn file_confirm(&mut self, path: &str) {
+        let _ = path;
+    }
     /// What a headless host answers to a [`UiRequest`] when the run is
     /// finished with [`Run::finish`]: nothing is shown, the step goes on
     /// (pickers are cancelled).
@@ -308,6 +341,25 @@ pub enum UiRequest {
     CloseFile,
     /// Adjust Window.
     Adjust(Adjust),
+    /// A data file step wants to write outside the database file's
+    /// folder: [`Answer::Continue`] lets it ([`Host::file_confirm`]).
+    ConfirmFile {
+        path: String,
+    },
+    /// Close PDF / Print PDF: the PDF document a script built.
+    /// `path` is where to save it (`None`: ask), `print` to print it.
+    PdfDocument {
+        path: Option<String>,
+        data: Vec<u8>,
+        print: bool,
+    },
+}
+
+/// A file or folder seen by [`Host::file_stat`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStat {
+    pub folder: bool,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,6 +451,9 @@ enum UiPending {
     Insert(FieldRef, bool),
     /// The last window closed: the script stops.
     Halt,
+    /// The user agreed to a write outside the file's folder: run the
+    /// step again.
+    Retry(String),
 }
 
 /// One script call on the run's stack.
@@ -989,6 +1044,10 @@ impl Engine {
                 self.complete(run, host, Flow::Next, error::USER_CANCELED)
             }
             (Pending::Ui(UiPending::Halt), _) => Self::halt(run),
+            (Pending::Ui(UiPending::Retry(path)), _) => {
+                host.file_confirm(&path);
+                run.resumed = true;
+            }
             (Pending::Ui(UiPending::Variable(name)), Answer::Text(t)) => {
                 let key = (name.to_lowercase(), 1);
                 if name.starts_with("$$") {

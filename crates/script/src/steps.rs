@@ -86,6 +86,8 @@ pub mod sid {
     pub const REVERT_ON_ERROR: u16 = 223;
     pub const FLUSH_WEB_COOKIES: u16 = 237;
     pub const SET_ALLOWED_ORIENTATIONS: u16 = 176;
+    pub const LOCAL_NOTIFICATION: u16 = 187;
+    pub const CONFIGURE_AI_ACCOUNT: u16 = 212;
 }
 
 /// Steps that cannot run in a desktop, local application: iOS-only,
@@ -94,8 +96,8 @@ pub mod sid {
 /// [`error::UNAVAILABLE`] as FileMaker does on Windows (FORMAT.md §8).
 pub const UNSUPPORTED: &[u16] = &[
     3, 32, 38, 57, 59, 64, 67, 88, 96, 105, 106, 107, 108, 109, 112, 113, 114, 115, 118, 129, 139,
-    140, 142, 149, 151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 187, 201,
-    202, 203, 208, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 225, 226,
+    140, 142, 149, 151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201,
+    202, 203, 208, 210, 211, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 225, 226,
     227, 239, 240, 241,
 ];
 
@@ -131,17 +133,13 @@ mod err {
     pub const WRONG_LAYOUT: u32 = 414;
 }
 
-/// The output path stored in parameter `[128]` key 130: XOR-encoded
-/// u32 count, then per path a u8-prefixed kind (`file`) and a
-/// u16-prefixed path. `file:out.txt` as FileMaker shows it.
+/// The output path stored in parameter `[128]` key 130 (the first of
+/// its path list, [`crate::files::decode_path_list`]): `file:out.txt` as
+/// FileMaker shows it.
 pub fn stored_path(p: &fmp12::scripts::RawParams) -> Option<String> {
-    let b: Vec<u8> = p.get(&[128], 130)?.iter().map(|c| c ^ 0x5A).collect();
-    let n = *b.get(4)? as usize;
-    let kind = String::from_utf8_lossy(b.get(5..5 + n)?).into_owned();
-    let i = 5 + n;
-    let m = u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]) as usize;
-    let path = String::from_utf8_lossy(b.get(i + 2..i + 2 + m)?).into_owned();
-    Some(format!("{kind}:{path}"))
+    crate::files::decode_path_list(&p.get(&[128], 130)?)
+        .into_iter()
+        .next()
 }
 
 impl Engine {
@@ -707,6 +705,13 @@ impl Engine {
                 Ok(Flow::Next)
             })(),
             SET_ALLOWED_ORIENTATIONS => Err(err::UNKNOWN_COMMAND),
+            // iOS notifications and AI accounts: 5 with no parameters
+            // (FileMaker 26 on Windows), 3 otherwise.
+            LOCAL_NOTIFICATION | CONFIGURE_AI_ACCOUNT => Err(if !has_params(p) {
+                err::COMMAND_INVALID
+            } else {
+                error::UNAVAILABLE
+            }),
             id if UNSUPPORTED.contains(&id) => Err(error::UNAVAILABLE),
             _ => return None,
         };
@@ -1112,6 +1117,11 @@ fn apply_geometry(w: &mut Window, [h, wd, t, l]: [Option<f64>; 4]) {
     if let Some(l) = l {
         w.left = l;
     }
+}
+
+/// Whether a step stores any parameter node (`[128 + p]`).
+pub(crate) fn has_params(p: &fmp12::scripts::RawParams) -> bool {
+    p.kv.keys().any(|(path, _)| path.first().is_some_and(|x| *x >= 128))
 }
 
 /// A step that only the application can do and that goes on when done.

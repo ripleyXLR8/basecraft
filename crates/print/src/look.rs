@@ -15,6 +15,13 @@ pub struct Look {
     pub color: Color,
     pub font_size: f32,
     pub bold: bool,
+    /// `font-style: italic`.
+    pub italic: bool,
+    /// Font family list from the font catalog, e.g. "arial,sans-serif"
+    /// (`None`: Helvetica).
+    pub family: Option<String>,
+    /// The file's font catalog, for the fonts of styled-text runs.
+    pub fonts: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
     /// 0 left, 1 centre, 2 right.
     pub align: u8,
     /// 0 top, 1 centre, 2 bottom.
@@ -31,6 +38,9 @@ impl Default for Look {
             color: [0.0, 0.0, 0.0, 1.0],
             font_size: 12.0,
             bold: false,
+            italic: false,
+            family: None,
+            fonts: Default::default(),
             align: 0,
             valign: 1,
             padding: [2.0; 4],
@@ -81,6 +91,15 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
         .enum_value(prop::FONT_WEIGHT)
         .or_else(|| p.enum_value(prop::FONT_WEIGHT))
         == Some(2);
+    l.italic = text
+        .enum_value(prop::FONT_STYLE)
+        .or_else(|| p.enum_value(prop::FONT_STYLE))
+        == Some(2);
+    l.family = text
+        .enum_value(prop::FONT_FAMILY)
+        .or_else(|| p.enum_value(prop::FONT_FAMILY))
+        .and_then(|i| family(&th.fonts, i + 128));
+    l.fonts = th.fonts.clone();
     l.align = match p.enum_value(prop::TEXT_ALIGN) {
         Some(2) => 1,
         Some(3) => 2,
@@ -92,6 +111,14 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
     l
 }
 
+/// The family list of font catalog id `id`.
+pub fn family(fonts: &std::collections::BTreeMap<u32, String>, id: i64) -> Option<String> {
+    fonts
+        .get(&u32::try_from(id).ok()?)
+        .filter(|f| !f.is_empty())
+        .cloned()
+}
+
 /// An RGB colour (bytes) as a paint colour.
 pub fn rgb(c: [u8; 3]) -> Color {
     [
@@ -100,4 +127,34 @@ pub fn rgb(c: [u8; 3]) -> Color {
         c[2] as f32 / 255.0,
         1.0,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fmp12::theme::Value;
+
+    /// font-family 64 = catalog id − 128, font-style 67 = 2 italic.
+    #[test]
+    fn family_and_italic() {
+        let mut style = ObjectStyle::default();
+        let own = style.local.entry((SELF, NORMAL)).or_default();
+        own.insert(prop::FONT_FAMILY, Value::Enum(1));
+        own.insert(prop::FONT_STYLE, Value::Enum(2));
+        let theme = Theme {
+            fonts: std::sync::Arc::new(
+                [
+                    (128, "Helvetica Neue".into()),
+                    (129, "arial,sans-serif".into()),
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        };
+        let l = resolve(Some(&theme), &style);
+        assert_eq!(l.family.as_deref(), Some("arial,sans-serif"));
+        assert!(l.italic);
+        assert_eq!(family(&l.fonts, 128).as_deref(), Some("Helvetica Neue"));
+        assert_eq!(family(&l.fonts, -1), None);
+    }
 }

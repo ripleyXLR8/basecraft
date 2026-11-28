@@ -357,6 +357,9 @@ pub struct Theme {
     pub id: String,
     /// Keyed by (object type, named style); the empty name is the default style.
     pub styles: BTreeMap<(u32, String), Rules>,
+    /// The file's font catalog ([`fonts`]), which the font-family
+    /// property and styled-text runs refer to.
+    pub fonts: std::sync::Arc<BTreeMap<u32, String>>,
 }
 
 impl Theme {
@@ -453,11 +456,15 @@ impl PropsExt for Props {
 /// value `[22]`) = compiled styles.
 pub fn themes(file: &File) -> Result<Vec<Theme>, Error> {
     let mut raw: BTreeMap<u32, (Theme, BTreeMap<u32, Vec<u8>>)> = BTreeMap::new();
+    let mut fonts = BTreeMap::new();
     file.walk(|path, c| {
         let (Some(p), Chunk::Kv { key, data }) = (int_path(path), c) else {
             return;
         };
         match p.as_slice() {
+            [25, 5, id] if *key == 16 => {
+                fonts.insert(*id, text(data));
+            }
             [6, 5, n] => {
                 let (t, parts) = raw.entry(*n).or_default();
                 match key {
@@ -475,6 +482,7 @@ pub fn themes(file: &File) -> Result<Vec<Theme>, Error> {
             _ => {}
         }
     })?;
+    let fonts = std::sync::Arc::new(fonts);
     Ok(raw
         .into_iter()
         .map(|(number, (t, parts))| {
@@ -482,6 +490,7 @@ pub fn themes(file: &File) -> Result<Vec<Theme>, Error> {
             Theme {
                 number,
                 styles: Theme::parse_styles(&blob),
+                fonts: fonts.clone(),
                 ..t
             }
         })

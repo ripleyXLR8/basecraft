@@ -26,6 +26,7 @@ mod custom_functions;
 mod debugger;
 mod design;
 mod editing;
+mod fonts;
 mod i18n;
 mod launch;
 mod layout_setup;
@@ -2959,6 +2960,7 @@ fn creator(app: App) -> eframe::AppCreator<'static> {
     Box::new(|cc| {
         // FileMaker's desktop UI is light (Preferences › Theme).
         prefs::visuals(&cc.egui_ctx);
+        fonts::install(&cc.egui_ctx);
         Ok(Box::new(app))
     })
 }

@@ -3137,7 +3137,9 @@ dependencies = [
  "calc",
  "engine",
  "fmp12",
+ "fontique",
  "image",
+ "skrifa",
 ]
 
 [[package]]

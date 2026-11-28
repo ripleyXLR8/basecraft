@@ -28,6 +28,13 @@ pub struct Look {
     pub padding: [f32; 4],
     /// Bold text (`font-weight: bold`).
     pub bold: bool,
+    /// `font-style: italic`.
+    pub italic: bool,
+    /// Font family list from the font catalog, e.g. "arial,sans-serif"
+    /// (`None`: egui's font).
+    pub family: Option<String>,
+    /// The file's font catalog, for the fonts of styled-text runs.
+    pub fonts: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +124,9 @@ impl Default for Look {
             valign: 1,
             padding: [2.0; 4],
             bold: false,
+            italic: false,
+            family: None,
+            fonts: Default::default(),
         }
     }
 }
@@ -193,6 +203,14 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
     l.bold = [&p, &text]
         .iter()
         .any(|x| x.enum_value(prop::FONT_WEIGHT) == Some(2));
+    l.italic = [&p, &text]
+        .iter()
+        .any(|x| x.enum_value(prop::FONT_STYLE) == Some(2));
+    l.family = text
+        .enum_value(prop::FONT_FAMILY)
+        .or_else(|| p.enum_value(prop::FONT_FAMILY))
+        .and_then(|i| print::look::family(&th.fonts, i + 128));
+    l.fonts = th.fonts.clone();
     l.valign = p
         .enum_value(prop::VERTICAL_ALIGN)
         .map_or(1, |v| v.clamp(0, 2) as u8);
@@ -201,7 +219,13 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
 
 impl Look {
     pub fn font(&self) -> egui::FontId {
-        egui::FontId::proportional(self.font_size.max(6.0))
+        egui::FontId::new(self.font_size.max(6.0), self.face().0)
+    }
+
+    /// The egui family of the object's font, and whether its bold and
+    /// italic are faked ([`crate::fonts::family`]).
+    fn face(&self) -> (egui::FontFamily, bool, bool) {
+        crate::fonts::family(self.family.as_deref(), self.bold, self.italic)
     }
 
     /// Paints an object's shape: an ellipse for ovals (kind 7), else
@@ -273,19 +297,23 @@ impl Look {
             [egui::Align::Min, egui::Align::Center, egui::Align::Max][self.align as usize],
             [egui::Align::Min, egui::Align::Center, egui::Align::Max][self.valign as usize],
         ]);
+        let (_, fake_bold, fake_italic) = self.face();
         let mut job = egui::text::LayoutJob::simple(
             text.replace('\r', "\n"),
             self.font(),
             self.color,
             f32::INFINITY,
         );
+        if let Some(s) = job.sections.first_mut() {
+            s.format.italics = fake_italic;
+        }
         job.halign = anchor.x();
         let galley = painter.layout_job(job);
         let at = anchor.anchor_size(egui::pos2(x, y), galley.size());
         let p = painter.with_clip_rect(r);
         let pos = at.min - galley.rect.min.to_vec2();
-        // egui's fonts have no bold face: bold text is drawn twice.
-        if self.bold {
+        // A font without a bold face: bold text is drawn twice.
+        if fake_bold {
             p.galley(pos + Vec2::new(0.6, 0.0), galley.clone(), self.color);
         }
         p.galley(pos, galley, self.color);
@@ -350,22 +378,30 @@ impl Look {
             let w = g.size().x;
             let x = [c.left(), c.center().x - w / 2.0, c.right() - w][align as usize];
             let pos = egui::pos2(x, y) - g.rect.min.to_vec2();
-            // egui's fonts have no bold face: bold pieces are drawn twice.
+            // Fonts without a bold face: bold pieces are drawn twice.
             p.galley(pos + Vec2::new(0.6, 0.0), bold, self.color);
             y += g.size().y;
             p.galley(pos, g, self.color);
         }
     }
 
-    /// The layout job of one paragraph, and a copy where only its bold
-    /// pieces are visible.
+    /// The layout job of one paragraph, and a copy where only its pieces
+    /// in a font without a bold face are visible.
     fn styled_job(&self, pieces: &[(String, CharStyle)]) -> (LayoutJob, LayoutJob) {
         use fmp12::layouts::face;
         let mut job = LayoutJob::default();
         let mut bold = LayoutJob::default();
         for (s, st) in pieces {
-            let f = st.face.unwrap_or(if self.bold { face::BOLD } else { 0 });
+            let f = st.face.unwrap_or(
+                if self.bold { face::BOLD } else { 0 } | if self.italic { face::ITALIC } else { 0 },
+            );
             let on = |bit: u16| f & bit != 0;
+            let family = st
+                .font
+                .and_then(|id| print::look::family(&self.fonts, id as i64))
+                .or_else(|| self.family.clone());
+            let (family, fake_bold, fake_italic) =
+                crate::fonts::family(family.as_deref(), on(face::BOLD), on(face::ITALIC));
             let size = st.size.map_or(self.font_size, f32::from).max(4.0);
             let color = st.color.map_or(self.color, |[r, g, b, a]| {
                 Color32::from_rgba_unmultiplied(r, g, b, a)
@@ -373,9 +409,9 @@ impl Look {
             let line = Stroke::new((size / 14.0).max(1.0), color);
             let script = on(face::SUPERSCRIPT) || on(face::SUBSCRIPT);
             let mut fmt = egui::TextFormat {
-                font_id: egui::FontId::proportional(if script { size * 0.6 } else { size }),
+                font_id: egui::FontId::new(if script { size * 0.6 } else { size }, family),
                 color,
-                italics: on(face::ITALIC),
+                italics: fake_italic,
                 underline: if on(face::UNDERLINE | face::WORD_UNDERLINE | face::DOUBLE_UNDERLINE) {
                     line
                 } else {
@@ -407,7 +443,7 @@ impl Look {
                 s.clone()
             };
             job.append(&s, 0.0, fmt.clone());
-            if !on(face::BOLD) {
+            if !fake_bold {
                 fmt.color = Color32::TRANSPARENT;
                 fmt.underline = Stroke::NONE;
                 fmt.strikethrough = Stroke::NONE;

@@ -363,7 +363,7 @@ Engine API for the app (not wired in `crates/app` yet):
 | Import from XML, folders, ODBC; character sets other than UTF-8; field delimiter choice | ⏳ |
 | Summary field definitions (field key 9) and sub-summary break fields (part field 6) decoded | ✅ (operation numbers and options checked in FileMaker's Table view) |
 | Preview pagination (`crates/print`): header/footer per page, title header/footer on page 1, body per record, leading/trailing sub-summaries by sorted break field, grand summaries, letter/A4, landscape, margins | ✅ |
-| PDF output: hand-written PDF 1.4, Helvetica (WinAnsi), theme backgrounds, borders, text colours, sizes, bold, alignment, padding; fields, text with merge fields and `{{PageNumber}}`, button labels, portals | ✅ |
+| PDF output: hand-written PDF 1.4, the layout's installed fonts embedded (TrueType `/FontFile2`, OpenType `/FontFile3`, faces taken out of `.ttc` collections, WinAnsi; Helvetica when a font cannot be found or read, and on the web), theme backgrounds, borders, text colours, sizes, bold, alignment, padding; fields, text with merge fields and `{{PageNumber}}`, button labels, portals | ✅ |
 | Graphic objects' pictures in Preview and PDF (`print::picture`: PNG, JPEG passed through as DCT, BMP; embedded once per PDF, soft mask for transparency); BMP in Browse too | ✅ (no `BMPf` sample seen) |
 | Merge fields stored as references (`<<\u{1}\u{1}\u{e}0003D…>>` in `.[1]`, FORMAT.md §10) resolved in Browse, Preview and PDF | ✅ checked on the Meetings template against Save as XML |
 | Style runs of text objects (fonts, sizes, colours per run) | ⏳ no sample: none in the templates, FMUpgradeTool drops them (FORMAT.md §10) |
@@ -404,7 +404,8 @@ Engine API for the app (not wired in `crates/app` yet):
 | Theme styles applied when drawing layouts: backgrounds, borders, radius, text colour, size, alignment, padding | ✅ |
 | Button labels (calculations evaluated live), merge fields `<<Field>>` in text (by name, or by reference in older files; in portal rows too) | ✅ |
 | Global fields (one value per table, read from and saved to `[T].[8]`), multi-line relationship keys, value lists shown by their second field, layout-level custom styles, bold from styles, `.inner_border` borders, tab order and widths from the file, Adjust Window › Resize to Fit and Move/Resize Window sizing the OS window | ✅ |
-| Fonts (family, weight), icons, states (hover, focus, pressed) | ⏳ |
+| Fonts: family (font catalog, theme, local and style-run fonts), weight and slant, drawn in the installed face (`print::fonts` over fontique, loaded into egui on demand; default sans-serif font for a missing family, faked bold/italic for a family without those faces); web build: egui's font | ✅ |
+| Icons, states (hover, focus, pressed) | ⏳ |
 | Form, List (body repeated per record) and Table views | ✅ |
 | Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |
 | Related fields outside portals (first related record) | ✅ |

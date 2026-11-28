@@ -13,6 +13,13 @@ engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
 # Pictures (PNG, JPEG, BMP); already in the tree through eframe.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
+# Font metrics for embedded fonts; already in the tree through egui.
+skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
+
+# System font lookup (`fonts`); already in the tree through eframe's
+# system font fallback, with the same features. No system fonts on the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fontique = { version = "0.11.1", default-features = false, features = ["system", "fontconfig-dlopen"] }
 
 [lints]
 workspace = true

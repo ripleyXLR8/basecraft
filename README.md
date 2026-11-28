@@ -282,6 +282,9 @@ Claude Desktop (`claude_desktop_config.json`):
 BaseCraft also runs in the browser (WebAssembly): **https://ripleyxlr8.github.io/basecraft/**.
 Open or drop a `.fmp12` file. It stays on your machine, because everything runs
 locally in the page. To build it yourself: `cd crates/app && trunk serve`.
+A page cannot read the installed fonts, so the web version draws text in
+egui's own font and PDFs in Helvetica; the desktop app draws (and embeds in
+PDFs) the fonts the file asks for.
 
 ## Layout of the repository
 

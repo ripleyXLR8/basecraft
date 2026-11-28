@@ -189,8 +189,13 @@ GIF, SVG or PDF pictures; no Insert › Picture in Layout mode), Rounded Rectang
 Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
 not the number of series; no Chart tool in Layout mode).
 
-Text objects draw in one style, their theme style's: style runs inside a text (several fonts,
-sizes or colours) are not decoded, for want of a sample (FORMAT.md §10). Merge fields stored
+Text is drawn in the font the file asks for (theme and local font-family, font-weight,
+font-style; the font of each style run, FORMAT.md §10), looked up among the installed fonts
+(`print::fonts`, through fontique: Windows, macOS and Linux font folders, user fonts
+included) and embedded whole in PDFs (TrueType or OpenType, WinAnsi encoding); a family that
+is not installed gets the system's default sans-serif font, as FileMaker substitutes one, and
+a family without a bold or italic face is emboldened or slanted. The web build keeps egui's
+font, and Helvetica in PDFs; non-Latin text in PDFs is not covered (WinAnsi). Merge fields stored
 as references resolve in Browse, Preview and PDF; Layout mode shows the raw reference.
 
 Partial control styles (2): Checkbox Set, Radio Button Set (one checkbox or radio button per

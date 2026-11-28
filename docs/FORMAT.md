@@ -1047,7 +1047,7 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   * BaseCraft (`LayoutObject::text_runs`, `char_runs`, `paragraph_runs`,
     `styled_pieces`) draws size, bold, italic, underlines, strikethrough,
     colour, highlight, case, superscript and alignment in Browse,
-    Preview and PDF (font families: egui's and Helvetica only); Layout
+    Preview and PDF (in the installed fonts, see `print::fonts`); Layout
     mode spells references by name and stores edited ones back by
     reference. 🔸 Retexting a styled object drops its runs (offsets
     would no longer match); the other paragraph-style bytes, the last

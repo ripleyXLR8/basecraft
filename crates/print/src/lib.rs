@@ -11,6 +11,7 @@
 //! * a part that does not fit in the space left on a page moves to the next.
 
 pub mod chart;
+pub mod fonts;
 pub mod format;
 pub mod look;
 pub mod merge;
@@ -26,7 +27,7 @@ use fmp12::schema::FieldKind;
 use fmp12::theme::ObjectStyle;
 
 use look::{Look, resolve};
-use pdf::{Pdf, text_width};
+use pdf::Pdf;
 
 /// Paper size and margins, in points.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -422,7 +423,8 @@ fn paint_text(pdf: &mut Pdf, lk: &Look, r: Rect, text: &str) {
         _ => cy + (ch - block) / 2.0,
     };
     for (i, line) in lines.iter().enumerate() {
-        let lw = text_width(line, size, lk.bold) as f64;
+        let family = lk.family.as_deref();
+        let lw = pdf.width(family, line, size, lk.bold, lk.italic) as f64;
         let lx = match lk.align {
             1 => cx + (cw - lw) / 2.0,
             2 => cx + cw - lw,
@@ -430,15 +432,24 @@ fn paint_text(pdf: &mut Pdf, lk: &Look, r: Rect, text: &str) {
         };
         // Baseline at about 80 % of the line box.
         let base = top + line_h * i as f64 + size as f64 * 0.95;
-        pdf.text(lx, base, size, lk.bold, lk.color, line, (x, y, w, h));
+        pdf.text_in(
+            family,
+            lx,
+            base,
+            size,
+            lk.bold,
+            lk.italic,
+            lk.color,
+            line,
+            (x, y, w, h),
+        );
     }
 }
 
 /// Paints a text object's text with its style runs and paragraph
 /// alignment (FORMAT.md §10), each piece of stored text passed through
-/// `f` (merge fields resolved). Font families other than Helvetica are not
-/// embedded: pieces keep their size, colour, bold, italic, underline and
-/// strikethrough.
+/// `f` (merge fields resolved): pieces keep their font, size, colour,
+/// bold, italic, underline and strikethrough.
 fn paint_styled(pdf: &mut Pdf, lk: &Look, r: Rect, o: &LayoutObject, f: impl Fn(&str) -> String) {
     use fmp12::layouts::{CharStyle, face};
     let text = o.text.as_deref().unwrap_or("");
@@ -467,7 +478,16 @@ fn paint_styled(pdf: &mut Pdf, lk: &Look, r: Rect, o: &LayoutObject, f: impl Fn(
         (h - pt - pb).max(0.0),
     );
     let size_of = |s: &CharStyle| s.size.map_or(lk.font_size, f32::from).max(4.0) as f64;
-    let face_of = |s: &CharStyle| s.face.unwrap_or(if lk.bold { face::BOLD } else { 0 });
+    let face_of = |s: &CharStyle| {
+        s.face.unwrap_or(
+            if lk.bold { face::BOLD } else { 0 } | if lk.italic { face::ITALIC } else { 0 },
+        )
+    };
+    let family_of = |s: &CharStyle| {
+        s.font
+            .and_then(|id| look::family(&lk.fonts, id as i64))
+            .or_else(|| lk.family.clone())
+    };
     let line_h = |l: &[(String, CharStyle)]| {
         l.iter()
             .map(|p| size_of(&p.1))
@@ -482,10 +502,18 @@ fn paint_styled(pdf: &mut Pdf, lk: &Look, r: Rect, o: &LayoutObject, f: impl Fn(
     };
     for (i, line) in lines.iter().enumerate() {
         let lh = line_h(line);
-        let width = |p: &(String, CharStyle)| {
-            text_width(&p.0, size_of(&p.1) as f32, face_of(&p.1) & face::BOLD != 0) as f64
+        let mut width = |p: &(String, CharStyle)| {
+            let fc = face_of(&p.1);
+            pdf.width(
+                family_of(&p.1).as_deref(),
+                &p.0,
+                size_of(&p.1) as f32,
+                fc & face::BOLD != 0,
+                fc & face::ITALIC != 0,
+            ) as f64
         };
-        let lw: f64 = line.iter().map(width).sum();
+        let widths: Vec<f64> = line.iter().map(&mut width).collect();
+        let lw: f64 = widths.iter().sum();
         let align = match aligns.get(i).copied().unwrap_or(0) {
             0 => lk.align,
             2 => 1,
@@ -498,14 +526,14 @@ fn paint_styled(pdf: &mut Pdf, lk: &Look, r: Rect, o: &LayoutObject, f: impl Fn(
             _ => cx,
         };
         let base = top + lh / 1.2 * 0.95;
-        for p in line {
+        for (p, pw) in line.iter().zip(widths) {
             let (size, fc) = (size_of(&p.1), face_of(&p.1));
             let color =
                 p.1.color
                     .map_or(lk.color, |[r, g, b, _]| look::rgb([r, g, b]));
-            let pw = width(p);
             let on = |bit: u16| fc & bit != 0;
-            pdf.text_slanted(
+            pdf.text_in(
+                family_of(&p.1).as_deref(),
                 px,
                 base,
                 size as f32,

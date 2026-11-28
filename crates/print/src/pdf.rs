@@ -1,5 +1,8 @@
 //! A small PDF 1.4 writer: pages with filled rectangles, lines, pictures
-//! and text in the standard Helvetica fonts (WinAnsiEncoding). Content
+//! and text (WinAnsiEncoding) in the installed fonts the layout asks for,
+//! embedded whole (TrueType `/FontFile2`, CFF-flavoured OpenType
+//! `/FontFile3`), or in the standard Helvetica fonts when a family cannot
+//! be found or read (always on the web). Content
 //! streams are not compressed; JPEG pictures are embedded as they are,
 //! others as raw RGB samples (and a soft mask when they have transparency). Coordinates are in points from the page's top-left corner.
 
@@ -11,6 +14,102 @@ pub struct Pdf {
     pages: Vec<(f64, f64, Vec<u8>)>,
     /// Image XObjects `/Im<i>`, shared by every page: (key, image).
     images: Vec<(u64, Image)>,
+    /// Embedded fonts `/E<i>`.
+    fonts: Vec<Font>,
+    /// (family, bold, italic) → index into `fonts`, `None` for Helvetica.
+    font_keys: std::collections::HashMap<(String, bool, bool), Option<usize>>,
+}
+
+/// An embedded font: a simple TrueType font with WinAnsiEncoding.
+struct Font {
+    base: String,
+    /// The standalone font file (a face taken out of a collection).
+    file: Vec<u8>,
+    /// CFF outlines (`OTTO`): `/FontFile3 /Subtype /OpenType`.
+    otf: bool,
+    /// Advance widths (1/1000 em) of codes 32 to 255.
+    widths: Vec<u16>,
+    bbox: [i32; 4],
+    ascent: i32,
+    descent: i32,
+    cap_height: i32,
+    italic_angle: f32,
+    fake_bold: bool,
+    fake_italic: bool,
+}
+
+impl Font {
+    fn new(face: &crate::fonts::Face, bold: bool, italic: bool) -> Option<Font> {
+        use skrifa::MetadataProvider;
+        use skrifa::instance::{LocationRef, Size};
+        let data = face.data.as_ref().as_ref();
+        let font = skrifa::FontRef::from_index(data, face.index).ok()?;
+        let file = sfnt(data, face.index)?;
+        let m = font.metrics(Size::unscaled(), LocationRef::default());
+        let k = 1000.0 / f32::from(m.units_per_em.max(1));
+        let charmap = font.charmap();
+        let advances = font.glyph_metrics(Size::unscaled(), LocationRef::default());
+        let widths = (32u8..=255)
+            .map(|b| {
+                let w = cp1252_char(b)
+                    .and_then(|c| charmap.map(c))
+                    .and_then(|g| advances.advance_width(g))
+                    .unwrap_or(0.0);
+                (w * k).round() as u16
+            })
+            .collect();
+        let bbox = m.bounds.map_or([0, -200, 1000, 900], |b| {
+            [b.x_min, b.y_min, b.x_max, b.y_max].map(|x| (x * k).round() as i32)
+        });
+        let style = match (bold && !face.fake_bold, italic && !face.fake_italic) {
+            (true, true) => "-BoldItalic",
+            (true, false) => "-Bold",
+            (false, true) => "-Italic",
+            _ => "",
+        };
+        let name: String = face
+            .family
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        Some(Font {
+            base: format!("{name}{style}"),
+            otf: file.starts_with(b"OTTO"),
+            file,
+            widths,
+            bbox,
+            ascent: (m.ascent * k).round() as i32,
+            descent: (m.descent * k).round() as i32,
+            cap_height: (m.cap_height.unwrap_or(m.ascent * 0.7) * k).round() as i32,
+            italic_angle: m.italic_angle,
+            fake_bold: bold && face.fake_bold,
+            fake_italic: italic && face.fake_italic,
+        })
+    }
+}
+
+/// The font file of face `index` of `data`: the file itself, or the face
+/// rebuilt as a standalone file when `data` is a collection (`ttcf`).
+fn sfnt(data: &[u8], index: u32) -> Option<Vec<u8>> {
+    let be32 = |i: usize| Some(u32::from_be_bytes(data.get(i..i + 4)?.try_into().ok()?) as usize);
+    if !data.starts_with(b"ttcf") {
+        return Some(data.to_vec());
+    }
+    let off = be32(12 + 4 * index as usize)?;
+    let n = u16::from_be_bytes(data.get(off + 4..off + 6)?.try_into().ok()?) as usize;
+    let mut head = data.get(off..off + 12 + 16 * n)?.to_vec();
+    let mut body = Vec::new();
+    for i in 0..n {
+        let r = off + 12 + 16 * i;
+        let (at, len) = (be32(r + 8)?, be32(r + 12)?);
+        let new = (12 + 16 * n + body.len()) as u32;
+        head.get_mut(12 + 16 * i + 8..12 + 16 * i + 12)?
+            .copy_from_slice(&new.to_be_bytes());
+        body.extend_from_slice(data.get(at..at + len)?);
+        body.resize(body.len().next_multiple_of(4), 0);
+    }
+    head.extend(body);
+    Some(head)
 }
 
 /// An image XObject: its dictionary entries and samples, and the 8-bit
@@ -97,40 +196,50 @@ pub fn text_width(s: &str, size: f32, bold: bool) -> f32 {
     w as f32 * size / 1000.0 * if bold { 1.05 } else { 1.0 }
 }
 
+/// Windows-1252 characters of bytes 0x80–0x9F that have one.
+const HIGH: [(char, u8); 27] = [
+    ('€', 0x80),
+    ('‚', 0x82),
+    ('ƒ', 0x83),
+    ('„', 0x84),
+    ('…', 0x85),
+    ('†', 0x86),
+    ('‡', 0x87),
+    ('ˆ', 0x88),
+    ('‰', 0x89),
+    ('Š', 0x8A),
+    ('‹', 0x8B),
+    ('Œ', 0x8C),
+    ('Ž', 0x8E),
+    ('‘', 0x91),
+    ('’', 0x92),
+    ('“', 0x93),
+    ('”', 0x94),
+    ('•', 0x95),
+    ('–', 0x96),
+    ('—', 0x97),
+    ('˜', 0x98),
+    ('™', 0x99),
+    ('š', 0x9A),
+    ('›', 0x9B),
+    ('œ', 0x9C),
+    ('ž', 0x9E),
+    ('Ÿ', 0x9F),
+];
+
 /// Windows-1252 byte of a character ('?' when it has none).
 fn cp1252(c: char) -> u8 {
-    const HIGH: [(char, u8); 27] = [
-        ('€', 0x80),
-        ('‚', 0x82),
-        ('ƒ', 0x83),
-        ('„', 0x84),
-        ('…', 0x85),
-        ('†', 0x86),
-        ('‡', 0x87),
-        ('ˆ', 0x88),
-        ('‰', 0x89),
-        ('Š', 0x8A),
-        ('‹', 0x8B),
-        ('Œ', 0x8C),
-        ('Ž', 0x8E),
-        ('‘', 0x91),
-        ('’', 0x92),
-        ('“', 0x93),
-        ('”', 0x94),
-        ('•', 0x95),
-        ('–', 0x96),
-        ('—', 0x97),
-        ('˜', 0x98),
-        ('™', 0x99),
-        ('š', 0x9A),
-        ('›', 0x9B),
-        ('œ', 0x9C),
-        ('ž', 0x9E),
-        ('Ÿ', 0x9F),
-    ];
     match c as u32 {
         0x20..=0x7E | 0xA0..=0xFF => c as u8,
         _ => HIGH.iter().find(|(h, _)| *h == c).map_or(b'?', |(_, b)| *b),
+    }
+}
+
+/// The character of a Windows-1252 byte.
+fn cp1252_char(b: u8) -> Option<char> {
+    match b {
+        0x20..=0x7E | 0xA0..=0xFF => Some(char::from(b)),
+        _ => HIGH.iter().find(|(_, h)| *h == b).map(|(c, _)| *c),
     }
 }
 
@@ -241,15 +350,96 @@ impl Pdf {
         text: &str,
         clip: (f64, f64, f64, f64),
     ) {
+        self.text_in(None, x, y, size, bold, italic, c, text, clip);
+    }
+
+    /// The embedded font for font family list `family` (font catalog,
+    /// e.g. "arial,sans-serif"), `None` for Helvetica.
+    fn font(&mut self, family: Option<&str>, bold: bool, italic: bool) -> Option<usize> {
+        let family = family?;
+        let key = (family.to_string(), bold, italic);
+        if let Some(i) = self.font_keys.get(&key) {
+            return *i;
+        }
+        let i = crate::fonts::find(family, bold, italic)
+            .and_then(|f| Font::new(&f, bold, italic))
+            .map(|f| {
+                // Families without bold or italic faces: one font per file
+                // and synthesis.
+                let same = |g: &Font| {
+                    (&g.base, g.fake_bold, g.fake_italic) == (&f.base, f.fake_bold, f.fake_italic)
+                };
+                self.fonts.iter().position(same).unwrap_or_else(|| {
+                    self.fonts.push(f);
+                    self.fonts.len() - 1
+                })
+            });
+        self.font_keys.insert(key, i);
+        i
+    }
+
+    /// Width of `s` in points at `size` in font family `family` (see
+    /// [`Pdf::text_in`]).
+    pub fn width(
+        &mut self,
+        family: Option<&str>,
+        s: &str,
+        size: f32,
+        bold: bool,
+        italic: bool,
+    ) -> f32 {
+        let Some(i) = self.font(family, bold, italic) else {
+            return text_width(s, size, bold);
+        };
+        let w = &self.fonts[i].widths;
+        let units: u32 = s
+            .chars()
+            .map(|c| {
+                w.get(cp1252(c).wrapping_sub(32) as usize)
+                    .map_or(0, |x| *x as u32)
+            })
+            .sum();
+        units as f32 * size / 1000.0
+    }
+
+    /// Text in font family `family` (a font catalog family list): the
+    /// installed font, embedded, or Helvetica when there is none (or
+    /// `family` is `None`). A family without a bold or italic face is
+    /// emboldened (filled and stroked) or slanted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_in(
+        &mut self,
+        family: Option<&str>,
+        x: f64,
+        y: f64,
+        size: f32,
+        bold: bool,
+        italic: bool,
+        c: Color,
+        text: &str,
+        clip: (f64, f64, f64, f64),
+    ) {
+        let (name, italic, fake_bold) = match self.font(family, bold, italic) {
+            Some(i) => (
+                format!("E{i}"),
+                self.fonts[i].fake_italic,
+                self.fonts[i].fake_bold,
+            ),
+            None => ((if bold { "F2" } else { "F1" }).to_string(), italic, false),
+        };
+        let stroke = if fake_bold {
+            format!("{} 2 Tr {} w ", Self::rgb(c, "RG"), num(size as f64 / 30.0))
+        } else {
+            String::new()
+        };
         let (s, ph) = self.out();
         let (cx, cy, cw, chh) = clip;
         let head = format!(
-            "q {} {} {} {} re W n BT /{} {} Tf {} 1 0 {} 1 {} {} Tm (",
+            "q {} {} {} {} re W n BT {stroke}/{name} {} Tf {} 1 0 {} 1 {} {} Tm (",
             num(cx),
             num(ph - cy - chh),
             num(cw),
             num(chh),
-            if bold { "F2" } else { "F1" },
             num(size as f64),
             Self::rgb(c, "rg"),
             if italic { "0.21" } else { "0" },
@@ -327,6 +517,45 @@ impl Pdf {
                 next += 1;
             }
         }
+        // Per embedded font: font, descriptor and font file.
+        let mut fonts = String::new();
+        let mut font_objects = Vec::new();
+        for (i, f) in self.fonts.iter().enumerate() {
+            fonts.push_str(&format!(" /E{i} {next} 0 R"));
+            let widths: Vec<String> = f.widths.iter().map(u16::to_string).collect();
+            font_objects.push(
+                format!(
+                    "<< /Type /Font /Subtype /TrueType /BaseFont /{} /FirstChar 32 /LastChar 255 /Widths [{}] /Encoding /WinAnsiEncoding /FontDescriptor {} 0 R >>",
+                    f.base,
+                    widths.join(" "),
+                    next + 1
+                )
+                .into_bytes(),
+            );
+            // Flags: nonsymbolic, italic.
+            let flags = 32 | if f.italic_angle != 0.0 { 64 } else { 0 };
+            let [a, b, c, d] = f.bbox;
+            font_objects.push(
+                format!(
+                    "<< /Type /FontDescriptor /FontName /{} /Flags {flags} /FontBBox [{a} {b} {c} {d}] /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV 80 /{} {} 0 R >>",
+                    f.base,
+                    num(f.italic_angle as f64),
+                    f.ascent,
+                    f.descent,
+                    f.cap_height,
+                    if f.otf { "FontFile3" } else { "FontFile2" },
+                    next + 2
+                )
+                .into_bytes(),
+            );
+            let dict = if f.otf {
+                "/Subtype /OpenType".to_string()
+            } else {
+                format!("/Length1 {}", f.file.len())
+            };
+            font_objects.push(stream(dict, &f.file));
+            next += 3;
+        }
         let xobjects = if xobjects.is_empty() {
             String::new()
         } else {
@@ -334,7 +563,12 @@ impl Pdf {
         };
         let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 5 + 2 * i)).collect();
         let mut objects: Vec<Vec<u8>> = vec![
-            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            // OpenType font files are PDF 1.6.
+            if self.fonts.iter().any(|f| f.otf) {
+                b"<< /Type /Catalog /Version /1.6 /Pages 2 0 R >>".to_vec()
+            } else {
+                b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()
+            },
             format!(
                 "<< /Type /Pages /Kids [{}] /Count {n} >>",
                 kids.join(" ")
@@ -348,7 +582,7 @@ impl Pdf {
         for (i, (w, h, content)) in self.pages.into_iter().enumerate() {
             objects.push(
                 format!(
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>{xobjects} >> /Contents {} 0 R >>",
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R /F2 4 0 R{fonts} >>{xobjects} >> /Contents {} 0 R >>",
                     num(w),
                     num(h),
                     6 + 2 * i
@@ -361,6 +595,7 @@ impl Pdf {
             objects.push(stream);
         }
         objects.extend(image_objects);
+        objects.extend(font_objects);
         for (i, o) in objects.iter().enumerate() {
             offsets.push(out.len());
             out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
@@ -416,6 +651,66 @@ mod tests {
         let first: usize = std::str::from_utf8(entry).unwrap().parse().unwrap();
         assert!(b[first..].starts_with(b"1 0 obj"));
         assert!((text_width("Hi", 10.0, false) - 9.44).abs() < 1e-4);
+    }
+
+    /// A face of a collection comes out as a standalone font file.
+    #[test]
+    fn takes_faces_out_of_collections() {
+        let mut ttc = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\0\x10".to_vec();
+        ttc.extend(b"\0\x01\0\0\0\x01\0\0\0\0\0\0");
+        ttc.extend(b"abcd\0\0\0\0\0\0\0\x2C\0\0\0\x03xyz");
+        let f = sfnt(&ttc, 0).unwrap();
+        assert_eq!(&f[..12], b"\0\x01\0\0\0\x01\0\0\0\0\0\0");
+        assert_eq!(&f[12..], b"abcd\0\0\0\0\0\0\0\x1C\0\0\0\x03xyz\0");
+        assert!(sfnt(&ttc, 1).is_none());
+        assert_eq!(sfnt(b"\0\x01\0\0", 0).unwrap(), b"\0\x01\0\0");
+    }
+
+    /// Arial (shipped with Windows) is embedded, bold as its own face;
+    /// skipped where it is not installed.
+    #[test]
+    fn embeds_installed_fonts() {
+        if !std::path::Path::new("C:/Windows/Fonts/arial.ttf").exists() {
+            return;
+        }
+        let mut p = Pdf::new();
+        p.page(200.0, 100.0);
+        let clip = (0.0, 0.0, 200.0, 100.0);
+        p.text_in(
+            Some("arial,sans-serif"),
+            10.0,
+            20.0,
+            12.0,
+            false,
+            false,
+            [0.0; 4],
+            "Hi",
+            clip,
+        );
+        p.text_in(
+            Some("arial,sans-serif"),
+            10.0,
+            40.0,
+            12.0,
+            true,
+            false,
+            [0.0; 4],
+            "Hi",
+            clip,
+        );
+        p.text_in(None, 10.0, 60.0, 12.0, false, false, [0.0; 4], "Hi", clip);
+        // Arial's widths match Helvetica's: H 722, i 222.
+        assert!((p.width(Some("Arial"), "Hi", 10.0, false, false) - 9.44).abs() < 1e-4);
+        let b = p.finish();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("BT /E0 12 Tf"));
+        assert!(s.contains("BT /E1 12 Tf"));
+        assert!(s.contains("BT /F1 12 Tf"));
+        assert!(s.contains("/BaseFont /Arial /FirstChar 32"));
+        assert!(s.contains("/BaseFont /Arial-Bold"));
+        assert!(s.contains("/FontFile2"));
+        assert!(s.contains("/E0 7 0 R /E1 10 0 R"));
+        assert_eq!(crate::merge::pages(&b), Ok(1));
     }
 
     #[test]

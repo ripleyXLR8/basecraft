@@ -1,7 +1,8 @@
 //! Layouts (`[4]`). Most layout data is protobuf ([`crate::pb`]):
 //!
 //! * `[4].[5].[L]` key 16 = name, key 2 = header message
-//!   (2 = table occurrence, 8 = width);
+//!   (2 = table occurrence, 3 = menu set, 8 = width, 11 = print columns,
+//!   12 = margins), keys 240/241 = Layout Setup flags and options ([`setup`]);
 //! * `[4].[5].[L].[3].[P]` key 2 = part message
 //!   (1 = kind, 4 = top, 5 = height, 10 = style);
 //! * object list message: key 7 of the layout node, or when longer than
@@ -424,9 +425,87 @@ pub struct Layout {
     pub objects: Vec<LayoutObject>,
     /// Tab order (`[L].[21]`): object ids, first to last.
     pub tab_order: Vec<u64>,
+    /// Layout Setup options, key 241 (u64 BE, also in `[4].[1].[7].[L]`;
+    /// the XML's `<Options>`): bits in [`setup`].
+    pub options: u64,
+    /// Catalog flags, key 240 (u64 BE, also in `[4].[1].[7].[L]`):
+    /// [`setup::FOLDER`], [`setup::SEPARATOR`], [`setup::HIDDEN`].
+    pub flags: u64,
+    /// Menu set (header field 3, also catalog key 2 field 3): 0 the
+    /// file's default menus, 1 FileMaker's standard menus, else a custom
+    /// menu set id.
+    pub menu_set: u64,
+    /// Printing: number of columns (header field 11).
+    pub columns: u64,
+    /// Printing: fixed page margins in points (header field 12): top,
+    /// left (inside with facing pages), bottom, right (outside).
+    pub margins: [f64; 4],
+    /// Layout script triggers (`[L].[48]`, [`crate::triggers`]).
+    pub triggers: Vec<crate::triggers::Trigger>,
+}
+
+/// Layout Setup settings (`docs/FORMAT.md` §10, "Layout Setup"), decoded
+/// by changing one setting at a time in FileMaker Pro 26's Layout Setup.
+pub mod setup {
+    /// [`super::Layout::options`]: "Delineate fields on current row only".
+    pub const DELINEATE: u64 = 0x1;
+    /// Form view not available.
+    pub const NO_FORM: u64 = 0x2;
+    /// List view not available.
+    pub const NO_LIST: u64 = 0x4;
+    /// Table view not available.
+    pub const NO_TABLE: u64 = 0x8;
+    /// "Save record changes automatically" off.
+    pub const NO_AUTO_SAVE: u64 = 0x10;
+    /// "Show field frames when record is active".
+    pub const FIELD_FRAMES: u64 = 0x20;
+    /// "Use fixed page margins".
+    pub const FIXED_MARGINS: u64 = 0x40;
+    /// "Facing pages" (with fixed margins).
+    pub const FACING_PAGES: u64 = 0x80;
+    /// "Print in n columns".
+    pub const COLUMNS: u64 = 0x100;
+    /// Default view bits: [`DEFAULT_LIST`] or [`DEFAULT_TABLE`], 0 = form.
+    pub const DEFAULT_VIEW: u64 = 0x4200;
+    pub const DEFAULT_LIST: u64 = 0x200;
+    pub const DEFAULT_TABLE: u64 = 0x4200;
+    /// Columns "Down" (else "Across first").
+    pub const COLUMNS_DOWN: u64 = 0x400;
+    /// "Enable Quick Find" off.
+    pub const NO_QUICK_FIND: u64 = 0x8000;
+    /// "Show current record indicator in List view" off.
+    pub const NO_RECORD_INDICATOR: u64 = 0x1000_0000;
+    /// [`super::Layout::flags`]: a folder of the layout list.
+    pub const FOLDER: u64 = 0x1;
+    /// A separator of the layout list.
+    pub const SEPARATOR: u64 = 0x2;
+    /// "Include in layout menus" off.
+    pub const HIDDEN: u64 = 0x8;
 }
 
 impl Layout {
+    /// Views available in Browse and Find mode: form, list, table.
+    pub fn views(&self) -> [bool; 3] {
+        [setup::NO_FORM, setup::NO_LIST, setup::NO_TABLE].map(|b| self.options & b == 0)
+    }
+
+    /// Default view: 0 form, 1 list, 2 table.
+    pub fn default_view(&self) -> usize {
+        match self.options & setup::DEFAULT_VIEW {
+            setup::DEFAULT_TABLE => 2,
+            setup::DEFAULT_LIST => 1,
+            _ => 0,
+        }
+    }
+
+    pub fn set_default_view(&mut self, v: usize) {
+        self.options &= !setup::DEFAULT_VIEW;
+        self.options |= [0, setup::DEFAULT_LIST, setup::DEFAULT_TABLE]
+            .get(v)
+            .copied()
+            .unwrap_or(0);
+    }
+
     /// Bounds of an object in layout coordinates (adds its ancestors' origins).
     pub fn absolute(&self, o: &LayoutObject) -> Bounds {
         let mut b = o.bounds.clone();
@@ -450,6 +529,9 @@ struct Raw {
     name: String,
     header: Vec<u8>,
     theme: u32,
+    /// Keys 241 (options) and 240 (flags).
+    options: u64,
+    flags: u64,
     parts: BTreeMap<u32, Vec<u8>>,
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
@@ -464,6 +546,11 @@ struct Raw {
     tabs: BTreeMap<u32, u64>,
     /// Button step parameters: `[4].[5].[L].[5].[obj].[17]`.
     actions: BTreeMap<u32, crate::scripts::RawParams>,
+}
+
+/// A big-endian integer of up to 8 bytes (keys 240, 241).
+fn be_u64(b: &[u8]) -> u64 {
+    b.iter().fold(0, |a, x| (a << 8) | *x as u64)
 }
 
 fn style_name(m: &Msg) -> String {
@@ -616,6 +703,8 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 match key {
                     16 => r.name = text(data),
                     2 => r.header = data.to_vec(),
+                    240 => r.flags = be_u64(data),
+                    241 => r.options = be_u64(data),
                     // `01 n`: byte count, then the theme number.
                     11 => r.theme = data[1..].iter().fold(0, |a, b| (a << 8) | *b as u32),
                     // Short object lists are stored inline instead of in [7].
@@ -684,10 +773,12 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             _ => {}
         }
     })?;
+    let mut triggers = crate::triggers::triggers(file)?.layouts;
     Ok(raw
         .into_iter()
         .map(|(id, r)| {
             let header = Msg::parse(&r.header).unwrap_or_default();
+            let margins = header.msg(12).unwrap_or_default();
             let parts = r
                 .parts
                 .iter()
@@ -741,6 +832,12 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 parts,
                 objects,
                 tab_order: r.tabs.values().copied().collect(),
+                options: r.options,
+                flags: r.flags,
+                menu_set: header.uint(3).unwrap_or(0),
+                columns: header.uint(11).unwrap_or(2),
+                margins: [1, 2, 3, 4].map(|f| margins.f64(f).unwrap_or(36.0)),
+                triggers: triggers.remove(&id).unwrap_or_default(),
             }
         })
         .collect())

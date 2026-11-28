@@ -28,6 +28,7 @@ mod design;
 mod editing;
 mod i18n;
 mod launch;
+mod layout_setup;
 mod look;
 #[cfg(test)]
 mod m4_tests;

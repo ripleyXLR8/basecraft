@@ -420,6 +420,9 @@ fn table_and_list_views() {
         .position(|l| l.name == "Contact List")
         .unwrap();
     app.view = View::Table;
+    // Contact List offers List view only (Layout Setup): allow Table.
+    let i = app.layout;
+    app.doc.as_mut().unwrap().layouts[i].options &= !fmp12::layouts::setup::NO_TABLE;
     let mut h = harness_for(app);
     h.run_steps(4);
     shots(&mut h, "table");

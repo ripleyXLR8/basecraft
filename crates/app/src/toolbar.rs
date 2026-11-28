@@ -474,8 +474,10 @@ impl App {
                             tx("Sharing a file needs FileMaker Server.").into(),
                         ));
                     }
+                    let quick = self.quick_find_enabled();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let r = ui.add(
+                        let r = ui.add_enabled(
+                            quick,
                             egui::TextEdit::singleline(&mut self.bar.quick)
                                 .hint_text(tx("Quick Find"))
                                 .desired_width(180.0)
@@ -605,6 +607,17 @@ impl App {
             return;
         }
         let find = self.mode() == Mode::Find;
+        self.enforce_view();
+        let views = self.views_allowed();
+        let Some(doc) = &self.doc else {
+            return;
+        };
+        // Layout Setup › "Include in layout menus" off: not listed.
+        let hidden: Vec<bool> = doc
+            .layouts
+            .iter()
+            .map(|l| l.flags & fmp12::layouts::setup::HIDDEN != 0)
+            .collect();
         ui.horizontal(|ui| {
             ui.label(tr("Layout:"));
             let current = names.get(self.layout).map_or("", |n| n.as_str());
@@ -612,18 +625,25 @@ impl App {
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     for (i, n) in names.iter().enumerate() {
+                        if hidden.get(i) == Some(&true) && i != self.layout {
+                            continue;
+                        }
                         if ui.selectable_label(i == self.layout, n).clicked() {
                             chosen = Some(i);
                         }
                     }
                 });
             ui.label(tr("View As:"));
-            for (v, label) in [
+            for ((v, label), ok) in [
                 (View::Form, "Form"),
                 (View::List, "List"),
                 (View::Table, "Table"),
-            ] {
-                if ui.selectable_label(self.view == v, tr(label)).clicked() && self.view != v {
+            ]
+            .into_iter()
+            .zip(views)
+            {
+                let b = egui::Button::selectable(self.view == v, tr(label));
+                if ui.add_enabled(ok, b).clicked() && self.view != v {
                     self.view = v;
                     self.fire(event::VIEW_CHANGE);
                 }

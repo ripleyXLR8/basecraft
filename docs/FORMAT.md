@@ -830,7 +830,7 @@ id).
 
 Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
 
-* `[4].[5].[L]` key 2 = header (2 TO in XML form, 5 style, 7 local CSS, 8 width), key 11 = theme (`01 n`);
+* `[4].[5].[L]` key 2 = header (2 TO in XML form, 3 menu set, 5 style, 7 local CSS, 8 width, 11 print columns, 12 margins; see "Layout Setup" below), key 11 = theme (`01 n`), keys 240/241 = flags and options;
 * `[4].[5].[L].[3]` key 0 = number of parts (length-prefixed); `[4].[5].[L].[3].[P]`
   (P = 1…n, top to bottom) key 2 = part (1 kind, 2 = 0, 3 = 0, 4 top,
   5 height, 6 break field, 10 style, 11 alternate-row style), key 7 =
@@ -1023,9 +1023,65 @@ navigation. The break field of a sub-summary (field 6) is
 * `[4].[5].[L].[13]` holds a second copy of parts, objects and indexes
   (meaning not settled; left as is).
 * `[4].[1].[7].[L]` repeats the layout's name (key 16) and a message whose
-  field 2 is its table occurrence; key 240 = 0 layout, 1 folder,
-  2 separator; `[4].[1].[1]` indexes layout names by collation key (§14),
+  field 2 is its table occurrence (field 3 the menu set); keys 240 and
+  241 repeat the layout's (below), key 48 = number of layout script
+  triggers (u32); `[4].[1].[1]` indexes layout names by collation key (§14),
   `[4].[1].[3]` is the display order.
+
+### Layout Setup
+
+Decoded by changing one setting at a time in FileMaker Pro 26's Layout
+Setup (« Format de modèle ») on copies of Contacts and diffing; a file
+BaseCraft wrote with every setting changed opens in FileMaker with the
+same values in the dialog (and passes FileMaker Server's consistency
+check; its XML `<Options>`, `hidden`, `<MenuSet>` and `<ScriptTriggers>`
+agree). `fmp12::layouts::setup`.
+
+* **Key 241** of `[4].[5].[L]` (u64 BE, the same value in `[4].[1].[7].[L]`
+  key 241; it is the XML's `<Options>`), templates `0x10F3080D`:
+
+  | Bit | Meaning |
+  |----:|---------|
+  | `0x1` | "Delineate fields on current row only" |
+  | `0x2`, `0x4`, `0x8` | Form, List, Table view **not** available |
+  | `0x10` | "Save record changes automatically" **off** |
+  | `0x20` | "Show field frames when record is active" |
+  | `0x40` | "Use fixed page margins" |
+  | `0x80` | "Facing pages" |
+  | `0x100` | "Print in n columns" |
+  | `0x200` | default view List; `0x4200` Table; neither = Form |
+  | `0x400` | columns "Down first" (else "Across first") |
+  | `0x8000` | "Enable Quick Find" **off** |
+  | `0x1000_0000` | "Show current record indicator in List view" **off** |
+
+  ponytail: `0x4000` was only seen with the Table default view; with it
+  FileMaker also wrote header fields 13 = 22.0 and 14 = 25.0 (not
+  decoded, BaseCraft leaves them). The other set bits (`0x800`,
+  `0xF30000`) never changed.
+* **Key 240** (u64 BE, also in the catalog entry): `0x1` folder, `0x2`
+  separator, `0x8` "Include in layout menus" **off** (XML
+  `hidden="True"`); FileMaker writes the layout's key only once it is not
+  0. 🔍 `0x10` seen on template folders.
+* Header (key 2) field 3 = **menu set**: 0 `[File Default]`, 1
+  `[Standard FileMaker Menus]` (XML `CustomMenuSetReference` id); also
+  field 3 of the catalog's key 2. ponytail: custom menu set ids assumed
+  to be the same numbering, custom menu sets are not decoded.
+* Header field 11 = **number of columns** (2 by default), field 12 =
+  **fixed margins** `{1 top, 2 left/inside, 3 bottom, 4 right/outside}`
+  in points (36 in new files; FileMaker shows the printer's margins while
+  "fixed" is off and rewrote field 12 with them when columns were set).
+  Field 10 changed with the columns and margins (190.33, 259.0): a width
+  FileMaker computes from the page (not decoded, left as is). Fields 6,
+  9, 13–17 did not change with any setting.
+* **Script triggers** (§8): `[4].[5].[L].[48]` key 4 = count, nodes
+  `[48].[5].[128 + event]`; adding two triggers also set the catalog's
+  key 48 to 2 (XML `<ScriptTriggers membercount>`). FileMaker's list
+  order: OnRecordLoad, OnRecordCommit, OnRecordRevert,
+  OnLayoutKeystroke, OnLayoutEnter, OnLayoutExit, OnLayoutSizeChange,
+  OnModeEnter, OnModeExit, OnViewChange, OnGestureTap,
+  OnExternalCommandReceived; Preview is greyed out for OnRecordLoad.
+* Not decoded: Table View Properties (grid, parts, column headers, row
+  height; the XML `<GridStyle>` and `<TableView>`), "Reset Quick Find".
 
 ### Charts (`fmp12::charts`) ✅ read
 

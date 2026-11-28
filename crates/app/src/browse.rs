@@ -167,12 +167,17 @@ impl App {
     /// View menu entries added for M5.
     pub fn view_menu_more(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        for (v, label) in [
+        let views = self.views_allowed();
+        for ((v, label), ok) in [
             (View::Form, "View as Form"),
             (View::List, "View as List"),
             (View::Table, "View as Table"),
-        ] {
-            if ui.selectable_label(self.view == v, t(label)).clicked() {
+        ]
+        .into_iter()
+        .zip(views)
+        {
+            let b = egui::Button::selectable(self.view == v, t(label));
+            if ui.add_enabled(ok, b).clicked() {
                 if self.view != v {
                     self.view = v;
                     self.fire(fmp12::triggers::event::VIEW_CHANGE);

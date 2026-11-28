@@ -434,6 +434,7 @@ impl Remote {
             access: Default::default(),
             custom_functions: Default::default(),
             base_directories: Vec::new(),
+            encrypted_at_rest: false,
             pictures: Default::default(),
         };
         let mut layouts = Vec::new();

@@ -14,8 +14,7 @@
 //! it ([`Storage`]): the store then keeps a reference (`REMO` and the data
 //! stream, [`External`]) and the file lies at
 //! `<database folder>/<base directory>/<REMO folder>/<file name>`. Secure
-//! storage encrypts the files (read here, [`Stored::decrypt_secure`]); only open storage
-//! is written.
+//! storage encrypts the files ([`Stored::decrypt_secure`], [`Stored::new_secure`]).
 
 use std::collections::BTreeMap;
 
@@ -35,7 +34,7 @@ const SECURE_IV: [u8; 16] = *b"080597FM\x49\xa6\xf2\x44aedr";
 
 /// The files of secure storage under `dir` (a base directory's `Secure`
 /// folder), by the MD5 of their bytes: the store's data stream holds that
-/// MD5, while the folder names come from an id BaseCraft does not derive.
+/// MD5 (a file's own folder needs its content: [`Stored::secure_path`]).
 pub fn secure_files(dir: &std::path::Path) -> BTreeMap<[u8; 16], std::path::PathBuf> {
     let mut out = BTreeMap::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -58,7 +57,7 @@ pub fn secure_files(dir: &std::path::Path) -> BTreeMap<[u8; 16], std::path::Path
 /// How a container field stores its data outside the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Storage {
-    /// Encrypted, in folders named by an encrypted id: `Secure/52/97/
+    /// Encrypted, in folders named by an MD5 id: `Secure/52/97/
     /// ABAB0061/B4723A60/0D3C544B/E855_130` (`<n>/<28 hex>/<4 hex>_<table>`
     /// with fewer folders).
     Secure { fewer_folders: bool },
@@ -76,7 +75,7 @@ pub struct External {
     /// File name (open storage), or `_<table>` (secure storage).
     pub file: String,
     pub size: u64,
-    /// MD5 of the file (open storage) or its encrypted id (secure).
+    /// MD5 of the file (open storage) or of the encrypted file (secure).
     pub md5: [u8; 16],
 }
 
@@ -201,6 +200,95 @@ impl Stored {
         s.streams.insert(*b"FNAM", fnam(&s.kind, name));
         s.external_data = Some(data);
         s
+    }
+
+    /// A new container of a field with secure external storage, as
+    /// FileMaker Server 26 writes it (FORMAT.md §13): `REMO` = the flags
+    /// (1, 2 in a file with encryption at rest, + 8 with fewer folders)
+    /// and 7 zero bytes; `ENCR` = a fresh random 32-byte key; the data
+    /// stream = u64 LE size, the MD5 of the encrypted file, `_<table>` and
+    /// `00`. `None` without a random source.
+    pub fn new_secure(
+        name: &str,
+        table: u32,
+        fewer_folders: bool,
+        at_rest: bool,
+        data: Vec<u8>,
+    ) -> Option<Stored> {
+        let mut s = Stored::new_open(name, "", "", data);
+        // 10 (fewer folders, encryption at rest) seen in --enableEncryption output.
+        let flags = if at_rest { 2 } else { 1 } | if fewer_folders { 8 } else { 0 };
+        let mut remo = vec![0; 8];
+        remo[0] = flags;
+        s.streams.insert(*b"REMO", remo);
+        let mut key = vec![0; 32];
+        crate::ear::random(&mut key).ok()?;
+        s.streams.insert(*b"ENCR", key);
+        let encrypted = s.encrypt_secure()?;
+        let tag = s.tag()?;
+        let d = s.streams.get_mut(&tag)?;
+        d.truncate(8);
+        d.extend(md5::Md5::digest(&encrypted));
+        d.extend(format!("_{table}\0").as_bytes());
+        Some(s)
+    }
+
+    /// The file of a secure-storage container as it lies on disk: its
+    /// content in AES-CBC with PKCS #7 padding under the `ENCR` key, the
+    /// inverse of [`Stored::decrypt_secure`].
+    pub fn encrypt_secure(&self) -> Option<Vec<u8>> {
+        use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
+        let data = self.external_data.as_deref()?;
+        let key = self.streams.get(b"ENCR")?;
+        let mut buf = data.to_vec();
+        buf.resize(data.len() / 16 * 16 + 16, 0);
+        let n = match *self.streams.get(b"REMO")?.first()? & 3 {
+            1 => cbc::Encryptor::<aes::Aes128>::new_from_slices(key.get(..16)?, &SECURE_IV)
+                .ok()?
+                .encrypt_padded::<Pkcs7>(&mut buf, data.len())
+                .ok()?
+                .len(),
+            2 => cbc::Encryptor::<aes::Aes256>::new_from_slices(key.get(..32)?, &SECURE_IV)
+                .ok()?
+                .encrypt_padded::<Pkcs7>(&mut buf, data.len())
+                .ok()?
+                .len(),
+            _ => return None,
+        };
+        buf.truncate(n);
+        Some(buf)
+    }
+
+    /// Path of a secure-storage file under the base directory
+    /// (FORMAT.md §13): the 32 hex digits of MD5(key 4, the embedded data
+    /// tag in UTF-16BE) as `Secure/52/97/ABAB0061/B4723A60/0D3C544B/
+    /// E855_<table>`, or with fewer folders `Secure/5/<digits 1–28>/
+    /// <digits 28–31>_<table>`. Needs the file's content (key 4).
+    pub fn secure_path(&self) -> Option<String> {
+        let x = self.external()?;
+        let Storage::Secure { fewer_folders } = x.storage else {
+            return None;
+        };
+        self.external_data.as_ref()?;
+        let mut h = md5::Md5::new();
+        h.update(self.hash());
+        for c in self.tag()?.map(|c| c ^ 0x20) {
+            h.update([0, c]);
+        }
+        let id: String = h.finalize().iter().map(|b| format!("{b:02X}")).collect();
+        let dir = if fewer_folders {
+            format!("{}/{}", &id[..1], &id[1..29])
+        } else {
+            format!(
+                "{}/{}/{}/{}/{}",
+                &id[..2],
+                &id[2..4],
+                &id[4..12],
+                &id[12..20],
+                &id[20..28]
+            )
+        };
+        Some(format!("Secure/{dir}/{}{}", &id[28..], x.file))
     }
 
     /// Where the file lies when it is stored outside the database.

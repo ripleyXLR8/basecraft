@@ -1692,7 +1692,7 @@ BaseCraft's writer (`save_containers`) adds new files, recounts key 18
 from the record values and drops files no record uses; files already in
 the store keep their bytes.
 
-### External storage ✅ open · ✅ secure read
+### External storage ✅ open · ✅ secure
 
 Decoded from container fields set to "Store container data externally"
 in FileMaker Pro 26's Field Options (copies of Tasks, files set by
@@ -1711,7 +1711,7 @@ BaseCraft wrote.
 * **Store entry** `[T].[31].[5].[id]`: the record value is the store id
   as for embedded data; the entry holds `FNAM` and `SIZE` as usual, plus
   * `REMO`: byte 0 = flags (0 open, 1 secure, 9 secure with fewer
-    folders, 2 secure in a file with encryption at rest, §17), 7 zero
+    folders, 2 secure in a file with encryption at rest, §17, 10 both), 7 zero
     bytes, then for open storage the folder (`Tasks/ExtOpen/`, plain
     UTF-8, not XOR-ed) and `00`;
   * the data stream, its tag the embedded one with its case swapped
@@ -1751,15 +1751,49 @@ BaseCraft wrote.
   content); with flag 2 (files with encryption at rest, where the store
   itself is encrypted) all 32 bytes are an AES-256 key. Keys are random
   per file; FileMaker's `--removeEncryption` turns flag 2 entries into
-  flag 1 entries with new keys and re-encrypts the files. The folder id
-  depends only on the content when there is no encryption at rest (the
-  red 4 × 3 PNG got `52/97/ABAB0061/…/E855` in two unrelated files, under
-  different keys) and on the file as well with it; the function was not
-  identified (no OpenSSL digest is called for it), so BaseCraft finds a
-  file by the MD5 the data stream holds, hashing the files under
-  `Secure/` once (`containers::secure_files`), then decrypts it
-  (`Stored::decrypt_secure`). New files in a secure field are still
-  stored embedded, which FileMaker reads (`Storage Type: Embedded`).
+  flag 1 entries with new keys and re-encrypts the files.
+
+  **Folder id.** The 32 hex digits (upper case) are the MD5 of the
+  entry's key 4 (the 16-byte dedup MD5 above, which covers `FNAM`, the
+  content, `REMO` and `SIZE` but not `ENCR`) followed by the embedded
+  data tag (`PNGf`, `FILE`…, not the swapped `pngF`) as UTF-16BE text
+  (8 bytes). Hence the id depends on the content and name only, the
+  same red PNG lands in the same folder in unrelated files, and with
+  encryption at rest (`REMO` flag 2, so another key 4) it moves.
+  Established by naming the functions FileMaker Server 26's
+  `libDBEngine.so` calls to build the name (its symbol table names a
+  secure-name builder that splits a "secure string": the base-16 text
+  of an MD5-sized "CRC" over the entry's CRC and the stream tag's text;
+  no decompiled code was kept), then checked on all six files of the
+  fixtures and on files BaseCraft wrote (below). Split: `2/2/8/8/8`
+  folders and the last 4 digits as the file name; with fewer folders,
+  digit 0 as the folder, digits 1–28 as the second and digits 28–31
+  (digit 28 appears twice: `…33308F/F52D`) as the file name. `_<table
+  id>` follows. BaseCraft still finds a file it reads by the MD5 the
+  data stream holds, hashing the files under `Secure/` once
+  (`containers::secure_files`), then decrypts it
+  (`Stored::decrypt_secure`).
+
+  **Writing** (`Stored::new_secure`, `Stored::secure_path`,
+  `Stored::encrypt_secure`; `engine::Database::store_value` /
+  `write_external_containers`): a new file in a secure field gets `REMO`
+  = flag (1, 2 when the file has encryption at rest, + 8 with fewer
+  folders) and 7 zero bytes, a random 32-byte `ENCR`, the data stream
+  (u64 LE size, MD5 of the encrypted bytes, `_<table>` `00`), and the
+  encrypted file at the computed path. Re-encrypting a fixture's file
+  with its `ENCR` gives FileMaker's bytes exactly (the IV is fixed). On
+  FileMaker Server 26, `FMDeveloperTool --checkConsistency` finds no
+  problem in files with three new secure files (plain and with
+  encryption at rest), and `--copySelfContained` embeds all of them
+  (and the fixtures' own) with their original MD5s: FileMaker found and
+  decrypted them at the computed paths. The same holds with fewer
+  folders (the fixture's field options with byte 8 bit `0x04` set by
+  hand). `--enableEncryption` and `--removeEncryption` carried
+  BaseCraft's files over to new keys and folders like FileMaker's own,
+  and every file they wrote, fewer folders included (`REMO` flag 10 =
+  2 + 8 after `--enableEncryption`), lies at the path computed above;
+  both also failed (error 853) on some files of each run, FileMaker's
+  own and ours alike (the pristine `ear` fixture passed on one run).
 
   Test files (`fmp12/tests/fixtures/secure/`): a BaseCraft file whose
   container field was set to open storage (field options, key 38 and a
@@ -1785,8 +1819,8 @@ directory. Checked in FileMaker Pro 26 (Tasks copy with Assignees::Photo
 set to open storage, records added by `basecraft-cli new … Photo=@file`):
 the file opens without warning and `GetContainerAttribute` gives each
 file's name, MD5, size and picture size, `red_1.png` included; a file
-BaseCraft put in the secure Attachments::Attachment field reads back as
-embedded. FileMaker Server's consistency check (`fms_check.sh`) flags
+BaseCraft put in the secure Attachments::Attachment field (before it wrote
+secure storage) reads back as embedded. FileMaker Server's consistency check (`fms_check.sh`) flags
 that file, but it flags a plain BaseCraft rewrite of the same Tasks copy
 too, with no change at all (`fmdump … rewrite`): a writer issue, not
 the container entries. Bisected to layout 3 (FileMaker had resized its

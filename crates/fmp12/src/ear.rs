@@ -138,7 +138,7 @@ fn page_mac(mac_key: &[u8], page: &[u8]) -> Option<hmac::Hmac<sha2::Sha256>> {
     Some(mac)
 }
 
-fn random(buf: &mut [u8]) -> Result<(), Error> {
+pub(crate) fn random(buf: &mut [u8]) -> Result<(), Error> {
     getrandom::fill(buf).map_err(|_| Error::Security("no random source".into()))
 }
 

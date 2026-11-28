@@ -91,8 +91,6 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
   password; File › Save a Copy Without Encryption writes a decrypted copy. Encrypting
   a plain file from the app, and AES-128 files (which FileMaker's tools do not make),
   are not supported (FORMAT.md §17).
-- **Container fields with secure external storage** are read (the files are
-  decrypted), but new files put in such a field are stored embedded (FORMAT.md §13).
 - **Accounts and privilege sets** are read, enforced and written (File › Manage ›
   Security, `accounts`/`privileges` commands); external-server and OAuth accounts
   are listed but cannot log in, and "Run script with full access privileges" is

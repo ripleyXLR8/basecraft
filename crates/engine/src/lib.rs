@@ -146,6 +146,9 @@ pub struct Database {
     /// Base directories of external container storage: (id, path relative
     /// to the database's folder), [`fmp12::containers::base_directories`].
     pub base_directories: Vec<(u32, String)>,
+    /// The file is protected with encryption at rest (FORMAT.md §17): new
+    /// secure-storage containers then take AES-256 keys (`REMO` flag 2).
+    pub encrypted_at_rest: bool,
     /// Pictures of graphic layout objects, by store id (`[31].[5]`).
     pub pictures: BTreeMap<u32, fmp12::containers::Stored>,
 }
@@ -364,6 +367,7 @@ impl Database {
             occurrences,
             custom_functions,
             base_directories: fmp12::containers::base_directories(file)?,
+            encrypted_at_rest: file.is_encrypted(),
             pictures: fmp12::containers::layout_pictures(file)?,
             access: Access {
                 session,
@@ -461,9 +465,10 @@ impl Database {
         }
     }
 
-    /// Writes the files of containers kept in open external storage into
-    /// the folder `dir` of the database the records were saved to, in
-    /// FileMaker's layout (`<base directory>/<Table>/<Field>/<name>`).
+    /// Writes the files of containers kept in external storage into the
+    /// folder `dir` of the database the records were saved to, in
+    /// FileMaker's layout (`<base directory>/<Table>/<Field>/<name>`, or
+    /// encrypted under `<base directory>/Secure/…`).
     /// Files already there are left alone. Returns the files written.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn write_external_containers(
@@ -474,8 +479,16 @@ impl Database {
         let mut out = Vec::new();
         for t in &self.tables {
             for s in t.containers.values() {
-                let (Some(p), Some(data)) = (s.external().and_then(|x| x.path()), &s.external_data)
-                else {
+                let (Some(p), Some(data)) = (
+                    s.external()
+                        .and_then(|x| x.path().or_else(|| s.secure_path())),
+                    s.external_data
+                        .as_ref()
+                        .and_then(|d| match s.streams.get(b"ENCR") {
+                            Some(_) => s.encrypt_secure(),
+                            None => Some(d.clone()),
+                        }),
+                ) else {
                     continue;
                 };
                 let path = base.join(p);
@@ -872,10 +885,18 @@ impl Database {
             .is_some_and(|f| f.data_type == DataType::Container);
         match v {
             Value::Container(c) if container && c.path.is_empty() && !c.data.is_empty() => {
-                let open = t.field(field).is_some_and(|f| {
-                    f.def.external_storage() == Some(fmp12::containers::Storage::Open)
-                });
-                let s = if open {
+                use fmp12::containers::Storage;
+                let storage = t.field(field).and_then(|f| f.def.external_storage());
+                let s = if let Some(Storage::Secure { fewer_folders }) = storage {
+                    Stored::new_secure(
+                        &c.name,
+                        table,
+                        fewer_folders,
+                        self.encrypted_at_rest,
+                        c.data.clone(),
+                    )
+                    .unwrap_or_else(|| Stored::new(&c.name, c.data.clone()))
+                } else if storage == Some(Storage::Open) {
                     // ponytail: FileMaker's default folder ("Table/Field/");
                     // a folder calculation of the field is not evaluated.
                     let fname = t.field(field).map(|f| f.name.clone()).unwrap_or_default();
@@ -2606,6 +2627,7 @@ pub(crate) mod tests {
             locale: Locale::default(),
             custom_functions: Default::default(),
             base_directories: vec![],
+            encrypted_at_rest: false,
             pictures: BTreeMap::new(),
         }
     }

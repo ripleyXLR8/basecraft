@@ -24,6 +24,10 @@ test until this page and the test are updated together.
 Not inventoried: script step options (each step's parameters are covered step by step in
 FORMAT.md §8 and PROGRESS.md M5), and File Options / Preferences (FileMaker 26 draws those
 dialogs from compiled WPF resources, which have no plain list of settings).
+Container storage (Field Options › Storage) is not a counted list either: embedded, open
+external and secure external storage (with or without fewer folders, with or without
+encryption at rest) are read and written as FileMaker writes them (FORMAT.md §13); only
+open-storage folder calculations and base directories other than the first are not.
 
 ## How each list was made
 

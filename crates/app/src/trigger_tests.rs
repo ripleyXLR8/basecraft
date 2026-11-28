@@ -380,6 +380,53 @@ fn window_transaction_and_view_change() {
     assert_eq!(global(&h, "$$view"), "1");
 }
 
+/// OnRecordCommit runs before the commit, the record still open: False
+/// keeps it open and uncommitted (no OnWindowTransaction), True commits.
+#[test]
+fn record_commit_runs_before_and_cancels() {
+    let mut app = shop_app();
+    script(
+        &mut app,
+        90,
+        "open",
+        "$$open & \"[\" & $$tx & \"]\" & Invoices::Size",
+        Some("$$allow"),
+    );
+    script(&mut app, 91, "tx", "$$tx + 1", None);
+    on_layout(&mut app, trigger(event::RECORD_COMMIT, 90));
+    app.doc.as_mut().unwrap().triggers.file = vec![trigger(event::WINDOW_TRANSACTION, 91)];
+    app.engine
+        .as_mut()
+        .unwrap()
+        .globals
+        .insert(("$$allow".into(), 1), calc::Value::int(0));
+    let mut h = harness_for(app);
+    h.run_steps(3);
+    retype(&mut h, 2, "S");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(h.state().editing.is_some());
+    assert!(!h.state_mut().commit());
+    h.run_steps(3);
+    assert!(
+        h.state().editing.is_some(),
+        "a False result keeps the record open"
+    );
+    assert_eq!(global(&h, "$$tx"), "", "nothing was committed");
+    h.state_mut()
+        .engine
+        .as_mut()
+        .unwrap()
+        .globals
+        .insert(("$$allow".into(), 1), calc::Value::int(1));
+    assert!(h.state_mut().commit());
+    h.run_steps(3);
+    assert!(h.state().editing.is_none());
+    assert_eq!(global(&h, "$$tx"), "1");
+    // Both runs saw the record's new value before any transaction.
+    assert_eq!(global(&h, "$$open"), "[]S[]S");
+}
+
 /// OnObjectExit returning False keeps the focus in the field (no other
 /// field is entered); True lets it go.
 #[test]

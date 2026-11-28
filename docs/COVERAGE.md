@@ -53,20 +53,20 @@ decompiled.
    `Get ( WindowContentWidth/Height )`, `Get ( DesktopPath/DocumentsPath/TemporaryPath )`**: common
    in auto-enter keys and scripts; they fail with error 1225 ("needs a host") where FileMaker
    answers. `Get ( PrivilegeSetName )` does not even compile in a script.
-2. **OnRecordCommit on user actions** is queued after the commit (FileMaker runs it
-   before and a False result keeps the record open); script steps run it before.
-3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
+2. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
    editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
-4. **Revert Transaction**'s condition, error code and message are read from the step
+3. **Revert Transaction**'s condition, error code and message are read from the step
    by guess (no FileMaker-written step checked them), and Open Transaction's Skip
    auto-enter / Skip validation options are ignored.
-5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
+4. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
+5. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
    and Flush Web Viewer Cookies have nothing to act on.
-7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Insert from URL (no HTTP
+6. **Steps FileMaker runs on Windows that BaseCraft refuses**: Insert from URL (no HTTP
    client), Save a Copy as XML, Save Records as JSONL, Execute FileMaker Data API,
    Perform JavaScript in Web Viewer, Open Manage Database and the other design dialogs.
+7. **`Get ( RecordOpenState )` and `Get ( RecordOpenCount )`** answer 0 in scripts, also
+   in an OnRecordCommit script while the window's record is open (FileMaker: 1 or 2).
 
 ## Calculation functions: partial (37)
 
@@ -144,8 +144,8 @@ OnObjectValidate, OnPanelSwitch, OnLayoutEnter, OnLayoutKeystroke, OnRecordLoad,
 OnRecordCommit, OnRecordRevert, OnModeEnter, OnModeExit, OnLayoutExit, OnViewChange,
 OnLayoutSizeChange, OnFirstWindowOpen, OnLastWindowClose, OnWindowOpen, OnWindowClose,
 OnWindowTransaction. The "pre" ones (OnObjectValidate, OnObjectKeystroke,
-OnLayoutKeystroke, OnRecordRevert, OnModeExit, OnPanelSwitch, OnWindowClose,
-OnLastWindowClose, and OnObjectExit) run their script at once, and a False result (Exit
+OnLayoutKeystroke, OnRecordCommit, OnRecordRevert, OnModeExit, OnPanelSwitch,
+OnWindowClose, OnLastWindowClose, and OnObjectExit) run their script at once, and a False result (Exit
 Script) cancels the event; the others are queued. Script steps fire them too
 (`crates/script/src/triggers.rs`): pre triggers before the step (False: error 20), post
 triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".

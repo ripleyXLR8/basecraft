@@ -593,9 +593,18 @@ and evaluate (the dialog shows `21|two|yes|two|x¶y`).
   (test `scripts_of_128_steps_and_more_keep_their_parameters`; a
   140-step script BaseCraft wrote into the blank file reads back in
   FileMaker Pro 26's Save a Copy as XML with every name and value).
-  Script, layout and other ids of 128 and more in catalogs
-  (`[17].[1].[3]`, `[17].[1]` key 0) are still written as len-ints: not
-  seen in a FileMaker file yet.
+  **Ids of 128 and more in catalogs** are written like every catalog id
+  FileMaker writes: length, then the path integer (`02 80 03` = 131),
+  not a len-int (`01 83`): FileMaker's base table catalog `[3].[16].[1]`
+  has key 0 `02 80 03` and display order values `02 80 02` (tables 130
+  and 131 in Contacts and Assets). BaseCraft wrote the script catalog's
+  display order `[17].[1].[3]`, name index `[17].[1].[1]` and last id
+  (`[17].[1]` key 0) as len-ints, and FileMaker Server's Save as XML
+  listed scripts 128 and up as `<unknown>` (triggers and buttons still
+  named them); with `fmp12::save::id_ref` it lists their names
+  (`fmscorpus`, test `script_ids_from_128_in_the_catalog`). The layout
+  catalog (`schema_edit`) already wrote them so. Only below 128 are the
+  two forms the same.
 * Collation keys of the name index: 2-byte primary weights, case folded,
   then `00 00 00`; accented letters add secondary weights after `00 00`.
   Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`
@@ -945,7 +954,13 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   writes `quickFind="0"` for container fields without `0x8000`, and
   ignores the attribute when pasting. Other bits (`0xE0`, `0x20000`,
   `0x100000`, `0x1`/`0x8` on pop-up menus and drop-downs, `0x14` on
-  containers) are not decoded.
+  containers) are not decoded. BaseCraft removes 8.1 when every option of
+  an existing field object is cleared (it kept the old value before:
+  FileMaker Server's XML still showed it). The XML's `<Options>` is not
+  always 8.1 itself: 8.1 = `0x3200E0` (concealed) read back as
+  `0x32A0E2`, and no 8.1 as `0x20`; `0x280E0` and `0x120834` read back
+  unchanged (FMDeveloperTool, files BaseCraft wrote; not compared with
+  objects FileMaker made).
 * Portal (field 15): `{1: 0, 2 TO (XML form), 3 options (273), 5 first
   row, 6 rows (double), 7: 1}`.
 * Tab control (field 13): `{1: 264, 2: 0, 3 tab height (45), 5 front
@@ -977,6 +992,17 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   against the XML (`fmp12::layouts::merge_ref`, engine test
   `stored_merge_fields_resolve`). 🔸 Field ids above 255 and the meaning of
   `0003D`/`01` are unseen.
+  Such a text object has **text options 10** (object field 7.1, bit
+  `0x8`), every other text object 2 (131 text objects of six templates).
+  Writing (FileMaker Server checks, `fmscorpus`): an edited text stays in
+  `.[1]` with its key 0 sizes updated (a node key 1 next to `.[1]` is a
+  damaged block, error 805); a new object whose text holds a stored
+  reference (Edit › Duplicate) gets `.[1]` and the bit: in node key 1 the
+  XML export read the text as garbage after the reference, and without
+  the bit it showed the reference raw. ponytail: text typed with
+  `<<TO::Field>>` by name is written by name in node key 1; the XML shows
+  it as typed, and whether FileMaker Pro draws it as a merge field is not
+  checked.
 * 🔸 **Style runs** (several fonts, sizes or colours in one text object)
   are not decoded: none of the Claris templates or add-on modules has one
   (no `.[1].[255]`, no `CharacterStyle` in their Save as XML), so there is

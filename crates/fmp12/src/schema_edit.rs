@@ -15,7 +15,7 @@ use crate::calc::{self, FileNames};
 use crate::collate;
 use crate::custom_functions::{self, CustomFunction};
 use crate::graph::{JoinOp, Predicate, Relationship, SortKey, TableOccurrence};
-use crate::save::{encode_text, entry_kv, fresh_uuid, len_int, path_elem, read_len_int};
+use crate::save::{encode_text, entry_kv, fresh_uuid, id_ref, len_int, path_elem, read_len_int};
 use crate::schema::{self, AutoStamp, DataType, Field, FieldKind, Indexing, SummaryOp};
 pub use crate::schema::{Lookup, NoMatch};
 use crate::valuelists::{Source, ValueList};
@@ -498,14 +498,6 @@ fn to_elem(to: u32) -> Vec<u8> {
 fn to_ref(to: u32) -> Vec<u8> {
     let mut v = vec![3];
     v.extend(to_elem(to));
-    v
-}
-
-/// Object reference in catalog indexes: length, path integer.
-fn id_ref(id: u32) -> Vec<u8> {
-    let e = path_elem(id);
-    let mut v = vec![e.len() as u8];
-    v.extend(e);
     v
 }
 

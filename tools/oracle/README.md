@@ -132,6 +132,7 @@ tools/oracle/fms_check.sh file.fmp12                       # consistency check, 
 tools/oracle/fms_check.sh file.fmp12 Admin "" out.xml      # also FileMaker's Save as XML export
 tools/oracle/fms_batch.sh a.fmp12 b.fmp12 …                # many files over one SSH session: OK/BAD per file
 cargo run -p fmp12 --example fmscorpus -- in.fmp12 outdir p # edited copies (tables, fields, layouts, scripts) to check
+BASECRAFT_FMS_CORPUS=outdir cargo test -p basecraft fms_corpus -- --nocapture  # File › Save's path: globals, Layout Setup, triggers, objects, buttons, containers
 ```
 
 Keep batches to about 10 files and check that the VM still answers

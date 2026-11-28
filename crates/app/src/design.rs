@@ -21,6 +21,8 @@ use crate::Doc;
 use crate::i18n::tr;
 use crate::look::{self, Look};
 
+#[cfg(test)]
+mod fms_corpus;
 pub(crate) mod objects;
 
 const RULER: f32 = 18.0;

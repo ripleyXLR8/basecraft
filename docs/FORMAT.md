@@ -715,10 +715,15 @@ did not know; those steps were left out below.
 | Open URL | 0 | `0x80` no dialog | [128] URL |
 | Send Mail (client) | 0 | `0x80` no dialog | [128] To, [129] CC, [130] BCC, [131] subject, [132] message |
 | Get Folder Path | 0 | `0x100` allow folder creation | [128] key 1 the variable name; [131] dialog title, [132] default location |
-| Speak, Dial Phone, Set Web Viewer | (Set Web Viewer: 5 go to URL) | `0x80` no dialog | [128] text / number / object name, [129] URL |
-| Insert from URL | 0 | `0x1000` select, `0x80` no dialog, `0x1000_0000` verify SSL certificates, `0x1`/`0x4` target | [128] URL, [129] cURL options (XML position 1, seen in a reverse-oracle export); target as Insert Text: [160] key 1 variable, [160].[5] its repetition (XML position 32), or the inline field |
-| Save a Copy as XML | 0 | `0x100` details for analysis tools, `0x200` each layout object's binary data, `0x8000` options as JSON | output file not observed (BaseCraft reads [128] key 130) |
-| Save Records as JSONL, Execute FileMaker Data API | 0 | JSONL: `0x1000` format for fine-tuning, `0x200` create folders; Data API: `0x1000` select | not observed (BaseCraft reads JSONL's prompts at [129]–[131], the Data API request at [128]) |
+| Speak, Dial Phone | — | `0x80` no dialog | [128] text / number |
+| Set Web Viewer | 1 Reset, 2 Reload, 3 Go Forward, 4 Go Back, 5 Go to URL | `0x4000` | [128] object name, [129] URL |
+| Perform JavaScript in Web Viewer | 0 | `0x4000` | [128] object name, [129] function name, [128] key 3 the parameter count (u32, `00 00 00 03`), the parameters at [138], [139], … (XML positions 10, 11, …) |
+| Insert from URL | 0 | `0x1000` select, `0x80` no dialog, `0x100` do not encode the URL, `0x1000_0000` verify SSL certificates, `0x1`/`0x4` target | [128] URL, [129] cURL options; target as Insert Text: [160] key 1 variable, [160].[5] its repetition (XML position 32), or the inline field |
+| Execute FileMaker Data API | 0 | `0x1000` select, `0x1`/`0x4` target | [128] the request; target as Insert from URL |
+| Save a Copy as XML | 0 | `0x20` output file, `0x100` details for analysis tools, `0x200` each layout object's binary data, `0x8000` options as JSON | [128] key 130 the output file; [128] the window (XML "Window name"), [129] the JSON options |
+| Save Records as JSONL | 0 | `0x20` output file, `0x1000` format for fine-tuning, `0x200` create folders, `0x1` completion field, `0x100` a table | [128] key 130 the output file; [130] system, [131] user, [132] assistant prompt (XML positions 2–4); the completion field inline. 🔸 Where the table is kept is not known (not inline, not [129–134] key 17) |
+| Open Transaction, Commit Transaction | 14 (as FileMaker writes them) | Open: `0x1000` skip auto-enter options, `0x100` skip data entry validation, `0x200` override ESS locking conflicts | — |
+| Revert Transaction | 0 | `0x100` with a condition, `0x200` with an error code | [128] condition, [129] error code, [130] error message |
 
 The path list ([128] key 130, `script::files::decode_path_list`): a u32
 count, then per path a u8-prefixed kind (`file`; empty for a variable
@@ -731,6 +736,18 @@ form of key 134) the export shows an empty path list.
 Not decoded (FileMaker 26's import refused the XML names tried): Find
 Matching Records' replace / constrain / extend choice, Sort Records by
 Field's order.
+
+The rows from Set Web Viewer to Revert Transaction were confirmed in
+FileMaker Pro 26 (Nov 2026): steps pasted from clipboard XML (element
+names: `<Action value="Reset|Reload|GoForward|GoBack|GoToURL">`,
+`<ObjectName>`, `<FunctionName>`, `<Parameters Count><P>`, `<CURLOptions>`,
+`<DontEncodeURL>`, `<FineTuneFormat>`, `<SaveAsJSONL><SystemPrompt>
+<UserPrompt><AssistantPrompt>`, `<OutputEntireBinaryData>`,
+`<SpecifyJSONOptions>`, `<SkipAutoEntry>`, `<ESSForceCommit>`, Open
+Transaction's `<Option>` = skip validation, `<Condition>`, `<ErrorCode>`,
+`<ErrorMessage>`), read in the file and in Save a Copy as XML, and steps
+BaseCraft wrote with candidate bits and slots read back in that export.
+Open Transactions without their Commit make the script invalid.
 
 ### Data file, PDF and other steps
 
@@ -955,8 +972,13 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   the templates' container fields `0x128000`/`0x128014` carry it). The
   clipboard XML's `quickFind` attribute is not this bit alone: FileMaker
   writes `quickFind="0"` for container fields without `0x8000`, and
-  ignores the attribute when pasting. Other bits (`0xE0`, `0x20000`,
-  `0x100000`, `0x1`/`0x8` on pop-up menus and drop-downs, `0x14` on
+  ignores the attribute when pasting. `0x1` "Allow entry of other
+  values" (the "Other…" item of checkbox and radio button sets, pop-up
+  menus and drop-down lists) and `0x8` "Allow editing of value list"
+  (pop-up menus and drop-down lists; FileMaker 26 does not offer it for
+  checkbox sets): toggled in FileMaker 26's Inspector on Contacts' Title
+  (pop-up `0xA0421` → `0xA0420` / `0xA0429`, checkbox set `0x20020` →
+  `0x20021`). Other bits (`0xE0`, `0x20000`, `0x100000`, `0x14` on
   containers) are not decoded. BaseCraft removes 8.1 when every option of
   an existing field object is cleared (it kept the old value before:
   FileMaker Server's XML still showed it). The XML's `<Options>` is not
@@ -1062,11 +1084,13 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   XML; BaseCraft assumes 1 = no swipe, 2 = no dots). Button bar (field
   21): `{1 options, 2 active segment id}`. Web viewer (field 11): `{1:
   0x57454256 'WEBV', 2: 0, 3 options}`; a new one has options 32781
-  (`0x800D`), the Contacts template's map `0x8003`. 🔸 Read as Web Viewer
-  Setup's checkboxes (`fmp12::layouts::web`): `0x1` allow interaction, `0x2`
-  display in Find mode, `0x4` progress bar, `0x8` status messages, `0x8000`
-  encode URL, `0x10` (assumed) allow JavaScript to perform scripts; inferred
-  from the dialog's defaults and those two values, not toggled one by one.
+  (`0x800D`), the Contacts template's map `0x8003`. Web Viewer Setup's
+  checkboxes (`fmp12::layouts::web`; each toggled in FileMaker Pro 26 on a
+  copy of Contacts and read back in its XML export): `0x1` allow
+  interaction, `0x2` display in Find mode, `0x4` progress bar, `0x8` status
+  messages, `0x40` allow JavaScript to perform FileMaker scripts, `0x20`
+  set when "Automatically encode URL" is **cleared**. `0x8000` is set on
+  every viewer seen and no checkbox changes it (meaning unknown).
 * **Conditional formats** `[obj].[138]`: key 4 = count (u16), then
   `.[128 + i]` per condition, in order: key 1 = first value as typed,
   key 6 = second value (between), key 13 = `{1 options, 2 style {1 local
@@ -1111,6 +1135,14 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   | 210–211 | container (graphic) format (🔍 values 0–7, FileMaker's default 5; scaling not decoded) |
 
   Timestamps take the date format only with a custom time format.
+
+  A field object FileMaker Pro 26 places (Manage Database's new fields,
+  added to the layout) gets the file's own data formats: the first 213
+  bytes of `[2]` key 134 with bytes 0–1 `00 0C` (bytes 0–1 not decoded;
+  the templates' older objects have `00 00`). A field object with no
+  formats (`00 00`, as BaseCraft's designer wrote before Nov 2026) shows
+  numbers and dates wrongly in FileMaker; the designer now writes the
+  file's (`Format::for_new_object`).
 * `[4].[5].[L].[10]`: a spatial index of the fields, buttons, tab controls
   and button bars: byte-string key = top, left (u16, absolute), id − 1
   (u16); value = `00 len 01 id …` (`len` = length of `01 id`), then

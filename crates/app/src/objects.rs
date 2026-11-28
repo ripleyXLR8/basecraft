@@ -353,7 +353,7 @@ pub fn web_viewer(
         crate::webview::want(crate::webview::Want {
             key,
             name: o.name.clone(),
-            url: crate::webview::resolve(&url, flags & fmp12::layouts::web::ENCODE_URL != 0),
+            url: crate::webview::resolve(&url, flags & fmp12::layouts::web::NO_ENCODE_URL == 0),
             flags,
             rect,
         });

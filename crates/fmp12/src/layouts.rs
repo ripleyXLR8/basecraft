@@ -93,18 +93,20 @@ pub const WEB_VIEWER: u64 = 0x5745_4256;
 pub const CHART: u64 = 0x4348_5254;
 
 /// Web viewer option bits (object field 11.3, XML `<External><Options>`),
-/// the checkboxes of FileMaker's Web Viewer Setup. A new web viewer has
-/// `0x800D` (interaction, progress bar, status messages, encoded URL, the
-/// dialog's defaults); the Contacts template's map has `0x8003`.
-/// 🔸 The bit of each checkbox is inferred from those two values (FileMaker
-/// Pro was not driven to toggle them one by one); `JAVASCRIPT` is assumed.
+/// the checkboxes of FileMaker's Web Viewer Setup. Each was toggled in
+/// FileMaker Pro 26's Web Viewer Setup on a copy of Contacts (`0x8003`) and
+/// read back in its XML export: `0x8007`, `0x800F`, `0x804F`, `0x804E`,
+/// `0x804C`, `0x806C`. A new web viewer has `0x800D`; `0x8000` is set on
+/// every viewer seen and no checkbox changes it (meaning unknown).
 pub mod web {
     pub const INTERACTION: u64 = 0x1;
     pub const FIND_MODE: u64 = 0x2;
     pub const PROGRESS_BAR: u64 = 0x4;
     pub const STATUS: u64 = 0x8;
-    pub const JAVASCRIPT: u64 = 0x10;
-    pub const ENCODE_URL: u64 = 0x8000;
+    /// "Do not automatically encode URL": set when the checkbox is cleared.
+    pub const NO_ENCODE_URL: u64 = 0x20;
+    /// "Allow JavaScript to perform FileMaker scripts".
+    pub const JAVASCRIPT: u64 = 0x40;
 }
 
 /// Slide control option bits (object field 19.1).
@@ -131,6 +133,15 @@ pub mod field_flags {
     pub const CONCEALED: u64 = 0x200000;
     /// "Include field for Quick Find" unchecked (Inspector › Data › Behavior).
     pub const NO_QUICK_FIND: u64 = 0x8000;
+    /// Checkbox set, radio button set, pop-up menu, drop-down list: "Allow
+    /// entry of other values" (the "Other…" item). FileMaker 26 on a copy of
+    /// Contacts' Title: pop-up `0xA0421` → `0xA0420` cleared, checkbox set
+    /// `0x20020` → `0x20021` set.
+    pub const OTHER: u64 = 0x1;
+    /// Pop-up menu, drop-down list: "Allow editing of value list" (Title
+    /// `0xA0421` → `0xA0429`). FileMaker 26's Inspector does not offer it
+    /// for checkbox and radio button sets.
+    pub const EDIT_VALUES: u64 = 0x8;
 }
 
 /// A conditional format (`.[138].[128 + i]`): a test, and the style it
@@ -1686,4 +1697,20 @@ pub fn new_part(p: &Part) -> Vec<u8> {
     m.0.push((10, Field::Bytes(style)));
     m.set_msg(11, &MsgBuf(vec![(3, Field::Varint(alt as u64))]));
     m.encode()
+}
+
+#[cfg(test)]
+mod option_bit_tests {
+    use super::{field_flags, web};
+
+    /// Option values FileMaker Pro 26 wrote as each checkbox was toggled.
+    #[test]
+    fn bits_match_filemaker() {
+        let all = web::INTERACTION | web::FIND_MODE | web::PROGRESS_BAR | web::STATUS;
+        assert_eq!(0x8000 | all | web::JAVASCRIPT, 0x804F);
+        assert_eq!(0x804C | web::NO_ENCODE_URL, 0x806C);
+        assert_eq!(0x800D & web::NO_ENCODE_URL, 0, "a new viewer encodes URLs");
+        assert_eq!(0xA0421 & !field_flags::OTHER, 0xA0420);
+        assert_eq!(0xA0421 | field_flags::EDIT_VALUES, 0xA0429);
+    }
 }

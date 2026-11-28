@@ -52,14 +52,13 @@ decompiled.
    FileMaker_Tables / FileMaker_Fields / FileMaker_BaseTables / FileMaker_BaseTableFields
    system tables; still no correlated subqueries or EXISTS, ModCount is NULL, no
    FileMaker_ValueLists, and nothing was checked against FileMaker's own output.
-2. **Revert Transaction**'s condition, error code and message are read from the step
-   by guess (no FileMaker-written step checked them), and Open Transaction's Skip
-   auto-enter / Skip validation options are ignored.
+2. **Open Transaction**'s Skip auto-enter options (`0x1000`), Skip data entry
+   validation (`0x100`) and Override ESS locking conflicts (`0x200`) are decoded
+   (FileMaker 26, FORMAT.md §8) but not applied.
 3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
    editing"; their columns are not checked against FileMaker's (PROGRESS.md M4). The
-   flags of those two options are not known: the local Claris templates hold one checkbox
-   set (field options `0x20`) and no radio button set, too little to tell which bit is
-   which.
+   flags are known (FileMaker 26, field options `0x1` "Other…", `0x8` "Allow editing",
+   the latter offered for pop-up menus and drop-down lists only) but not drawn.
 4. **`Get()` flags a local solution still misses**: SystemLocaleElements / FileLocaleElements, CustomMenuSetName
    (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
    where FileMaker answers). The active-field flags see only fields a script entered, and
@@ -77,8 +76,7 @@ decompiled.
    bridge is written into the page); other sites get no bridge, Perform JavaScript, Back
    and Forward do nothing there, Flush Web Viewer Cookies does nothing, sites that refuse
    framing (`X-Frame-Options`, CSP `frame-ancestors`) stay blank, and pages have no cookies
-   or storage of their own (opaque origin). Set Web Viewer's action codes other than
-   5 (Go to URL) and Perform JavaScript's parameter layout are assumed 🔸;
+   or storage of their own (opaque origin). Set Web Viewer's action codes and Perform JavaScript's parameter layout are confirmed in FileMaker;
    PerformScriptWithOption ignores its option (every call waits for the running script).
 7. **Steps FileMaker runs on Windows that BaseCraft refuses**: the dialogs BaseCraft does
    not have: Open Manage Database, Manage Value
@@ -176,11 +174,9 @@ decoded, a file picker opens); 132 Export Field Contents (stored path not decode
 63 Send Mail (`mailto:` only, no SMTP); 81 Scroll Window, 84 Set Multi-User, 94 Set Use
 System Formats, 120 Arrange All Windows (do nothing); 128 Perform Find/Replace (a
 script's "current field" searches every field); 138 Re-Login ("with dialog" shows none);
-146 Set Web Viewer (action codes other than 5 assumed); 175 Perform JavaScript in Web
-Viewer (parameter layout assumed; error 3 where there are no webviews); 169 Close Popover (does nothing); 209 Set
+175 Perform JavaScript in Web Viewer (error 3 where there are no webviews); 169 Close Popover (does nothing); 209 Set
 Dictionary (no dictionaries); 205 Open Transaction (Skip auto-enter / Skip data entry
-validation ignored); 207 Revert Transaction (condition, error code and message read as
-parameters 0–2, not checked against a FileMaker-written step); 237 Flush Web Viewer
+validation / Override ESS locking options decoded, not applied); 237 Flush Web Viewer
 Cookies (desktop app only).
 
 Desktop build only (the web build returns 3; `crates/script/src/net.rs` and `net/`): 160
@@ -191,14 +187,13 @@ window staying responsive; the CLI and MCP wait in the step; http and https only
 `-o`, `--upload-file $var`, `--FM-return-container-variable`; the others, `--form` and
 `--cookie-jar` among them, are ignored as FileMaker ignores unsupported ones; errors as
 Claris documents them: 401 gives 1627, with `-S` 1631 and curl's message or "Response
-code: nnn", no content 10, a bad URL 1630; "With dialog" shows no dialog; "Automatically
-encode URL" is always on); 203 Execute FileMaker Data API (read with query, omit, related
+code: nnn", no content 10, a bad URL 1630; "With dialog" shows no dialog); 203 Execute FileMaker Data API (read with query, omit, related
 criteria, sort, offset, limit, `layout.response`, portals; metaData; create, update,
 duplicate, delete; not done: `portalData` writes, `prohibitmode`, the `modId` check: every
 record answers `"0"`; the request read as parameter 0); 225 Save Records as JSONL (both
 formats; the plain format's predefined system prompt is not documented, so no system
-message is written; prompts read as parameters 1–3 and the completion field as the inline
-field, not checked against a FileMaker-written step); 3 Save a Copy as XML (`FMSaveAsXML`
+message is written; the Table option is decoded only as its bit `0x100`: where FileMaker
+keeps the table is not known, the layout's table is used); 3 Save a Copy as XML (`FMSaveAsXML`
 2.3.0.0 with base tables, occurrences, relationships, custom value lists, fields with
 calculation text, script catalog, layouts with parts and top-level objects, steps with id,
 name, state and options; left out: UUIDs, `DDR_INFO`, `Metadata`, themes, custom menus,
@@ -244,7 +239,7 @@ as references resolve in Browse, Preview and PDF; Layout mode shows the raw refe
 
 Partial control styles (2): Checkbox Set, Radio Button Set (one checkbox or radio button per
 value-list value, in columns, in Browse and Find modes; no "Other…" item, "Allow editing"
-ignored: the flags of these options are not decoded, see the top gaps). Drop-down Calendar (a month popup, the picked day written in the file's date
+ignored, though their flags are decoded, see the top gaps). Drop-down Calendar (a month popup, the picked day written in the file's date
 format) and Concealed Edit Box (bullets) are implemented.
 
 ## Error codes

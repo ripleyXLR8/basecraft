@@ -131,6 +131,27 @@ fn insert_from_url_get_and_dump_header() {
     assert_eq!(r.header("User-Agent"), Some("Tester"));
 }
 
+/// Option `0x100` ("Do not automatically encode URL", FileMaker 26) sends
+/// the URL as given.
+#[test]
+fn insert_from_url_without_encoding() {
+    let (url, seen) = serve(vec![("200 OK", "", "a"), ("200 OK", "", "b")]);
+    let mut h = host("url-raw");
+    let mut e = Engine::new(Vec::new());
+    let s = fetch(&format!("{url}/p|q"), "", true);
+    assert_eq!(run(&mut e, &mut h, s), 0);
+    let mut s = fetch(&format!("{url}/p|q"), "", true);
+    s.options |= 0x100;
+    assert_eq!(run(&mut e, &mut h, s), 0);
+    let paths: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.path.clone())
+        .collect();
+    assert_eq!(paths, ["/p%7Cq", "/p|q"]);
+}
+
 #[test]
 fn insert_from_url_post_into_a_field() {
     let (url, seen) = serve(vec![
@@ -429,14 +450,21 @@ fn save_records_as_jsonl() {
          {\"messages\":[{\"content\":\"Name=Cid, Age=41\",\"role\":\"user\"},{\"content\":\"Rome\",\"role\":\"assistant\"}]}\n\
          {\"messages\":[{\"content\":\"Name=Dee, Age=27\",\"role\":\"user\"},{\"content\":\"Paris\",\"role\":\"assistant\"}]}\n"
     );
-    // On: system, user and assistant prompts evaluated on each record.
+    // On: system, user and assistant prompts ([130], [131], [132], as
+    // FileMaker 26 writes them) evaluated on each record; [129] is not one.
     let s = st(
         SAVE_AS_JSONL,
         0x1000,
         0,
         Some("file:ft.jsonl"),
         None,
-        &["", "\"Be brief\"", "People::Name", "People::Age"],
+        &[
+            "",
+            "\"not a prompt\"",
+            "\"Be brief\"",
+            "People::Name",
+            "People::Age",
+        ],
     );
     h.h.win.found = vec![2, 0];
     assert_eq!(run(&mut e, &mut h, s), 0);

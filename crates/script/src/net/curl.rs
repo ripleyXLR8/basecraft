@@ -226,8 +226,8 @@ fn bytes(v: &Value) -> Vec<u8> {
 
 /// Percent-encodes what cannot stand in a URL (blanks, quotes, non-ASCII…),
 /// keeping its reserved characters and existing escapes: "Automatically
-/// encode URL".
-fn encode_url(s: &str) -> String {
+/// encode URL" (Insert from URL without option `0x100`).
+pub fn encode_url(s: &str) -> String {
     let mut out = String::new();
     for b in s.trim().bytes() {
         match b {
@@ -284,7 +284,7 @@ pub fn request(
     verify: bool,
     read: &dyn Fn(&str) -> Value,
 ) -> (Result<Request, u32>, Named) {
-    let url = encode_url(url);
+    let url = url.trim().to_string();
     let name = o.output.clone().unwrap_or_else(|| {
         let path = url.split(['?', '#']).next().unwrap_or("");
         let last = path.rsplit('/').next().unwrap_or("");

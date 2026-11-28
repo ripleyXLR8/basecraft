@@ -212,6 +212,19 @@ impl Format {
         Format::parse(&b).unwrap_or_default()
     }
 
+    /// What FileMaker Pro 26 writes on a field object it places (Manage
+    /// Database's new fields, checked in a French file): the file's data
+    /// formats (`[2]` key 134, its first 213 bytes) with bytes 0–1 `00 0C`.
+    /// [`Format::new_default`] when the file has none.
+    pub fn for_new_object(file_formats: &[u8]) -> Format {
+        let Some(b) = file_formats.get(..LEN) else {
+            return Format::new_default();
+        };
+        let mut b = b.to_vec();
+        b[..2].copy_from_slice(&[0x00, 0x0C]);
+        Format::parse(&b).unwrap_or_else(Format::new_default)
+    }
+
     /// The record, unknown bytes as read.
     pub fn encode(&self) -> Vec<u8> {
         let mut b = self.raw.clone();
@@ -257,6 +270,29 @@ impl Format {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A French file's `[2]` key 134 (398 bytes; the first 213 as FileMaker
+    /// Pro 26 wrote them) and the record it gave the fields it placed.
+    #[test]
+    fn new_object_takes_the_file_formats() {
+        let mut file = vec![0u8; 398];
+        file[2..4].copy_from_slice(&[0x01, 0x00]); // as entered
+        file[6..8].copy_from_slice(&[0x20, 0xAC]); // €
+        file[18..22].copy_from_slice(&[0x20, 0x2F, 0x00, 0x2C]); // narrow space, comma
+        file[28..34].copy_from_slice(&[0x00, b'O', 0x00, b'u', 0x00, b'i']);
+        file[150..152].copy_from_slice(&[0x00, 0x9F]);
+        file[210..213].copy_from_slice(&[0x00, 0x05, 0x00]);
+        file[300] = 0x57; // past the record: not copied
+        let f = Format::for_new_object(&file);
+        let b = f.encode();
+        assert_eq!(&b[..2], &[0x00, 0x0C]);
+        assert_eq!(&b[2..], &file[2..LEN]);
+        assert_eq!(f.number.currency, "€");
+        assert_eq!(f.number.decimal, ',');
+        assert_eq!(f.number.true_text, "Oui");
+        assert_eq!(f.graphic, Some(5));
+        assert_eq!(Format::for_new_object(&[0, 0]), Format::new_default());
+    }
 
     #[test]
     fn template_record_round_trips() {

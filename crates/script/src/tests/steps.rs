@@ -24,6 +24,19 @@ fn rawp(id: u16, calcs: &[Calc], options: u32, arg: u16) -> Step {
     s
 }
 
+/// Perform JavaScript in Web Viewer as FileMaker 26 writes it: object and
+/// function names at `[128]`, `[129]`, the parameter count in `[128]` key 3
+/// (u32) and the parameters at `[138 + i]`.
+fn js_step(names: &[Calc], params: &[Calc]) -> Step {
+    let mut s = rawp(sid::PERFORM_JAVASCRIPT, names, 0x4000, 0);
+    for (i, c) in params.iter().enumerate() {
+        s.raw_params.set_calc(10 + i as u32, Some(c));
+    }
+    let n = params.len() as u32;
+    s.raw_params.put(&[128], 3, n.to_be_bytes().to_vec());
+    s
+}
+
 /// A raw step on field `f` (inline reference).
 fn rawf(id: u16, f: u32, calcs: &[Calc], options: u32) -> Step {
     raw_step(id, T, f, calcs, options)
@@ -925,10 +938,17 @@ fn transactions() {
         open(),
         set_field(NAME, "\"Xavier\""),
         plain(id::NEW_RECORD),
-        // Not reverted: the condition is false.
-        rawp(sid::REVERT_TRANSACTION, &[calc(&h, "0")], 0, 0),
+        // Not reverted: the condition (option 0x100) is false.
+        rawp(sid::REVERT_TRANSACTION, &[calc(&h, "0")], 0x100, 0),
         var_c(&h, "$open", "Get(TransactionOpenState)"),
-        rawp(sid::REVERT_TRANSACTION, &[], 0, 0),
+        // Reverted: a condition without option 0x100 does not count
+        // (FileMaker 26 shows none), nor an error code without 0x200.
+        rawp(
+            sid::REVERT_TRANSACTION,
+            &[calc(&h, "0"), calc(&h, "5003")],
+            0,
+            0,
+        ),
         // Skipped: Revert goes on after Commit Transaction.
         var_c(&h, "$skipped", "1"),
         commit(),
@@ -948,7 +968,7 @@ fn transactions() {
         rawp(
             sid::REVERT_TRANSACTION,
             &[calc(&h, "1"), calc(&h, "5001"), calc(&h, "\"Nope\"")],
-            0,
+            0x300,
             0,
         ),
         commit(),
@@ -1215,12 +1235,7 @@ fn web_viewer_steps_reach_the_host() {
             5,
         ),
         rawp(sid::SET_WEB_VIEWER, std::slice::from_ref(&name), 0x80, 2),
-        rawp(
-            sid::PERFORM_JAVASCRIPT,
-            &[name.clone(), c("\"show\""), c("1 + 1"), c("\"x\"")],
-            0,
-            0,
-        ),
+        js_step(&[name.clone(), c("\"show\"")], &[c("1 + 1"), c("\"x\"")]),
         rawp(sid::FLUSH_WEB_COOKIES, &[], 0, 0),
         rawp(sid::PERFORM_JAVASCRIPT, &[c("\"nope\""), c("\"f\"")], 0, 0),
     ];

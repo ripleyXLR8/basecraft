@@ -18,7 +18,7 @@ test until this page and the test are updated together.
 | Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 23 | 0 (+71 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 9 | 0 | 17 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
-| Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 3 | 3 | 1 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
+| Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 5 | 2 | 0 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
 | Error codes | [error_codes.txt](reference/error_codes.txt) | 300 | 58 raised | — | 242 never raised | `cargo test -p basecraft error_code_coverage -- --nocapture` |
 
 Not inventoried: script step options (each step's parameters are covered step by step in
@@ -35,8 +35,8 @@ dialogs from compiled WPF resources, which have no plain list of settings).
   OnTimer and OnCallbackScript, which are not trigger events); ids from `fmp12::triggers`,
   decoded by setting each trigger in FileMaker 26. The test checks that both agree.
 * **Layout object kinds, control styles**: the object and control style names in
-  DBEngine.dll's string table; kinds and ids from FORMAT.md §10. The control style id of
-  Concealed Edit Box is not decoded.
+  DBEngine.dll's string table; kinds and ids from FORMAT.md §10 (Concealed Edit Box: edit
+  box flag 0x200000, found by setting bits in a copy and opening it in FileMaker 26).
 * **Error codes**: the code column of Claris's public error code page, cross-checked
   against the English error messages DBEngine.dll carries (numbers only; the reserved
   range 5000–5499 left out).
@@ -57,8 +57,8 @@ decompiled.
    OnObjectKeystroke, OnLayoutKeystroke, OnRecordRevert, OnModeExit, OnViewChange,
    OnPanelSwitch, OnWindowOpen, OnWindowClose, OnLastWindowClose, OnLayoutSizeChange,
    OnWindowTransaction. They are read from the file but never run their script.
-3. **Checkbox sets, radio button sets and drop-down calendars** show as edit boxes in
-   Browse mode (PROGRESS.md M4).
+3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
+   editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
 4. **Set Revert Transaction on Error** does nothing, and **Perform Find** drops criteria
    on related fields: scripts can behave differently from FileMaker without an error.
 5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
@@ -145,8 +145,10 @@ Partial objects (4): Graphic (drawn; no Insert › Picture in Layout mode), Roun
 (drawn as read; no tool makes one), Web Viewer (a placeholder box with its address),
 Chart (drawn; no Chart tool in Layout mode).
 
-Partial control styles (3): Checkbox Set, Radio Button Set, Drop-down Calendar (chosen in
-the Inspector, drawn as an edit box in Browse mode). Missing (1): Concealed Edit Box.
+Partial control styles (2): Checkbox Set, Radio Button Set (one checkbox or radio button per
+value-list value, in columns, in Browse and Find modes; no "Other…" item, "Allow editing"
+ignored). Drop-down Calendar (a month popup, the picked day written in the file's date
+format) and Concealed Edit Box (bullets) are implemented.
 
 ## Error codes
 

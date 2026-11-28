@@ -892,7 +892,10 @@ navigation. The break field of a sub-summary (field 6) is
   group buttons each run a Perform Script). A field's control style is field 8.5 (0 edit box,
   1 drop-down list, 2 pop-up menu, 3 checkbox set, 4 radio button set,
   6 drop-down calendar) and its style type follows it (61, 62, 63, 64,
-  65, 66; 67 container); radio sets were checked in FileMaker.
+  65, 66; 67 container); radio sets were checked in FileMaker. A concealed
+  edit box is an edit box (0) with field-object flag `0x200000` (below); 5
+  is not it: written on a template copy's edit boxes, FileMaker 26 still
+  showed their text.
 * **Options** (field 3, XML `<Options>` except bit 0x20000, which the XML
   drops; checked on 5,544 template objects and by setting each option in
   FileMaker's Layout mode): autosizing anchors in the top bits, `1 << 28`
@@ -916,9 +919,14 @@ navigation. The break field of a sub-summary (field 6) is
   field objects with one flag changed and reading FileMaker's Inspector ›
   Data, and by unchecking a box there and diffing the saved file:
   `0x400` "Include arrow icon to show and hide list" (drop-down list; the
-  arrow disappears without it); `0x800` auto-complete: "Auto-complete
+  arrow disappears without it) and "Include icon to show and hide calendar"
+  (drop-down calendar: clearing it on a template copy's calendars removed
+  their icon in FileMaker 26's Browse mode); `0x800` auto-complete: "Auto-complete
   using previously entered values" on an edit box, "Auto-complete using
-  value list" on a drop-down list; `0x8000` set = "Include field for
+  value list" on a drop-down list; `0x200000` concealed edit box (the
+  text drawn as bullets; found by setting the undecoded bits of a template
+  copy's edit box in halves and typing into it in FileMaker 26; no template
+  object has it); `0x8000` set = "Include field for
   Quick Find" **off** (Inspector › Data › Behavior; the only byte that
   changed, `0x1200E0` → `0x1280E0`; FileMaker's default is on, i.e. clear;
   the templates' container fields `0x128000`/`0x128014` carry it). The

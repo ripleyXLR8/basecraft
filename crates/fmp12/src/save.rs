@@ -465,6 +465,8 @@ pub(crate) fn spelled(p: &[u32]) -> Vec<Vec<u8>> {
             // indexed slots (conditions `128 + i`, a web viewer's `128`)
             // as `00 i`.
             x @ (138 | 141) if i == 5 => vec![x as u8],
+            // A text's style runs `.[1].[255]` (FileMaker Pro 26's files).
+            255 if i == 6 && p[5] == 1 => vec![0xFF],
             x => {
                 let v = x - 0x80;
                 vec![(v >> 8) as u8 & 0x7F, v as u8]
@@ -482,6 +484,30 @@ pub(crate) fn kv_entry(path: &[u32], key: u32, data: Vec<u8>) -> Entry {
         };
     }
     kv(spelled(path), key, data)
+}
+
+/// A text object's text (FORMAT.md §10): node key 1, or the `.[1]` node
+/// when it holds merge references or style runs: key 0 = byte length,
+/// character count and 4 (+ 1 with character runs, + 2 with paragraph
+/// runs), key 1 = the text, `.[1].[255]` = the runs.
+fn text_entries(node: &[u32], t: &str, runs: &[(u32, Vec<u8>)]) -> Vec<Entry> {
+    let enc = encode_text(t);
+    if runs.is_empty() && !t.contains('\u{1}') {
+        return vec![kv_entry(node, 1, enc)];
+    }
+    let p: Vec<u32> = node.iter().copied().chain([1]).collect();
+    let flags = 4 + runs.iter().map(|r| r.0).sum::<u32>();
+    let k0 = [enc.len() as u32, t.chars().count() as u32, flags]
+        .iter()
+        .flat_map(|x| x.to_be_bytes())
+        .collect();
+    let mut out = vec![marker(&p), kv_entry(&p, 0, k0), kv_entry(&p, 1, enc)];
+    if !runs.is_empty() {
+        let q: Vec<u32> = p.iter().copied().chain([255]).collect();
+        out.push(marker(&q));
+        out.extend(runs.iter().map(|(k, v)| kv_entry(&q, *k, v.clone())));
+    }
+    out
 }
 
 pub(crate) fn marker(path: &[u32]) -> Entry {
@@ -755,6 +781,8 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                     Some(13) => o.format == n.format,
                     _ => true,
                 },
+                // Text with merge references or style runs.
+                _ if p[5] == 1 => o.text == n.text && o.text_runs == n.text_runs,
                 // Tab label calculation of a panel.
                 _ if p[5] == 2 && n.kind == 12 => o.text == n.text,
                 _ if p[5] == 17 => {
@@ -810,10 +838,10 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         };
         for n in &new.objects {
             let Some(o) = olds.get(&n.id) else { continue };
-            if o.text != n.text
+            if (o.text != n.text || o.text_runs != n.text_runs)
                 && let Some(t) = &n.text
             {
-                add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+                add.extend(text_entries(&node(n.id), t, &n.text_runs));
                 if n.kind == 12 {
                     add.extend(calc_entries(n.id, &[2], &text_literal_tokens(t)));
                 }
@@ -826,7 +854,7 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         for n in &added {
             add.push(marker(&node(n.id)));
             if let Some(t) = &n.text {
-                add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+                add.extend(text_entries(&node(n.id), t, &n.text_runs));
                 if n.kind == 12 {
                     add.extend(calc_entries(n.id, &[2], &text_literal_tokens(t)));
                 }

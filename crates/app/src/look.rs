@@ -1,6 +1,8 @@
 //! Resolves FileMaker theme styles into what egui needs to paint an object.
 
+use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Color32, CornerRadius, Rect, Stroke, StrokeKind, Vec2};
+use fmp12::layouts::CharStyle;
 use fmp12::theme::{INNER_BORDER, NORMAL, ObjectStyle, PropsExt, SELF, TEXT, Theme, Value, prop};
 
 /// Paint attributes of one layout object (or part, or layout background).
@@ -287,6 +289,135 @@ impl Look {
             p.galley(pos + Vec2::new(0.6, 0.0), galley.clone(), self.color);
         }
         p.galley(pos, galley, self.color);
+    }
+
+    /// Paints a text object's text with its style runs and paragraph
+    /// alignment (FORMAT.md §10), each piece of stored text passed through
+    /// `f` (merge fields resolved, or spelled by name in Layout mode).
+    pub fn paint_styled(
+        &self,
+        painter: &egui::Painter,
+        r: Rect,
+        o: &fmp12::layouts::LayoutObject,
+        f: impl Fn(&str) -> String,
+    ) {
+        let text = o.text.as_deref().unwrap_or("");
+        let runs = o.char_runs();
+        let aligns = o.paragraph_aligns();
+        if runs.is_empty() && aligns.iter().all(|a| *a == 0) {
+            return self.paint_text(painter, r, &f(text));
+        }
+        // Paragraphs of (text, style) pieces.
+        let mut paras: Vec<Vec<(String, CharStyle)>> = vec![Vec::new()];
+        for (piece, style) in fmp12::layouts::styled_pieces(text, &runs) {
+            for (i, line) in f(piece).split(['\r', '\n']).enumerate() {
+                if i > 0 {
+                    paras.push(Vec::new());
+                }
+                if let Some(p) = paras.last_mut() {
+                    p.push((line.to_string(), style));
+                }
+            }
+        }
+        let jobs: Vec<(LayoutJob, LayoutJob, u8)> = paras
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                // FileMaker: 1 left, 2 centre, 3 right, 4 full (drawn left).
+                let align = match aligns.get(i).copied().unwrap_or(0) {
+                    0 => self.align,
+                    2 => 1,
+                    3 => 2,
+                    _ => 0,
+                };
+                let (job, bold) = self.styled_job(p);
+                (job, bold, align)
+            })
+            .collect();
+        let galleys: Vec<_> = jobs
+            .into_iter()
+            .map(|(j, b, a)| (painter.layout_job(j), painter.layout_job(b), a))
+            .collect();
+        let c = self.content_rect(r);
+        let height: f32 = galleys.iter().map(|g| g.0.size().y).sum();
+        let mut y = match self.valign {
+            0 => c.top(),
+            1 => c.center().y - height / 2.0,
+            _ => c.bottom() - height,
+        };
+        let p = painter.with_clip_rect(r);
+        for (g, bold, align) in galleys {
+            let w = g.size().x;
+            let x = [c.left(), c.center().x - w / 2.0, c.right() - w][align as usize];
+            let pos = egui::pos2(x, y) - g.rect.min.to_vec2();
+            // egui's fonts have no bold face: bold pieces are drawn twice.
+            p.galley(pos + Vec2::new(0.6, 0.0), bold, self.color);
+            y += g.size().y;
+            p.galley(pos, g, self.color);
+        }
+    }
+
+    /// The layout job of one paragraph, and a copy where only its bold
+    /// pieces are visible.
+    fn styled_job(&self, pieces: &[(String, CharStyle)]) -> (LayoutJob, LayoutJob) {
+        use fmp12::layouts::face;
+        let mut job = LayoutJob::default();
+        let mut bold = LayoutJob::default();
+        for (s, st) in pieces {
+            let f = st.face.unwrap_or(if self.bold { face::BOLD } else { 0 });
+            let on = |bit: u16| f & bit != 0;
+            let size = st.size.map_or(self.font_size, f32::from).max(4.0);
+            let color = st.color.map_or(self.color, |[r, g, b, a]| {
+                Color32::from_rgba_unmultiplied(r, g, b, a)
+            });
+            let line = Stroke::new((size / 14.0).max(1.0), color);
+            let script = on(face::SUPERSCRIPT) || on(face::SUBSCRIPT);
+            let mut fmt = egui::TextFormat {
+                font_id: egui::FontId::proportional(if script { size * 0.6 } else { size }),
+                color,
+                italics: on(face::ITALIC),
+                underline: if on(face::UNDERLINE | face::WORD_UNDERLINE | face::DOUBLE_UNDERLINE) {
+                    line
+                } else {
+                    Stroke::NONE
+                },
+                strikethrough: if on(face::STRIKETHROUGH) {
+                    line
+                } else {
+                    Stroke::NONE
+                },
+                background: if on(face::HIGHLIGHT) {
+                    Color32::YELLOW
+                } else {
+                    Color32::TRANSPARENT
+                },
+                line_height: Some(size * 1.2),
+                ..Default::default()
+            };
+            // Small text on the row's top reads as superscript (egui
+            // aligns pieces on their bottom otherwise).
+            if on(face::SUPERSCRIPT) {
+                fmt.valign = egui::Align::Min;
+            }
+            let s = if on(face::UPPERCASE) {
+                s.to_uppercase()
+            } else if on(face::LOWERCASE) {
+                s.to_lowercase()
+            } else {
+                s.clone()
+            };
+            job.append(&s, 0.0, fmt.clone());
+            if !on(face::BOLD) {
+                fmt.color = Color32::TRANSPARENT;
+                fmt.underline = Stroke::NONE;
+                fmt.strikethrough = Stroke::NONE;
+                fmt.background = Color32::TRANSPARENT;
+            }
+            bold.append(&s, 0.0, fmt);
+        }
+        job.wrap.max_width = f32::INFINITY;
+        bold.wrap.max_width = f32::INFINITY;
+        (job, bold)
     }
 }
 

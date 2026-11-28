@@ -966,8 +966,10 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
 * **Text with merge fields** keeps its text in `.[1]` key 1 instead of
   node key 1 (all 80+ merge-field texts of the templates; Save as XML
   shows `<StyledText><Data>DURATION <<Duration>></Data>`). Key 0 = three
-  big-endian u32: the byte length of key 1, its character count, and 4.
-  Each `<<…>>` holds a stored reference, not the name: U+0001, then
+  big-endian u32: the byte length of key 1, its character count (stored
+  characters, references included), and flags: 4, + 1 with character
+  runs, + 2 with paragraph runs (below). Each `<<…>>` holds a stored
+  reference, not the name: U+0001, then
   U+0001 for a field of the layout's table or U+0002 for a related one,
   then the length of the rest as a character (U+000E = 14), then
   `0003D` + the occurrence id − 128 in five hex digits + `01` + the field
@@ -975,20 +977,56 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   130 (Meetings), field 6 (Duration); `<<\u{1}\u{2}\u{e}0003D000040107>>`
   = Action Items::Number of Action Items. Checked on Meeting Details
   against the XML (`fmp12::layouts::merge_ref`, engine test
-  `stored_merge_fields_resolve`). 🔸 Field ids above 255 and the meaning of
-  `0003D`/`01` are unseen.
-* 🔸 **Style runs** (several fonts, sizes or colours in one text object)
-  are not decoded: none of the Claris templates or add-on modules has one
-  (no `.[1].[255]`, no `CharacterStyle` in their Save as XML), so there is
-  no ground truth yet. An FMUpgradeTool patch (FileMaker Server 26, VM)
-  adding a text object with `<CharacterStyleVector>` (the clipboard
-  grammar) or guessed `<CharacterStyleList>`/`<FontStyle>` children keeps
-  the text and silently drops the styles; FMEngine.dll names the Save as
-  XML elements `CharacterStyleList`, `CharacterStyle`, `FontReference`,
-  `FontStyle`, `ParagraphStyleList`, `ParagraphStyle` and attributes
-  `face`, `size`, `underline`, `postscriptName`, `textAlign`, `position`,
-  `offset`, but not their nesting. Needs a file with a styled text object
-  made in FileMaker Pro.
+  `stored_merge_fields_resolve`). The rest after the length character is
+  the hex of a part break field's reference (`00 03 D0 hi lo len
+  <path-int field>`, `merge_ref_text` writes it). Insert › Merge Field
+  writes this form; merge fields pasted by name (`<<Name>>` in clipboard
+  XML) stay plain text. The object message's field 7.1 (the XML's
+  `<Text><Options>`) has bit 8 set exactly when the text holds stored
+  references (Meetings, Contacts, Assets: 22 of 22 merge texts, 0 of 62
+  others): a file written without it shows the reference itself in
+  FileMaker Pro.
+  🔸 Field ids above 255 and the meaning of `0003D`/`01` are unseen.
+* **Style runs** (several fonts, sizes, styles or colours in one text
+  object) are in `.[1].[255]` (the `255` spelled in one byte, `FF`, so
+  that it sorts after keys 0 and 1), the text itself in `.[1]` key 1 as
+  above. Decoded from text objects made in FileMaker Pro 26 (clipboard
+  `Mac-XML2` snippets with `<CharacterStyleVector>`/`<ParagraphStyleVector>`
+  pasted in Layout mode, and Format menu / Ctrl+Shift+B on parts of a text
+  with a merge field), against Save as XML and FileMaker's rendering.
+  Key 1 = character runs, key 2 = paragraph runs, both
+  `u32 n, n × (u32 start, u32 style index), u32 count, count × (00 00 00
+  01, u32 length, style bytes)` (big-endian). `start` counts stored
+  characters (a merge reference's are included: in `C <<ref>> end` the
+  run of `end` starts at 24; the XML's `Start` counts shown ones, 11). A
+  style can serve several runs.
+  * Character style, 13 bytes: mask (u16), font (u16, font catalog id
+    − 128, `[25].[5]`), face (u16), size (u16, points), colour (RGBA),
+    one byte 0. Mask bits: 1 font, 2 size, 4 colour, 0x10 face; a run
+    whose bit is clear keeps the object's own (theme) value, mask 0 the
+    whole style (FileMaker writes it for unstyled stretches between
+    styled ones); pasted styles have 0x7FB7. Face bits, as FileMaker
+    draws them (the calculation `TextStyleAdd` values): 1 strikethrough,
+    2 small caps, 4 superscript, 8 subscript, 16 uppercase, 32
+    lowercase, 64 word underline, 128 double underline, 256 bold, 512
+    italic, 1024 underline, 4096 yellow highlight, 8192 condense, 16384
+    extend (2048: no visible change; title case?).
+  * Paragraph style, 36 bytes: mask (u16, 0x80 = alignment set), …, f32
+    1.0 at 14 (line spacing?), alignment u16 at 28: 1 left, 2 centre, 3
+    right, 4 full. Paragraph runs start at paragraph starts (after `\r`).
+  * Save as XML: `<CharacterStyleList><CharacterStyle Start End><Text>
+    <Style><FontReference id name postscriptName/><FontStyle size face
+    mask><Color red green blue alpha/>`, attributes only for the mask's
+    bits; `<ParagraphStyleList><ParagraphStyle><Style><mask value/>
+    <TextAlign textAlign/>`.
+  * BaseCraft (`LayoutObject::text_runs`, `char_runs`, `paragraph_runs`,
+    `styled_pieces`) draws size, bold, italic, underlines, strikethrough,
+    colour, highlight, case, superscript and alignment in Browse,
+    Preview and PDF (font families: egui's and Helvetica only); Layout
+    mode spells references by name and stores edited ones back by
+    reference. 🔸 Retexting a styled object drops its runs (offsets
+    would no longer match); the other paragraph-style bytes, the last
+    character-style byte and face 2048 are not decoded.
 * Popover button (field 17): `{1: 0, 2: 2, 3 popover id, 5 icon size 12,
   6: 0}`; its popover (field 18): `{1 options, 3 position, 4 popover
   button id}`. The popover is a top-level object that lists its objects

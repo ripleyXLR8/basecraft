@@ -258,6 +258,60 @@ fn pdf_pictures_and_line_breaks() {
     assert!(bytes.windows(green.len()).any(|w| w == green));
 }
 
+/// Style runs of a text object (FORMAT.md §10): "Big" 24 pt bold red,
+/// " ital" italic; a centred second paragraph.
+#[test]
+fn pdf_styled_text() {
+    let mut db = db(&PEOPLE);
+    let style = |mask: u16, face: u16, size: u16, rgba: [u8; 4]| {
+        let mut v: Vec<u8> = [mask, 0, face, size]
+            .iter()
+            .flat_map(|x| x.to_be_bytes())
+            .collect();
+        v.extend(rgba);
+        v.push(0);
+        v
+    };
+    let block = |runs: &[(u32, u32)], styles: &[Vec<u8>]| {
+        let mut b = (runs.len() as u32).to_be_bytes().to_vec();
+        for (s, i) in runs {
+            b.extend(s.to_be_bytes());
+            b.extend(i.to_be_bytes());
+        }
+        b.extend((styles.len() as u32).to_be_bytes());
+        for st in styles {
+            b.extend(1u32.to_be_bytes());
+            b.extend((st.len() as u32).to_be_bytes());
+            b.extend(st);
+        }
+        b
+    };
+    let mut centre = vec![0u8; 36];
+    centre[1] = 0x80;
+    centre[29] = 2;
+    let o = &mut db.layouts[0].objects[0];
+    o.text = Some("Big ital\rSecond".into());
+    o.text_runs = vec![
+        (
+            1,
+            block(
+                &[(0, 0), (3, 1)],
+                &[
+                    style(0x16, 256, 24, [255, 0, 0, 255]),
+                    style(0x10, 512, 0, [0; 4]),
+                ],
+            ),
+        ),
+        (2, block(&[(0, 0), (9, 1)], &[vec![0; 36], centre])),
+    ];
+    let found = sorted(&db);
+    let (bytes, _) = pdf(&db, 1, &found, &[], &Paper::letter()).unwrap();
+    assert!(has(&bytes, "/F2 24 Tf 1 0 0 rg 1 0 0 1 "), "bold red 24 pt");
+    assert!(has(&bytes, "(Big) Tj"));
+    assert!(has(&bytes, "0 0 0 rg 1 0 0.21 1 ") && has(&bytes, "( ital) Tj"));
+    assert!(has(&bytes, "(Second) Tj"));
+}
+
 #[test]
 fn running_totals_in_bodies_and_sub_summaries() {
     // Total becomes a running total restarting for each City group.

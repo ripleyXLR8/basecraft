@@ -1708,10 +1708,13 @@ impl App {
                                     ),
                                 );
                                 // Merge fields show the row's record.
-                                if let Some(txt) = c.text.as_ref().filter(|x| x.contains("<<")) {
-                                    let merged = merge_fields(doc, &globals, txt, ptable, pto, rr);
+                                if c.text.as_ref().is_some_and(|x| x.contains("<<"))
+                                    || !c.text_runs.is_empty()
+                                {
                                     looks[ci].paint_box(&painter, cr);
-                                    looks[ci].paint_text(&painter, cr, &merged);
+                                    looks[ci].paint_styled(&painter, cr, c, |s| {
+                                        merge_fields(doc, &globals, s, ptable, pto, rr)
+                                    });
                                     continue;
                                 }
                                 draw_object(
@@ -1749,10 +1752,13 @@ impl App {
                             lk.paint_text(&painter, r, &text);
                             continue;
                         }
-                        if let Some(txt) = o.text.as_ref().filter(|x| x.contains("<<")) {
-                            let merged = merge_fields(doc, &globals, txt, t, layout_to, rec);
+                        if o.text.as_ref().is_some_and(|x| x.contains("<<"))
+                            || !o.text_runs.is_empty()
+                        {
                             lk.paint_box(&painter, r);
-                            lk.paint_text(&painter, r, &merged);
+                            lk.paint_styled(&painter, r, o, |s| {
+                                merge_fields(doc, &globals, s, t, layout_to, rec)
+                            });
                             continue;
                         }
                         let owner = owner_of(doc, o, t, layout_to, rec);
@@ -2026,8 +2032,8 @@ fn draw_object(
         container::picture(ui.ctx(), painter, r, p.data());
     }
     if o.kind != 1 {
-        if let Some(txt) = &o.text {
-            lk.paint_text(painter, r, txt);
+        if o.text.is_some() {
+            lk.paint_styled(painter, r, o, str::to_string);
         }
         return;
     }

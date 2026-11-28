@@ -322,7 +322,13 @@ pub struct LayoutObject {
     pub style_raw: Vec<u8>,
     /// (table occurrence id as in XML, field id, repetition)
     pub field: Option<(u64, u64, u64)>,
+    /// Text as stored: merge fields by reference ([`merge_ref`]), CR (U+000D)
+    /// between paragraphs.
     pub text: Option<String>,
+    /// Style runs of a text object, raw: `.[1].[255]` key 1 (character
+    /// runs, [`char_runs`]) and key 2 (paragraph runs, [`paragraph_runs`]).
+    /// Their offsets are characters of `text` as stored.
+    pub text_runs: Vec<(u32, Vec<u8>)>,
     /// Object name (Inspector, Position, Name), empty if none.
     pub name: String,
     /// Containing object (tab panel, portal, button bar…), if any.
@@ -555,6 +561,8 @@ struct Raw {
     parts: BTreeMap<u32, Vec<u8>>,
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
+    /// Style runs of a text object: `.[1].[255]` key → bytes.
+    runs: BTreeMap<u32, Vec<(u32, Vec<u8>)>>,
     names: BTreeMap<u32, String>,
     /// Calculations under an object's node: sub-path → token stream (k5).
     calcs: BTreeMap<u32, BTreeMap<Vec<u32>, Vec<u8>>>,
@@ -592,6 +600,162 @@ pub fn merge_ref(inner: &str) -> Option<(u32, u32)> {
     Some((to, field))
 }
 
+/// The stored reference of field `field` of occurrence `to` (the inverse
+/// of [`merge_ref`] and [`merge_field_ref`]); `related` when `to` is not
+/// the layout's occurrence.
+pub fn merge_ref_text(to: u32, field: u32, related: bool) -> String {
+    let hex: String = break_field_bytes(to, field)
+        .iter()
+        .skip(2)
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    let rel = if related { '\u{2}' } else { '\u{1}' };
+    format!("\u{1}{rel}{}{hex}", char::from(hex.len() as u8))
+}
+
+/// Character style of a run of a text object (`.[1].[255]` key 1,
+/// FORMAT.md §10). `None` keeps the object's own style.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CharStyle {
+    /// Font catalog id (`[25].[5].[id]`, see [`crate::theme::fonts`]).
+    pub font: Option<u32>,
+    /// Points.
+    pub size: Option<u16>,
+    /// Bits of [`face`].
+    pub face: Option<u16>,
+    /// RGBA.
+    pub color: Option<[u8; 4]>,
+}
+
+/// Text style bits of [`CharStyle::face`] (FileMaker's `TextStyleAdd`
+/// values), checked on FileMaker Pro 26's rendering.
+pub mod face {
+    pub const STRIKETHROUGH: u16 = 1;
+    pub const SMALL_CAPS: u16 = 2;
+    pub const SUPERSCRIPT: u16 = 4;
+    pub const SUBSCRIPT: u16 = 8;
+    pub const UPPERCASE: u16 = 16;
+    pub const LOWERCASE: u16 = 32;
+    pub const WORD_UNDERLINE: u16 = 64;
+    pub const DOUBLE_UNDERLINE: u16 = 128;
+    pub const BOLD: u16 = 256;
+    pub const ITALIC: u16 = 512;
+    pub const UNDERLINE: u16 = 1024;
+    pub const HIGHLIGHT: u16 = 4096;
+    pub const CONDENSE: u16 = 8192;
+    pub const EXTEND: u16 = 16384;
+}
+
+/// A `.[1].[255]` run list: n, n × (start character, style index), the
+/// style count, then per style `00 00 00 01`, its length and its bytes.
+/// Returns (start, style bytes) per run.
+fn run_list(b: &[u8]) -> Option<Vec<(usize, &[u8])>> {
+    let u32_at = |i: usize| Some(u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?) as usize);
+    let n = u32_at(0)?;
+    let mut p = 4 + 8 * n;
+    let count = u32_at(p)?;
+    p += 4;
+    let mut styles = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        let len = u32_at(p + 4)?;
+        styles.push(b.get(p + 8..p + 8 + len)?);
+        p += 8 + len;
+    }
+    (0..n)
+        .map(|i| Some((u32_at(4 + 8 * i)?, *styles.get(u32_at(8 + 8 * i)?)?)))
+        .collect()
+}
+
+/// Character runs (`.[1].[255]` key 1). A style is 13 bytes: mask (u16:
+/// 1 font, 2 size, 4 colour, 0x10 face), font id − 128, face, size, RGBA.
+pub fn char_runs(b: &[u8]) -> Vec<(usize, CharStyle)> {
+    let be = |s: &[u8], i: usize| s.get(i..i + 2).map(|x| u16::from_be_bytes([x[0], x[1]]));
+    run_list(b)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(start, s)| {
+            let mask = be(s, 0).unwrap_or(0);
+            let on = |bit: u16| mask & bit != 0;
+            let style = CharStyle {
+                font: be(s, 2).filter(|_| on(1)).map(|f| f as u32 + 128),
+                size: be(s, 6).filter(|_| on(2)),
+                face: be(s, 4).filter(|_| on(0x10)),
+                color: s
+                    .get(8..12)
+                    .filter(|_| on(4))
+                    .and_then(|c| c.try_into().ok()),
+            };
+            (start, style)
+        })
+        .collect()
+}
+
+/// Paragraph runs (`.[1].[255]` key 2): 36-byte styles, mask 0x80 = the
+/// alignment (u16 at 28: 1 left, 2 centre, 3 right, 4 full) is set.
+/// Returns (start, alignment), 0 for the object's own.
+pub fn paragraph_runs(b: &[u8]) -> Vec<(usize, u8)> {
+    run_list(b)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(start, s)| {
+            let set = s.get(1).is_some_and(|m| m & 0x80 != 0);
+            (start, s.get(29).copied().filter(|_| set).unwrap_or(0))
+        })
+        .collect()
+}
+
+/// `text` cut where its runs start (character indexes of the stored
+/// text), each piece with its style. A cut inside a merge field `<<…>>`
+/// moves to the field's start, so merge fields stay whole.
+pub fn styled_pieces<'a>(text: &'a str, runs: &[(usize, CharStyle)]) -> Vec<(&'a str, CharStyle)> {
+    if runs.is_empty() {
+        return vec![(text, CharStyle::default())];
+    }
+    // Byte offset of every character, and the merge fields' byte ranges.
+    let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let mut fields = Vec::new();
+    let mut from = 0;
+    while let Some(a) = text[from..].find("<<") {
+        let Some(b) = text[from + a..].find(">>") else {
+            break;
+        };
+        fields.push(from + a..from + a + b + 2);
+        from += a + b + 2;
+    }
+    let cut = |c: usize| {
+        let i = starts.get(c).copied().unwrap_or(text.len());
+        fields
+            .iter()
+            .find(|f| f.start < i && i < f.end)
+            .map_or(i, |f| f.start)
+    };
+    let mut out: Vec<(&str, CharStyle)> = Vec::new();
+    if runs[0].0 > 0 {
+        out.push((&text[..cut(runs[0].0)], CharStyle::default()));
+    }
+    for (k, (start, style)) in runs.iter().enumerate() {
+        let a = cut(*start);
+        let b = runs.get(k + 1).map_or(text.len(), |n| cut(n.0)).max(a);
+        out.push((&text[a..b], *style));
+    }
+    out.retain(|p| !p.0.is_empty());
+    out
+}
+
+/// Alignment of each paragraph (`\r`-separated) of `text` from its
+/// paragraph runs: 0 = the object's own.
+pub fn paragraph_aligns(text: &str, runs: &[(usize, u8)]) -> Vec<u8> {
+    let starts = std::iter::once(0).chain(
+        text.chars()
+            .enumerate()
+            .filter(|(_, c)| matches!(c, '\r' | '\n'))
+            .map(|(i, _)| i + 1),
+    );
+    starts
+        .map(|s| runs.iter().rev().find(|r| r.0 <= s).map_or(0, |r| r.1))
+        .collect()
+}
+
 /// A big-endian integer of up to 8 bytes (keys 240, 241).
 fn be_u64(b: &[u8]) -> u64 {
     b.iter().fold(0, |a, x| (a << 8) | *x as u64)
@@ -625,6 +789,10 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
             )
         }),
         text: u32::try_from(id).ok().and_then(|i| texts.get(&i).cloned()),
+        text_runs: u32::try_from(id)
+            .ok()
+            .and_then(|i| r.runs.get(&i).cloned())
+            .unwrap_or_default(),
         name: u32::try_from(id)
             .ok()
             .and_then(|i| r.names.get(&i).cloned())
@@ -685,6 +853,26 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
 }
 
 impl LayoutObject {
+    /// Character runs of a text object ([`char_runs`]).
+    pub fn char_runs(&self) -> Vec<(usize, CharStyle)> {
+        self.text_runs
+            .iter()
+            .find(|r| r.0 == 1)
+            .map(|r| char_runs(&r.1))
+            .unwrap_or_default()
+    }
+
+    /// Alignment of each paragraph of a text object ([`paragraph_aligns`]).
+    pub fn paragraph_aligns(&self) -> Vec<u8> {
+        let runs = self
+            .text_runs
+            .iter()
+            .find(|r| r.0 == 2)
+            .map(|r| paragraph_runs(&r.1))
+            .unwrap_or_default();
+        paragraph_aligns(self.text.as_deref().unwrap_or(""), &runs)
+    }
+
     /// Fills what the object's node `[4].[5].[L].[5].[id]` holds.
     fn with_node(mut self, r: &Raw) -> Self {
         let Ok(id) = u32::try_from(self.id) else {
@@ -806,12 +994,19 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             [4, 5, l, 5, obj] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
             }
-            // Text with merge fields: `.[1]` key 1, each `<<…>>` holding a
-            // stored reference ([`merge_ref`]); key 0 = three u32 (byte
-            // length, character count, 4). Style runs would be in
-            // `.[1].[255]` (not seen yet, see FORMAT.md §10).
+            // Text with merge fields or style runs: `.[1]` key 1, each
+            // `<<…>>` holding a stored reference ([`merge_ref`]); key 0 =
+            // three u32 (byte length, character count, 4 + 1 with
+            // character runs + 2 with paragraph runs, FORMAT.md §10).
             [4, 5, l, 5, obj, 1] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
+            }
+            [4, 5, l, 5, obj, 1, 255] if matches!(key, 1 | 2) => {
+                let runs = raw.entry(*l).or_default().runs.entry(*obj).or_default();
+                match runs.last_mut() {
+                    Some((k, v)) if k == key => v.extend_from_slice(data),
+                    _ => runs.push((*key, data.to_vec())),
+                }
             }
             [4, 5, l, 5, obj] if *key == 16 && !data.is_empty() => {
                 raw.entry(*l).or_default().names.insert(*obj, text(data));
@@ -1048,6 +1243,9 @@ pub fn patch_object(
         kind_fields(&mut m, new);
         changed = true;
     }
+    if new.text != old.text {
+        changed |= merge_flag(&mut m, new);
+    }
     if new.button != old.button {
         match &new.button {
             Some(s) => {
@@ -1061,6 +1259,31 @@ pub fn patch_object(
         changed = true;
     }
     if changed { m.encode() } else { raw.to_vec() }
+}
+
+/// A text object holding merge fields by reference sets bit 8 of field
+/// 7.1 (FileMaker's `<Text><Options>`; without it FileMaker shows the
+/// stored reference instead of the field; buttons have no such bit).
+/// Returns whether it changed.
+fn merge_flag(m: &mut MsgBuf, o: &LayoutObject) -> bool {
+    let Some(t) = o.text.as_ref().filter(|_| o.kind == kind::TEXT) else {
+        return false;
+    };
+    let mut x = m.msg(7);
+    let cur = match x.get(1) {
+        Some(Field::Varint(v)) => *v,
+        _ => 0,
+    };
+    let want = if t.contains('\u{1}') {
+        cur | 8
+    } else {
+        cur & !8
+    };
+    if want != cur {
+        x.set(1, Field::Varint(want));
+        m.set_msg(7, &x);
+    }
+    want != cur
 }
 
 /// Options with the bits FileMaker keeps in step with the object's node:
@@ -1172,6 +1395,7 @@ pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject, children: &[u64]) -> V
         m.set(5, Field::Bytes(o.style_raw.clone()));
     }
     set_repeated(&mut m, 6, children);
+    merge_flag(&mut m, o);
     if o.field.is_some() {
         let mut f = m.msg(8);
         if f.0.is_empty() {

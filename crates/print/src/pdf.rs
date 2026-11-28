@@ -224,10 +224,27 @@ impl Pdf {
         text: &str,
         clip: (f64, f64, f64, f64),
     ) {
+        self.text_slanted(x, y, size, bold, false, c, text, clip);
+    }
+
+    /// [`Pdf::text`], slanted by 12° when `italic` (Helvetica-Oblique's
+    /// angle, without embedding that font).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_slanted(
+        &mut self,
+        x: f64,
+        y: f64,
+        size: f32,
+        bold: bool,
+        italic: bool,
+        c: Color,
+        text: &str,
+        clip: (f64, f64, f64, f64),
+    ) {
         let (s, ph) = self.out();
         let (cx, cy, cw, chh) = clip;
         let head = format!(
-            "q {} {} {} {} re W n BT /{} {} Tf {} {} {} Td (",
+            "q {} {} {} {} re W n BT /{} {} Tf {} 1 0 {} 1 {} {} Tm (",
             num(cx),
             num(ph - cy - chh),
             num(cw),
@@ -235,6 +252,7 @@ impl Pdf {
             if bold { "F2" } else { "F1" },
             num(size as f64),
             Self::rgb(c, "rg"),
+            if italic { "0.21" } else { "0" },
             num(x),
             num(ph - y)
         );

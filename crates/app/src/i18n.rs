@@ -3,7 +3,19 @@
 
 use std::sync::OnceLock;
 
-pub fn french() -> bool {
+thread_local! {
+    /// Edit › Preferences › Language: `None` follows the system.
+    static LANGUAGE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Sets the interface language: `Some(true)` French, `Some(false)`
+/// English, `None` the system's. For the UI thread (where egui draws).
+pub fn set_french(fr: Option<bool>) {
+    LANGUAGE.with(|l| l.set(fr));
+}
+
+/// The system's language is French.
+pub fn system_french() -> bool {
     static FR: OnceLock<bool> = OnceLock::new();
     *FR.get_or_init(|| {
         #[cfg(target_arch = "wasm32")]
@@ -15,6 +27,11 @@ pub fn french() -> bool {
             .filter_map(|v| std::env::var(v).ok())
             .any(|v| v.to_lowercase().starts_with("fr"))
     })
+}
+
+/// The interface is in French (the preference, else the system's language).
+pub fn french() -> bool {
+    LANGUAGE.with(|l| l.get()).unwrap_or_else(system_french)
 }
 
 pub fn tr(key: &'static str) -> &'static str {

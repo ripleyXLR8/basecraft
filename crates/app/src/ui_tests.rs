@@ -143,11 +143,14 @@ fn script_workspace_flow() {
     );
     assert!(app.dirty, "saved scripts make the file dirty");
 
-    // File › Save (Ctrl+S) to a copy: the new script is written with the
-    // script catalog digest (key 8), so FileMaker opens the file.
+    // File › Save to a copy (Ctrl+S sorts, as in FileMaker): the new
+    // script is written with the script catalog digest (key 8), so
+    // FileMaker opens the file.
     let out = std::env::temp_dir().join("basecraft_ui_ws_save.fmp12");
     h.state_mut().doc.as_mut().unwrap().path = Some(out.clone());
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    // (the workspace's window is over the menu bar)
+    let ctx = h.ctx.clone();
+    h.state_mut().save(&ctx, false);
     h.run_steps(3);
     shot(&mut h, "17_saved");
     let app = h.state();
@@ -305,7 +308,7 @@ fn data_viewer_and_preview() {
     // Type a task on the current (last) record.
     let task = |h: &Harness<'_, App>| {
         h.get_all_by_role(egui::accesskit::Role::TextInput)
-            .find(|n| n.rect().left() < 100.0)
+            .find(|n| n.rect().left() < 100.0 && below_toolbar(n))
             .unwrap()
             .rect()
             .center()
@@ -349,7 +352,7 @@ fn data_viewer_and_preview() {
     // Get ( FoundCount ) and Get ( RecordNumber ): the window's 3 records.
     let dv = data_viewer(&h);
     assert_eq!(dv.get_all_by_label("3").count(), 2);
-    h.get_by_label_contains("3 / 3");
+    h.get_by_label_contains(&format!("{} (", tr("Total")));
     h.get_by_label("ABC\u{b6}2");
 
     h.get_by_label(tr("Preview")).click();
@@ -447,10 +450,16 @@ fn retype(h: &mut Harness<'_, App>, n: usize, text: &str) {
     h.run_steps(2);
 }
 
+/// Not the record number or Quick Find box of the status toolbar.
+pub(crate) fn below_toolbar(n: &egui_kittest::Node<'_>) -> bool {
+    n.rect().top() > 125.0
+}
+
 /// Clicks the `n`-th text input from the left.
 fn click_input(h: &mut Harness<'_, App>, n: usize) {
     let mut inputs: Vec<egui::Pos2> = h
         .get_all_by_role(egui::accesskit::Role::TextInput)
+        .filter(below_toolbar)
         .map(|i| i.rect().center())
         .collect();
     inputs.sort_by(|a, b| a.x.total_cmp(&b.x));
@@ -937,7 +946,11 @@ fn records_and_view_menus_m5() {
     h.run_steps(2);
     h.get_by_label(t("Keep records in sorted order")).click();
     h.run_steps(1);
-    h.get_by_label(t("Sort")).click();
+    // The dialog's Sort button, below the status toolbar's.
+    h.get_all_by_label(t("Sort"))
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .click();
     h.run_steps(3);
     assert_eq!(client_names(&mut h), ["Bob", "Ada"]);
     assert_eq!(h.state().sorted.get(&tbl), Some(&true));

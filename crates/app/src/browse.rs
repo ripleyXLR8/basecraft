@@ -122,34 +122,7 @@ impl App {
             ui.close();
         }
         ui.add_enabled_ui(browse, |ui| {
-            ui.menu_button(t("Saved Finds"), |ui| {
-                let has = !self.requests.iter().all(|r| r.0.is_empty());
-                if ui
-                    .add_enabled(has, egui::Button::new(t("Save Current Find")))
-                    .clicked()
-                {
-                    self.m5.save_name = Some(self.find_name());
-                    ui.close();
-                }
-                ui.separator();
-                let mut run = None;
-                for (i, (name, _)) in self.m5.saved.iter().enumerate() {
-                    if ui.button(name).clicked() {
-                        run = Some(i);
-                    }
-                }
-                if let Some(i) = run {
-                    self.run_saved_find(i);
-                    ui.close();
-                }
-                if !self.m5.saved.is_empty() {
-                    ui.separator();
-                    if ui.button(t("Clear Saved Finds")).clicked() {
-                        self.m5.saved.clear();
-                        ui.close();
-                    }
-                }
-            });
+            ui.menu_button(t("Saved Finds"), |ui| self.saved_finds_items(ui));
         });
         let editing = self.editing.is_some();
         if ui
@@ -158,6 +131,36 @@ impl App {
         {
             self.m5.revert = true;
             ui.close();
+        }
+    }
+
+    /// Saved Finds: Save Current Find, the saved finds, Clear.
+    pub fn saved_finds_items(&mut self, ui: &mut egui::Ui) {
+        let has = !self.requests.iter().all(|r| r.0.is_empty());
+        if ui
+            .add_enabled(has, egui::Button::new(t("Save Current Find")))
+            .clicked()
+        {
+            self.m5.save_name = Some(self.find_name());
+            ui.close();
+        }
+        ui.separator();
+        let mut run = None;
+        for (i, (name, _)) in self.m5.saved.iter().enumerate() {
+            if ui.button(name).clicked() {
+                run = Some(i);
+            }
+        }
+        if let Some(i) = run {
+            self.run_saved_find(i);
+            ui.close();
+        }
+        if !self.m5.saved.is_empty() {
+            ui.separator();
+            if ui.button(t("Clear Saved Finds")).clicked() {
+                self.m5.saved.clear();
+                ui.close();
+            }
         }
     }
 
@@ -175,17 +178,32 @@ impl App {
             }
         }
         ui.separator();
+        let mut on = self.win.toolbar;
         if ui
-            .checkbox(&mut self.win.toolbar, t("Status Toolbar"))
+            .add(
+                egui::Button::new(t("Status Toolbar"))
+                    .selected(on)
+                    .shortcut_text("Ctrl+Alt+S"),
+            )
             .clicked()
         {
+            on = !on;
+            self.win.toolbar = on;
             ui.close();
         }
-        if ui.button(t("Zoom In")).clicked() {
+        self.customize_toolbar_menu(ui);
+        ui.separator();
+        if ui
+            .add(egui::Button::new(t("Zoom In")).shortcut_text("F3"))
+            .clicked()
+        {
             self.win.zoom = zoom_step(self.win.zoom, true);
             ui.close();
         }
-        if ui.button(t("Zoom Out")).clicked() {
+        if ui
+            .add(egui::Button::new(t("Zoom Out")).shortcut_text("Shift+F3"))
+            .clicked()
+        {
             self.win.zoom = zoom_step(self.win.zoom, false);
             ui.close();
         }
@@ -619,7 +637,7 @@ impl App {
 /// FileMaker's zoom levels.
 const LEVELS: [u32; 8] = [25, 50, 75, 100, 150, 200, 300, 400];
 
-fn zoom_step(z: u32, up: bool) -> u32 {
+pub(crate) fn zoom_step(z: u32, up: bool) -> u32 {
     let z = if z == 0 { 100 } else { z };
     if up {
         LEVELS.iter().copied().find(|l| *l > z).unwrap_or(400)

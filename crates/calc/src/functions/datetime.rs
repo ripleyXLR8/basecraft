@@ -239,6 +239,25 @@ fn uuid() -> String {
     )
 }
 
+thread_local! {
+    static USER_NAME: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `Get ( UserName )`: the user name of the application's preferences
+/// (FileMaker's Preferences › General › User name), set by the host for
+/// its thread. `None` gives back the system account's name.
+pub fn set_user_name(name: Option<String>) {
+    USER_NAME.with(|u| *u.borrow_mut() = name);
+}
+
+fn user_name() -> String {
+    USER_NAME
+        .with(|u| u.borrow().clone())
+        .or_else(|| std::env::var("USERNAME").ok())
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_default()
+}
+
 /// Clock and platform flags. The clock is UTC: the engine has no time zone
 /// data.
 // ponytail: CurrentDate/Time are UTC; hosts should answer them through
@@ -254,6 +273,7 @@ pub fn builtin_get(flag: &str) -> Option<Value> {
         "CurrentTimeUTCMicroseconds" => Value::int(micros as i64),
         "UUID" => Value::Text(uuid()),
         "CalculationRepetitionNumber" => Value::int(1),
+        "UserName" => Value::Text(user_name()),
         "SystemPlatform" => Value::int(match std::env::consts::OS {
             "macos" => 1,
             "windows" => -2,

@@ -485,9 +485,9 @@ fn undo_redo_and_insert_menu() {
     h.key_press(egui::Key::End);
     h.event(egui::Event::Text(" ".into()));
     h.run_steps(2);
+    shots_menu(&mut h, "insert_menu", "Insert");
     top(&h, tr("Insert")).click();
     h.run_steps(2);
-    shots(&mut h, "insert_menu");
     h.get_by_label_contains(editing::tx("Current User Name"))
         .click();
     h.run_steps(3);

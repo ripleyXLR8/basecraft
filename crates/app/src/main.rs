@@ -1606,7 +1606,7 @@ impl App {
                     13 if chart::draw(ui.ctx(), &painter, doc, &layout, o, r, &found, rec) => {}
                     _ => {
                         if let Some(step) = o.button.as_ref().filter(|_| mode == Mode::Browse) {
-                            let id = ui.scope_id().with(("button", o.id));
+                            let id = ui.scope_id().with(("button", o.id, rec));
                             if ui
                                 .interact(r, id, egui::Sense::click())
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1931,7 +1931,12 @@ fn draw_field(
         }
         (Mode::Browse, Some(rec)) if is_container => {
             let v = doc.db.value_rep(t, rec, field, rep);
-            if let Some(a) = container::draw(ui, painter, lk, r, &v, (t, rec, field, rep))
+            // Scoped by object: a field shown twice is two widgets.
+            if let Some(a) = ui
+                .push_id(o.id, |ui| {
+                    container::draw(ui, painter, lk, r, &v, (t, rec, field, rep))
+                })
+                .inner
                 && container::perform(&mut doc.db, a, (t, rec, field, rep))
             {
                 *dirty = true;

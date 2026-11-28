@@ -310,6 +310,9 @@ impl App {
 
     /// File › Manage › Security…: only for a full access account.
     pub(crate) fn open_security(&mut self) {
+        if self.remote_refuses(t("Manage Security")) {
+            return;
+        }
         let Some(d) = self.doc.as_ref() else { return };
         if !d.db.full_access() {
             self.messages.push((String::new(), denied().to_string()));

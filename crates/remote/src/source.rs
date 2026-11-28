@@ -37,7 +37,8 @@ pub struct RemoteLayout {
     pub name: String,
     pub table: u32,
     /// Engine field id → Data API field name and whether it is written
-    /// back (normal, not global; related fields are not loaded).
+    /// back (normal, not global, not a container; related fields are not
+    /// loaded).
     fields: Vec<(u32, String, bool)>,
     /// Engine record id → the server's record.
     known: BTreeMap<u32, Known>,
@@ -52,8 +53,9 @@ pub struct Remote {
     pub layouts: Vec<RemoteLayout>,
 }
 
-/// The engine's text for a Data API value (dates stay `MM/dd/yyyy`, which
-/// is also the engine's US format; numbers as JSON writes them).
+/// Engine data type of a Data API field result. Values stay as the Data
+/// API writes them: dates `MM/dd/yyyy` (the engine's US format), times
+/// `HH:mm:ss`, numbers in JSON's notation.
 fn data_type(result: &str) -> u8 {
     match result {
         "number" => 2,
@@ -150,7 +152,11 @@ fn layout_table(i: usize, name: &str, meta: &LayoutMeta) -> (RemoteLayout, Table
             data_type(&m.result),
             m.repetitions,
         ));
-        fields.push((id, m.name.clone(), m.kind == "normal" && !m.global));
+        fields.push((
+            id,
+            m.name.clone(),
+            m.kind == "normal" && !m.global && m.result != "container",
+        ));
     }
     let to = TO_BASE + i as u32;
     (

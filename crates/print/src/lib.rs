@@ -12,7 +12,7 @@
 
 pub mod chart;
 pub mod fonts;
-pub mod format;
+pub use engine::format;
 pub mod look;
 pub mod merge;
 pub mod objects;

@@ -1484,6 +1484,7 @@ dependencies = [
  "bigdecimal",
  "calc",
  "fmp12",
+ "image",
  "miniz_oxide 0.8.9",
  "roxmltree",
 ]

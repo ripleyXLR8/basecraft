@@ -12,11 +12,15 @@
 //! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place; Container=@file inserts a file)
 //! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)
-//! basecraft-cli export  <file> <table> [-o out.csv|.tab|.mer|.xml|.xlsx|.json] [--format F]
-//!                       [--field F]… [--formatted] [--find…] [--omit…] [--sort…]
+//! basecraft-cli export  <file> <table> [-o out.csv|.tab|.mer|.xml|.htm|.xlsx|.dbf|.fmp12|.json]
+//!                       [--format F] [--field F]… [--formatted [--layout L]] [--charset C]
+//!                       [--group-by F]… [--find…] [--omit…] [--sort…]
 //! basecraft-cli import  <file> <table> <source> [--format F] [--names] [--by-name | --map F…]
 //!                       [--mode add|update|replace] [--match F]… [--add-remaining]
-//!                       [--no-auto-enter] [--find…] (-o out | --in-place)
+//!                       [--no-auto-enter] [--charset C] [--delimiter X] [--split-repetitions]
+//!                       [--source-table T] [--find…] (-o out | --in-place)
+//!                       A folder as <source>: [--text-files] [--subfolders] [--reference]
+//!                       (charsets: utf-8, utf-16, windows, mac, ascii)
 //! basecraft-cli print-pdf <file> <layout> -o out.pdf [--paper letter|a4] [--landscape]
 //!                       [--margin PT] [--find…] [--omit…] [--sort…]
 //! basecraft-cli scripts <file>                                 list scripts and their steps
@@ -492,6 +496,14 @@ struct Opts {
     matches: Vec<String>,
     add_remaining: bool,
     no_auto_enter: bool,
+    charset: Option<String>,
+    delimiter: Option<char>,
+    split_repetitions: bool,
+    group_by: Vec<String>,
+    source_table: Option<String>,
+    text_files: bool,
+    subfolders: bool,
+    reference: bool,
     paper: Option<String>,
     landscape: bool,
     margin: Option<f64>,
@@ -523,6 +535,14 @@ fn opts(args: &[String]) -> Res<Opts> {
         matches: Vec::new(),
         add_remaining: false,
         no_auto_enter: false,
+        charset: None,
+        delimiter: None,
+        split_repetitions: false,
+        group_by: Vec::new(),
+        source_table: None,
+        text_files: false,
+        subfolders: false,
+        reference: false,
         paper: None,
         landscape: false,
         margin: None,
@@ -564,6 +584,31 @@ fn opts(args: &[String]) -> Res<Opts> {
             "--match" => o.matches.push(val("--match")?),
             "--add-remaining" => o.add_remaining = true,
             "--no-auto-enter" => o.no_auto_enter = true,
+            "--charset" => o.charset = Some(val("--charset")?),
+            "--delimiter" => {
+                let v = val("--delimiter")?;
+                o.delimiter = Some(match v.as_str() {
+                    "tab" | "\\t" => '\t',
+                    "space" => ' ',
+                    _ => {
+                        let mut c = v.chars();
+                        match (c.next(), c.next()) {
+                            (Some(ch), None) => ch,
+                            _ => {
+                                return Err(
+                                    "--delimiter needs one character (or tab, space)".into()
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+            "--split-repetitions" => o.split_repetitions = true,
+            "--group-by" => o.group_by.push(val("--group-by")?),
+            "--source-table" => o.source_table = Some(val("--source-table")?),
+            "--text-files" => o.text_files = true,
+            "--subfolders" => o.subfolders = true,
+            "--reference" => o.reference = true,
             "--paper" => o.paper = Some(val("--paper")?.to_ascii_lowercase()),
             "--landscape" => o.landscape = true,
             "--margin" => o.margin = Some(val("--margin")?.parse().map_err(|_| "bad --margin")?),

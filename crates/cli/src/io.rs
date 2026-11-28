@@ -1,8 +1,9 @@
 //! Export Records, Import Records and print to PDF (CLI `export`, `import`,
 //! `print-pdf`; MCP `export_records`, `import_records`, `print_pdf`).
 
-use engine::export::{Export, Format, columns};
-use engine::import::{Mapping, Mode, Options, import, read_rows};
+use engine::charset::Charset;
+use engine::export::{Format, columns};
+use engine::import::{Mapping, Mode, Options, import};
 use serde_json::{Value as Json, json};
 
 use crate::{Doc, Opts, Res, found_set, sort_keys};
@@ -28,6 +29,16 @@ fn format_of(explicit: Option<&str>, path: Option<&str>) -> Res<Format> {
     }
 }
 
+/// `--charset` (UTF-8 by default).
+fn charset(o: &Opts) -> Res<Charset> {
+    match o.charset.as_deref() {
+        None => Ok(Charset::Utf8),
+        Some(c) => Charset::from_name(c).ok_or_else(|| {
+            format!("unknown character set {c:?} (utf-8, utf-16, windows, mac, ascii)")
+        }),
+    }
+}
+
 pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
     if !d.db.can_export() {
         return Err(format!(
@@ -45,16 +56,26 @@ pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
     let file_name = std::path::Path::new(&d.path)
         .file_name()
         .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-    let bytes = Export {
-        db: &d.db,
-        to,
-        found: &found,
-        columns: &cols,
+    // The layout whose field formats --formatted applies (--layout, else
+    // the table's first layout).
+    let layout =
+        d.db.layouts
+            .iter()
+            .filter(|l| (l.table_occurrence & 0xFFF) as u32 == to)
+            .find(|l| {
+                o.layout
+                    .as_deref()
+                    .is_none_or(|n| l.name.eq_ignore_ascii_case(n))
+            })
+            .map(|l| l.id);
+    let opts = engine::export::Options {
+        format,
+        charset: charset(o)?,
         formatted: o.formatted,
-        file_name: &file_name,
-        group_by: &[],
-    }
-    .write(format);
+        fields: o.fields.clone(),
+        group_by: o.group_by.clone(),
+    };
+    let bytes = engine::export::export(&d.db, to, &found, layout, &file_name, &opts)?;
     let fields: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
     let summary =
         json!({ "exported": found.len(), "format": format!("{format:?}"), "fields": fields });
@@ -63,17 +84,52 @@ pub fn export(d: &Doc, table: &str, o: &Opts) -> Res<Json> {
             std::fs::write(path, &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({ "path": path, "bytes": bytes.len(), "export": summary }))
         }
-        None if format == Format::Xlsx => Err("xlsx export needs -o <file.xlsx>".into()),
+        None if matches!(format, Format::Xlsx | Format::Dbf | Format::Fmp12) => {
+            Err(format!("{format:?} export needs -o <file>"))
+        }
         None => Ok(json!({ "export": summary, "content": String::from_utf8_lossy(&bytes) })),
     }
 }
 
 pub fn import_file(d: &mut Doc, table: &str, source: &str, o: &Opts) -> Res<Json> {
     let tid = d.table(table)?.id;
-    let format = format_of(o.format.as_deref(), Some(source))?;
-    let bytes = std::fs::read(source).map_err(|e| format!("{source}: {e}"))?;
-    let rows = read_rows(format, &bytes)?;
-    let mapping = if o.by_name || (o.names && o.map.is_empty()) {
+    let cs = charset(o)?;
+    let folder = std::path::Path::new(source).is_dir();
+    let format = if folder {
+        Format::Tab
+    } else {
+        format_of(o.format.as_deref(), Some(source))?
+    };
+    let rows = if folder {
+        let f = engine::import::Folder {
+            path: source.into(),
+            subfolders: o.subfolders,
+            kind: if o.text_files {
+                engine::import::FolderKind::Text
+            } else {
+                engine::import::FolderKind::Pictures
+            },
+        };
+        engine::import::read_folder(&f, cs)?
+    } else {
+        let bytes = std::fs::read(source).map_err(|e| format!("{source}: {e}"))?;
+        if format == Format::Fmp12 {
+            // One table of another FileMaker file (--source-table, else the first).
+            let tables = engine::import::fmp12_source(&bytes, &d.db.locale)?;
+            let pick = tables.into_iter().find(|t| {
+                o.source_table
+                    .as_deref()
+                    .is_none_or(|n| t.0.eq_ignore_ascii_case(n))
+            });
+            pick.ok_or_else(|| format!("{source}: no such source table"))?
+                .1
+        } else {
+            engine::import::read_rows_in(format, &bytes, cs, o.delimiter)?
+        }
+    };
+    // FileMaker files, XML, DBF and folders name their fields in the first row.
+    let names = o.names || folder || matches!(format, Format::Fmp12 | Format::Xml | Format::Dbf);
+    let mapping = if o.by_name || (names && o.map.is_empty()) {
         Mapping::ByName
     } else {
         Mapping::ByOrder(o.map.clone())
@@ -92,10 +148,18 @@ pub fn import_file(d: &mut Doc, table: &str, source: &str, o: &Opts) -> Res<Json
     let found = found_set(d, d.table(table)?, &o.query)?;
     let opts = Options {
         format,
-        first_row_names: o.names,
+        first_row_names: names,
         mapping,
         mode,
         auto_enter: !o.no_auto_enter,
+        charset: cs,
+        delimiter: o.delimiter,
+        split_repetitions: o.split_repetitions,
+        container_files: folder.then_some(if o.reference {
+            engine::import::Files::Reference
+        } else {
+            engine::import::Files::Copy
+        }),
     };
     let r = import(&mut d.db, tid, &found, rows, &opts)?;
     let t = d.db.table(tid).ok_or("no table")?;
@@ -181,6 +245,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r["added"], 2);
+        // Custom delimiter and Mac Roman; a DBF export read back.
+        let semi = dir.join("in.txt");
+        std::fs::write(&semi, b"First Name;Last Name\r\nZo\x91;Curie\r\n").unwrap();
+        let src = semi.to_str().unwrap();
+        let flags = ["--names", "--delimiter", ";", "--charset", "mac"];
+        let r = run(
+            &mut d,
+            "import",
+            &args(&[&["Contacts", src][..], &flags].concat()),
+        )
+        .unwrap();
+        assert_eq!(r["added"], 1);
+        let dbf = dir.join("out.dbf");
+        let out = dbf.to_str().unwrap();
+        let find = ["--find", "Last Name=Curie", "--field", "First Name"];
+        run(
+            &mut d,
+            "export",
+            &args(&[&["Contacts", "-o", out][..], &find].concat()),
+        )
+        .unwrap();
+        let rows =
+            engine::import::read_rows(engine::export::Format::Dbf, &std::fs::read(&dbf).unwrap());
+        assert_eq!(rows.unwrap()[1], ["Zoë"]);
         let r = run(
             &mut d,
             "export",
@@ -195,7 +283,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(r["content"], "Turing\r\nLovelace\r\n");
+        assert_eq!(r["content"], "Turing\r\nLovelace\r\nCurie\r\n");
         // eval runs in the found set of --find/--sort (Get flags answered).
         let r = run(
             &mut d,
@@ -209,7 +297,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        assert_eq!(r["result"], "1/2 Lovelace");
+        assert_eq!(r["result"], "1/3 Lovelace");
         let pdf = dir.join("out.pdf");
         let r = run(
             &mut d,

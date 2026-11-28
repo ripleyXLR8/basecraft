@@ -26,8 +26,7 @@ pub fn apply(f: &Format, v: &Value, loc: &Locale) -> Option<(String, Option<[u8;
             // stored text otherwise, whatever the date format).
             let t = clock(f, calc::value::ts_time(ts).to_f64()?, loc)?;
             let day = calc::value::ts_date(ts);
-            let d =
-                date(f, day, loc).unwrap_or_else(|| engine::stored_text(&Value::Date(day), loc));
+            let d = date(f, day, loc).unwrap_or_else(|| crate::stored_text(&Value::Date(day), loc));
             Some((format!("{d} {t}"), None))
         }
         _ => None,

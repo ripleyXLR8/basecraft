@@ -51,9 +51,12 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | Value lists (custom values, from field: second field, related only, sort by second field) | ✅ |
 | Themes: compiled styles, named styles, local object styles, fonts (`theme.rs`) | ✅ |
 | Accounts (name, active, privilege set, authentication type, must change password, password data), privilege sets (records per table with limiting calculations, fields, layouts, scripts, value lists, other privileges, menus, print, export), extended privileges, and their MD5 digests (FORMAT.md §15) | ✅ every digest of the 66 templates recomputed |
-| Custom functions | ⏳ |
+| Custom functions (`fmp12::custom_functions`, catalog `[16]`): name, parameters, calculation, availability, folders; calls in calculations (`1B`/`1C` tokens, FORMAT.md §16) | ✅ read and written (create, edit, delete through `schema_edit`); files BaseCraft wrote open in FileMaker Pro 26 and FileMaker Server's consistency check passes; Manage Custom Functions and Save as XML list them; calculation fields and Evaluate give the same results in FileMaker and BaseCraft |
 | Container data: embedded files and pictures (store `[T].[31]`, streams FNAM, PNGf, JPEG, GIFf, FILE, SIZE, DPI_), references by path; GetContainerAttribute, GetAsText, Base64Encode | ✅ (from containers inserted in FileMaker; `all` matches) |
-| Container data stored externally (secure or open storage), thumbnails | ⏳ |
+| Container data stored externally: field options, `REMO` reference and data stream, base directories `[38]`, open storage read from and written to `<base directory>/<Table>/<Field>/` (`name_1.ext` for a second file of the same name), as FileMaker Pro 26 does (FORMAT.md §13) | ✅ open storage: FileMaker reads the files BaseCraft wrote (MD5, size, picture size, path); BaseCraft reads FileMaker's |
+| Secure external storage | ⏳ blocked: layout decoded, but FileMaker encrypts the files and their folder names (AES, per-file `ENCR` stream) with a key not in reach: not read; new files in a secure field are stored embedded (FileMaker reads them) |
+| Thumbnails | ⏳ FileMaker 26 makes them only for hosted files; none are stored in local files (checked with permanent thumbnails on) |
+| Custom open-storage folder calculations, base directories other than the first | ⏳ |
 
 Oracle: all 214 template fields and 32 graph objects, 30 scripts, 85 script steps 24 value lists, 24 layouts, 504 layout objects and 31/31 field calculations (decompiled text) match FileMaker's XML export. Step parameters: 203 steps (319 parameter values) and 108 button actions match, templates plus a 57-step script pasted into a copy of Tasks.
 
@@ -109,7 +112,8 @@ them all. 1,934 match; 53 are listed as known differences (see below).
 | CryptEncrypt / CryptDecrypt (+Base64): PBKDF2 + AES-128-GCM with SHA-256 digest, own byte layout | 🚧 not FileMaker-compatible |
 | Embeddings (CosineSimilarity, Add/Subtract/NormalizeEmbedding, GetEmbeddingAsText/File), container size/attributes, path conversion | ✅ |
 | Location, sensors, Live Text, AI models, persistent data, layout-object attributes: `Context::host_function`, "not available" (error 3) by default | ✅ |
-| Custom functions, file-locale date/number formats | ⏳ |
+| Custom functions: parameters, recursion, `Get` inside, wrong parameter count (1201, 1202), the 50,000-call limit of one calculation ("?", not caught by EvaluationError; an Evaluate counts its own) | ✅ matches FileMaker Pro 26 (`custom_functions_match_filemaker`, `custom_function_call_limit`) |
+| File-locale date/number formats | ⏳ |
 
 Known differences (rows after `# known differences` in oracle.tsv):
 
@@ -321,6 +325,9 @@ M5 the engine ran 50 of the 222 steps; the other 172 returned error 3.
 | Run scripts from the CLI and MCP (`run-script`, `run_script`, `list_scripts`), dialogs answered automatically | ✅ |
 | MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |
 | Manage Database from the CLI: `schema add-table`, `add-field`, `set-options`, `add-occurrence`, `add-relationship`, `set-relationship`, `add-valuelist`, `set-valuelist`, `rename`, `delete`, `new-file`; MCP `new_file`, `create_table`, `create_field` (lookups, validation, summaries), `create_occurrence`, `create_relationship`, `create_valuelist` | ✅ |
+| Custom functions from the CLI (`functions [add|set|delete]`) and MCP (`list_custom_functions`, `set_custom_function`, `delete_custom_function`); File › Manage › Custom Functions… in the app (`custom_functions.rs`: list by folder, new, duplicate, delete, name, parameters, calculation, availability) | ✅ |
+| Container files from the CLI: `new`/`set` with `Field=@path` (open external storage written next to the saved file) | ✅ |
+| Stored calculation fields that use no field of their table (constants, custom functions, `Get`): dependency keys FF00 = FF01 = 00 | ✅ found while checking custom functions: without them FileMaker never computed such a field |
 
 ### Scripts in the GUI
 

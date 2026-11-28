@@ -211,6 +211,7 @@ Every catalog follows the same pattern:
 | `[4]` | LayoutCatalog; `[4].[5].[L].[5].[n]` = LayoutObject | 🔍 |
 | `[6]` | ThemeCatalog (§12) | ✅ styles |
 | `[25]` | font catalog (§12) | ✅ names |
+| `[16]` | CustomFunctionsCatalog (§16) | ✅ read, written |
 | `[17]` | ScriptCatalog; `[17].[5].[S].[5].[n]` = Step | 🔍 |
 | `[23].[1]` | AccountsCatalog (§15) | ✅ read, written |
 | `[23].[2]` | PrivilegeSetsCatalog (§15) | ✅ read, written |
@@ -348,7 +349,9 @@ The field catalog header `[T].[3].[1]` also holds:
 * `[14].[FFF0].[F]`: what field *F* depends on: key *G* = 01 for each field
   of the table its calculation uses (00 for the field a summary summarizes),
   key FF00 (32640) = 01 for any auto-enter, FF02 (32642) = 01 for a
-  modification stamp; for a summary with a second field, that field
+  modification stamp; a stored calculation that uses no field of its
+  table (a constant, custom functions, `Get`) has FF00 = 00 and FF01
+  (32641) = 00, without which FileMaker never computes it; for a summary with a second field, that field
   = 02 (a weight), or the byte-string key `00 TOref len field` = 02 (a
   sort or subtotal field on the table's occurrence); `[14].[FFF1].[F]`:
   fields its validation calculation uses; `[14].[251].[F]`: lookups
@@ -938,6 +941,7 @@ two-byte functions behind prefixes F8–FE, 140 `Get` flags after `9C`).
 | `0E 13 len text 00` | `// comment`, its line break included |
 | `24` | `¶` outside quotes |
 | `1A len name` | `$variable` / `$$global`; `06 … 07` after it = repetition |
+| `1B 14 len 01 id` | custom function call (§16) |
 | `1D 00 00 15` + 4 bytes + u16 | library function: `FMDR` design functions (01 DatabaseNames, 02 FieldBounds, 03 FieldIDs, 04 FieldNames, 05 FieldRepetitions, 06 FieldStyle, 07 FieldType, 08 GetNextSerialValue, 09 LayoutIDs, 0A LayoutNames, 0B TableIDs, 0C TableNames, 0D RelationInfo, 0E ScriptIDs, 0F ScriptNames, 10 ValueListIDs, 11 ValueListNames, 12 ValueListItems, 13 WindowNames, 14 FieldComment, 15 LayoutObjectNames, 16 BaseTableIDs, 17 BaseTableNames, 18 BaseTableComment, 19 FieldAnnotation, 1A FieldDisplayNames), `FMMB` 01 Location, 02 LocationValues, 03 RangeBeacons |
 
 A `len` of 128 UTF-16 units or more takes two bytes, the first with its top
@@ -984,6 +988,9 @@ token comes before its operands, which are compiled the same way.
 * A field passed to an aggregate function, GetNthRecord, GetRepetition,
   Last, Extend, GetSummary, Lookup or LookupNext is `17` instead of `16`.
   `Field[n]` compiles as GetRepetition: `89 17… n`; `$var[n]` as `E4 n $var`.
+* Custom function call (§16): `1B`, u16 argument count, `14 len 01 id`,
+  the arguments in reverse order; `1C` instead of `1B` when the call gives
+  the calculation's result (tail position).
 * `Let`: `DF`, u16 number of bindings, the bindings, the body. Variables
   are numbered by binding position, counting the bindings of the
   enclosing Let/While (a binding that reassigns a name of the same Let
@@ -1237,8 +1244,77 @@ BaseCraft's writer (`save_containers`) adds new files, recounts key 18
 from the record values and drops files no record uses; files already in
 the store keep their bytes.
 
-External storage (secure or open, `[T].[31]` with a base directory) was
-not observed.
+### External storage ✅ open · ⏳ secure (encrypted)
+
+Decoded from container fields set to "Store container data externally"
+in FileMaker Pro 26's Field Options (copies of Tasks, files set by
+`Base64Decode` in pasted scripts), then checked by opening files
+BaseCraft wrote.
+
+* **Field options** (key 2): byte 10 bit `0x10` = stored externally,
+  `0x20` = open storage (else secure); byte 8 bit `0x04` = secure
+  storage "with fewer folders". Key 38 = u32 id of the base directory;
+  `[39]` keys 4–6 = the open-storage folder calculation, by default the
+  text `"Table/Field/"`.
+* **Base directories** `[38]` (Manage › Containers): `[38].[5].[id]`
+  with a 4-byte path element (`00000000` = id 0), key 16 = path relative
+  to the database's folder (`Tasks/` in the templates, `Files/<name>/`
+  in new files), key 240 = 1. The thumbnail setting is not stored there.
+* **Store entry** `[T].[31].[5].[id]`: the record value is the store id
+  as for embedded data; the entry holds `FNAM` and `SIZE` as usual, plus
+  * `REMO`: byte 0 = flags (0 open, 1 secure, 9 secure with fewer
+    folders), 7 zero bytes, then for open storage the folder
+    (`Tasks/ExtOpen/`, plain UTF-8, not XOR-ed) and `00`;
+  * the data stream, its tag the embedded one with its case swapped
+    (`pngF`, `jpeg`, `gifF`, `file` for other files): u64 little-endian
+    file size, 16 bytes, then a name and `00`. Open storage: the file's
+    MD5 and its file name. Secure storage: 16 opaque bytes and
+    `_<table id>` (`_130`);
+  * `ENCR` (secure only): 32 bytes.
+
+  Key 4 (the dedup MD5, §13) is computed as if the file were embedded:
+  over `FNAM`, the embedded tag (`PNGf`) with the file's bytes, `REMO`
+  and `SIZE`, in tag order.
+* **Open storage files** lie at `<database folder>/<base directory>/
+  <REMO folder>/<file name>`: `Tasks/Tasks/ExtOpen/red.png`. A second,
+  different file of the same name in the folder becomes `red_1.png`
+  (the store keeps `red.png` in `FNAM`). `GetAsText` of the field gives
+  `remote:red.png¶size:4,3¶PNGf:Tasks/ExtOpen/red.png`;
+  `GetContainerAttribute` reports `Storage Type: External (Open)` and
+  `External Files: 1`.
+* **Secure storage files** lie at `<base directory>/Secure/52/97/
+  ABAB0061/B4723A60/0D3C544B/E855_130` (32 hex digits split 2/2/8/8/8/4,
+  then `_<table id>`), or with fewer folders `Secure/1/6C1ECDD82C7A2542E8F42C33308F/F52D_130`
+  (a one-digit bucket, 28 and 4 hex digits). The files are **encrypted**:
+  their length is the original rounded up to the next multiple of 16
+  (73 → 80, 15 → 16, 97 → 112: a 16-byte block cipher with padding), the
+  same picture stored twice gives different bytes, and the 32 hex digits
+  are not the MD5 of the content, of the stored 16 bytes, or of their hex
+  text (an encrypted id). The key is FileMaker's own; BaseCraft does not
+  derive it and stops there: secure-storage files are not read, and new
+  files in a secure field are stored embedded, which FileMaker reads
+  (`Storage Type: Embedded`).
+* **Thumbnails**: Manage › Containers › Thumbnails says FileMaker makes
+  them for large pictures of *hosted* files. With "permanent" chosen and
+  an 800 × 600 picture shown in a smaller field, a local file got no
+  thumbnail stream and no thumbnail folder: there is nothing to read in
+  local files.
+
+BaseCraft (`containers::Stored::new_open`, `engine::Database::
+read_external_containers` / `write_external_containers`) reads open
+storage files next to the file it opens and writes new ones next to the
+file it saves, in the default folder `Table/Field/` of the first base
+directory. Checked in FileMaker Pro 26 (Tasks copy with Assignees::Photo
+set to open storage, records added by `basecraft-cli new … Photo=@file`):
+the file opens without warning and `GetContainerAttribute` gives each
+file's name, MD5, size and picture size, `red_1.png` included; a file
+BaseCraft put in the secure Attachments::Attachment field reads back as
+embedded. FileMaker Server's consistency check (`fms_check.sh`) flags
+that file, but it flags a plain BaseCraft rewrite of the same Tasks copy
+too, with no change at all (`fmdump … rewrite`): a writer issue, not
+the container entries. Bisected to layout 3 (FileMaker had resized its
+window): without that layout's 373-byte key-2 item the rewrite passes;
+FileMaker Pro 26 itself opens the file without warning. ⏳
 
 ### Locale (`[2]` key 13)
 
@@ -1556,3 +1632,68 @@ account stays logged in), 12 for Add Account with a name in use, 9 for
 Add Account by an account that may not manage accounts. At open, a wrong
 password and an inactive account get the same alert: « Le nom de compte
 et le mot de passe fournis ne permettent pas d'accéder à ce fichier. »
+
+## 16. Custom functions (`fmp12::custom_functions`) ✅
+
+Decoded from custom functions pasted into FileMaker Pro 26's Manage
+Custom Functions (clipboard format `Mac-XMFN`, the classic
+`<CustomFunction functionArity visible parameters name><Calculation>`
+snippet; a `<Group name>` makes a folder) and from Set Variable steps
+calling them, then checked on files BaseCraft wrote.
+
+Catalog `[16]`, laid out like the script catalog (§8):
+
+* `[16].[1]`: header (§4): key 0 last id, key 4 count, key 32 = `01`,
+  key 216 UUID, key 252 change counter, 31873–31875; `[1]` name index
+  (collation keys, §14), `[3]` display order, `[7].[id]` one member per
+  entry: key 16 name, key 240 = u64 1 for a folder, 2 for the end of a
+  folder (named `--`), absent for a function. No integrity digest (no
+  key 8, unlike scripts). A file without custom functions has no `[16]`.
+* `[16].[5].[id]`: key 16 name; key 32 = `02` + u16 number of
+  parameters; key 33 = the parameter names joined by `;` (absent without
+  parameters); key 36 = availability, `01` all accounts, `00` accounts
+  with full access only (`access="FullAccessOnly"` in the XML); `[35]`
+  keys 5 and 6 = the calculation (§11, no key 4 context: fields are
+  written `TO::Field`); 216 UUID, 252 counter. Folders have only key 16,
+  216, 240 and 252.
+
+In a calculation:
+
+* key 5: `1B 14 len 01 id` (the id as a path element, as for a field
+  reference), then the usual `(` `;` `)` tokens; a function without
+  parameters is written without parentheses (`Hello`);
+* key 6: `1B`, u16 argument count, `14 len 01 id`, then the arguments in
+  reverse order. A call that gives the calculation's result is `1C`:
+  the whole calculation, the results of `If`, `Case` and `Choose`, the
+  body of `Let`, the result of `While`, and parentheses pass the result
+  position on; operands, function arguments, `If`/`Case` tests and Let
+  values do not (`Hello & 1` → `50 1B…`; `Sq ( Sq ( 2 ) )` → `1C…1B…`).
+* Inside a custom function, a parameter is written like a Let variable:
+  key 5 `0B len name 00 00`, key 6 `18 u16 slot`, slots 0… in parameter
+  order; Let variables inside count on from there.
+
+Evaluation (FileMaker Pro 26 through `Evaluate`, `tools/oracle/
+calc_oracle.ps1`): parameters are evaluated in the caller; `Get`
+functions see the caller's context; too few or too many arguments are
+errors 1201 and 1202. One calculation may make **49,999** custom
+function calls, nested (`Deep ( 49998 )`, 49,999 frames) or one after
+the other (`Tail ( 20000 ; 0 ) & Tail ( 29998 ; 0 )`, 50,000 calls,
+fails): the 50,000th call makes the result `?`, which `EvaluationError`
+and `IsEmpty` do not catch. An `Evaluate` counts its own calls
+(`Evaluate ( "Tail ( 30000 ; 0 )" ) + Evaluate ( "Tail ( 30000 ; 0 )" )`
+= 60000). There is no separate 10,000-deep limit in FileMaker 26. The
+`calc` crate grows its stack (`stacker`) to nest that deep; on wasm,
+calls nest at most 2,000 deep.
+
+Writing (`schema_edit::Editor::add_custom_function`, `set_…`,
+`delete_…`) creates the catalog when the file has none, keeps folders,
+adds new functions at the end, and compiles the calculation with the
+function itself known (recursion). Renaming keeps the id, so callers
+keep calling it. Checked in FileMaker Pro 26 and FileMaker Server's
+consistency check on a Tasks copy where `basecraft-cli functions`
+added seven functions (one renamed, one deleted) and a calculation
+field calling six of them: it opens without warning, Manage Custom
+Functions lists them (parameters, availability) and Save as XML shows
+their calculations; FileMaker's Evaluate of 15 expressions, the stored
+calculation field (`120/5/Hello/100/49/Admin/Hello`) and one depending
+on a field (`25/120`) give BaseCraft's results.

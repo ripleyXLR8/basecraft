@@ -372,9 +372,13 @@ impl App {
     }
 
     /// Draws window `name`, swapping it to the front for the time of its frame.
+    /// Widget ids are scoped by window name: the same field shown in two
+    /// windows is two widgets, and keeps its focus when its window comes
+    /// to the front.
     fn draw_window(&mut self, ui: &mut egui::Ui, name: &str, keys: bool) {
         if name == self.front_name() {
-            return self.window_ui(ui, keys);
+            ui.push_id(("bc_window", name), |ui| self.window_ui(ui, keys));
+            return;
         }
         let Some(i) = self.bg_index(name) else { return };
         if self.swap_with(i) {

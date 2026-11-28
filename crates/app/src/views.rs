@@ -12,7 +12,7 @@ use fmp12::layouts::Layout;
 
 use crate::{App, commit_field, i18n, tr};
 
-fn tv(key: &'static str) -> &'static str {
+pub fn tv(key: &'static str) -> &'static str {
     if !i18n::french() {
         return tr(key);
     }
@@ -40,6 +40,9 @@ pub struct State {
 }
 
 const ROW: f32 = 22.0;
+
+/// What a click in the header does, once the table is drawn.
+type Action = Box<dyn FnOnce(&mut App)>;
 
 impl App {
     /// The table view's columns: the layout's fields of its table, left
@@ -98,7 +101,7 @@ impl App {
             })
             .collect();
         let width = |s: &State, f: u32| s.widths.get(&(lid, f)).copied().unwrap_or(140.0);
-        let mut action: Option<Box<dyn FnOnce(&mut App)>> = None;
+        let mut action: Option<Action> = None;
         // Header: names, sort arrows, resize handles, the column menu.
         let (hdr, _) = ui.allocate_exact_size(
             egui::vec2(
@@ -138,6 +141,8 @@ impl App {
             let r = ui
                 .interact(cell, ui.scope_id().with(("col", f)), egui::Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let label = name.clone();
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ColumnHeader, true, &label));
             if r.clicked() {
                 let o = match self.views.sorted_by {
                     Some((sf, Order::Ascending)) if sf == f && sorted => Order::Descending,
@@ -296,13 +301,11 @@ impl App {
                         .count();
                     format!("{} {n}", tv("Count"))
                 };
-                ui.painter().text(
-                    egui::pos2(x + 4.0, row.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    text,
-                    egui::FontId::proportional(12.0),
-                    Color32::from_gray(40),
+                let cell = egui::Rect::from_min_size(
+                    egui::pos2(x + 4.0, row.top()),
+                    egui::vec2(widths[k] - 4.0, ROW),
                 );
+                ui.put(cell, egui::Label::new(egui::RichText::new(text).strong()));
             }
         }
         if dirty {

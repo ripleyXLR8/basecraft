@@ -8,7 +8,7 @@ use eframe::egui;
 use crate::toolbar::{Focus, insert_at_cursor, last_focus};
 use crate::{App, Mode, i18n, tr};
 
-fn t(key: &'static str) -> &'static str {
+pub fn tx(key: &'static str) -> &'static str {
     if !i18n::french() {
         return tr(key);
     }
@@ -117,13 +117,13 @@ impl App {
         let browse = self.mode() == Mode::Browse;
         let (u, r) = (!self.edits.undo.is_empty(), !self.edits.redo.is_empty());
         let undo =
-            egui::Button::new(t(if u { "Undo" } else { "Can't Undo" })).shortcut_text("Ctrl+Z");
+            egui::Button::new(tx(if u { "Undo" } else { "Can't Undo" })).shortcut_text("Ctrl+Z");
         if ui.add_enabled(browse && u, undo).clicked() {
             ui.close();
             self.undo_redo(false);
         }
         let redo =
-            egui::Button::new(t(if r { "Redo" } else { "Can't Redo" })).shortcut_text("Ctrl+Y");
+            egui::Button::new(tx(if r { "Redo" } else { "Can't Redo" })).shortcut_text("Ctrl+Y");
         if ui.add_enabled(browse && r, redo).clicked() {
             ui.close();
             self.undo_redo(true);
@@ -154,7 +154,7 @@ impl App {
             ("Current User Name", "Ctrl+Shift+N"),
         ] {
             if ui
-                .add_enabled(on, egui::Button::new(t(what)).shortcut_text(key))
+                .add_enabled(on, egui::Button::new(tx(what)).shortcut_text(key))
                 .clicked()
             {
                 ui.close();
@@ -165,7 +165,7 @@ impl App {
         if ui
             .add_enabled(
                 on,
-                egui::Button::new(t("From Index…")).shortcut_text("Ctrl+I"),
+                egui::Button::new(tx("From Index…")).shortcut_text("Ctrl+I"),
             )
             .clicked()
         {
@@ -180,7 +180,7 @@ impl App {
         if ui
             .add_enabled(
                 last,
-                egui::Button::new(t("From Last Visited Record")).shortcut_text("Ctrl+'"),
+                egui::Button::new(tx("From Last Visited Record")).shortcut_text("Ctrl+'"),
             )
             .clicked()
         {
@@ -266,7 +266,7 @@ impl App {
         let mut answer = None;
         egui::Modal::new(egui::Id::NULL.with("bc_insert_index")).show(ctx, |ui| {
             ui.set_min_width(280.0);
-            ui.heading(t("Insert from Index"));
+            ui.heading(tx("Insert from Index"));
             egui::ScrollArea::vertical()
                 .max_height(260.0)
                 .show(ui, |ui| {
@@ -281,10 +281,10 @@ impl App {
                     }
                 });
             ui.horizontal(|ui| {
-                if ui.button(t("OK")).clicked() {
+                if ui.button(tx("OK")).clicked() {
                     answer = Some(true);
                 }
-                if ui.button(t("Cancel")).clicked() {
+                if ui.button(tx("Cancel")).clicked() {
                     answer = Some(false);
                 }
             });

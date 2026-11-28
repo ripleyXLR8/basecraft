@@ -25,6 +25,8 @@ mod design;
 mod editing;
 mod i18n;
 mod look;
+#[cfg(test)]
+mod m4_tests;
 mod objects;
 mod prefs;
 mod preview;
@@ -1279,6 +1281,7 @@ impl App {
         let Some(t) = self.table() else { return };
         let record = self.current_record();
         let found = self.found(t).clone();
+        let pos = self.current.get(&t).copied().unwrap_or(0);
         let mode = self.mode();
         let view = self.view;
         let Some(doc) = self.doc.as_mut() else { return };
@@ -1373,6 +1376,34 @@ impl App {
                 ],
                 Stroke::new(0.5, Color32::from_gray(210)),
             );
+        }
+        // List view: the current record's band highlighted, with
+        // FileMaker's dark bar on its left; a click selects a record.
+        let mut clicked_row = None;
+        if view == View::List && mode == Mode::Browse && bh > 0.0 {
+            let band = |i: usize| {
+                Rect::from_min_size(
+                    origin + Vec2::new(0.0, (btop + i as f64 * bh) as f32),
+                    Vec2::new(layout.width as f32, bh as f32),
+                )
+            };
+            let cur = band(pos);
+            painter.rect_filled(cur, 0.0, Color32::from_rgba_unmultiplied(0, 90, 180, 24));
+            painter.rect_filled(
+                Rect::from_min_size(cur.min, Vec2::new(4.0, cur.height())),
+                0.0,
+                Color32::from_gray(40),
+            );
+            if let Some(p) =
+                ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()))
+                && resp.rect.contains(p)
+                && ui.ctx().layer_id_at(p) == Some(ui.layer_id())
+            {
+                let i = ((p.y - origin.y) as f64 - btop) / bh;
+                if i >= 0.0 && (i as usize) < rows.len() {
+                    clicked_row = Some(i as usize);
+                }
+            }
         }
         let ctx = DrawCtx { table: t, mode };
         let layout_to = (layout.table_occurrence & 0xFFF) as u32;
@@ -1614,6 +1645,9 @@ impl App {
                     }
                 }
             }
+        }
+        if let Some(i) = clicked_row.filter(|i| *i != pos) {
+            self.go_to(i);
         }
         if let Some((tc, p)) = clicked_tab {
             self.tabs.insert(tc, p);
@@ -1926,7 +1960,7 @@ fn draw_field(
                 .as_ref()
                 .map(|l| doc.db.eval_tokens(l, t, 0, Some(rec)).to_text());
             // Data formats show while the field is not being edited.
-            let edit_id = egui::Id::NULL.with(("field", o.id, rec, rep));
+            let edit_id = ui.scope_id().with(("field", o.id, rec, rep));
             let shown = if ui.memory(|m| m.has_focus(edit_id)) {
                 None
             } else {

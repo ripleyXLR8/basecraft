@@ -10,7 +10,7 @@ use eframe::egui;
 
 use crate::{App, i18n};
 
-fn t(key: &'static str) -> &'static str {
+pub fn t(key: &'static str) -> &'static str {
     if !i18n::french() {
         return key;
     }
@@ -22,6 +22,7 @@ fn t(key: &'static str) -> &'static str {
         "User name:" => "Utilisateur :",
         "User interface language:" => "Langue de l'interface utilisateur :",
         "System" => "Système",
+        "Same as system" => "Comme le système",
         "Recent files list:" => "Liste des fichiers récents :",
         "Allow drag and drop" => "Autoriser Glisser-déposer",
         "Ruler units:" => "Unités de la règle :",
@@ -279,12 +280,12 @@ impl App {
                     ui.label(t("User interface language:"));
                     egui::ComboBox::from_id_salt("prefs_language")
                         .selected_text(match p.french {
-                            None => t("System"),
+                            None => t("Same as system"),
                             Some(true) => "Français",
                             Some(false) => "English",
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut p.french, None, t("System"));
+                            ui.selectable_value(&mut p.french, None, t("Same as system"));
                             ui.selectable_value(&mut p.french, Some(false), "English");
                             ui.selectable_value(&mut p.french, Some(true), "Français");
                         });

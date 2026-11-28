@@ -727,6 +727,18 @@ impl App {
             return;
         }
         let Some(d) = self.doc.as_ref() else { return };
+        // A find that starts with an omit request starts from all the
+        // records, as FileMaker's.
+        let mut reqs = reqs;
+        if reqs.first().is_some_and(|r| r.omit) {
+            reqs.insert(
+                0,
+                engine::Request {
+                    criteria: Vec::new(),
+                    omit: false,
+                },
+            );
+        }
         let hits = engine::find(&d.db, t, &reqs);
         let found: Vec<usize> = match extend {
             None => hits,

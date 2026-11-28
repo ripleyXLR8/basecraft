@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::calc::{self, FileNames};
 use crate::collate;
+use crate::custom_functions::{self, CustomFunction};
 use crate::graph::{JoinOp, Predicate, Relationship, SortKey, TableOccurrence};
 use crate::save::{encode_text, entry_kv, fresh_uuid, len_int, path_elem, read_len_int};
 use crate::schema::{self, AutoStamp, DataType, Field, FieldKind, Indexing, SummaryOp};
@@ -866,6 +867,12 @@ impl Editor {
         FileNames {
             tables: tables.into_values().collect(),
             occurrences: tos.into_values().collect(),
+            custom_functions: self
+                .custom_functions()
+                .into_iter()
+                .filter(|f| f.kind == custom_functions::Kind::Function)
+                .map(|f| (f.id, f.name))
+                .collect(),
         }
     }
 
@@ -2396,6 +2403,185 @@ impl Editor {
         }
         // The graph's dependency cache of the table: FileMaker rebuilds it.
         self.remove_tree(&sp(&[3, 17, 1, 14, t]));
+        Ok(())
+    }
+}
+
+/// A custom function, for [`Editor::add_custom_function`] and
+/// [`Editor::set_custom_function`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CustomFunctionSpec {
+    pub name: String,
+    pub params: Vec<String>,
+    pub formula: String,
+    /// Available to accounts with full access only.
+    pub full_access_only: bool,
+}
+
+const CUSTOM_FUNCTIONS: [u32; 2] = [16, 1];
+
+/// A name FileMaker accepts for a custom function or a parameter: a
+/// letter or `_` first, then letters, digits, `_` and `.` (no spaces or
+/// operators), and not a keyword.
+fn plain_name(n: &str) -> bool {
+    let mut c = n.chars();
+    c.next().is_some_and(|f| f.is_alphabetic() || f == '_')
+        && c.all(|x| x.is_alphanumeric() || x == '_' || x == '.')
+        && !["and", "or", "xor", "not", "true", "false"]
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(n))
+}
+
+impl Editor {
+    fn custom_functions_cat() -> Catalog {
+        Catalog {
+            header: sp(&CUSTOM_FUNCTIONS),
+            refs: Refs::Id,
+        }
+    }
+
+    /// The custom functions (folders included) in display order.
+    pub fn custom_functions(&self) -> Vec<CustomFunction> {
+        let items = self
+            .entries
+            .iter()
+            .filter(|e| e.path.first().is_some_and(|x| x.as_slice() == [16]))
+            .filter_map(|e| {
+                let p = ipath(e)?;
+                let c = *crate::chunk::parse(&e.item).ok()?.first()?;
+                Some((p, c))
+            });
+        custom_functions::collect(items)
+    }
+
+    /// Custom function id by name (case-insensitive).
+    pub fn custom_function_id(&self, name: &str) -> Option<u32> {
+        self.custom_functions()
+            .iter()
+            .find(|f| {
+                f.kind == custom_functions::Kind::Function && f.name.eq_ignore_ascii_case(name)
+            })
+            .map(|f| f.id)
+    }
+
+    fn check_custom_function(&self, id: Option<u32>, spec: &CustomFunctionSpec) -> Res<()> {
+        if !plain_name(&spec.name) {
+            return Err(EditError::Invalid(format!(
+                "{:?} is not a valid function name",
+                spec.name
+            )));
+        }
+        let (builtins, _) = calc::function_names();
+        if builtins.iter().any(|b| b.eq_ignore_ascii_case(&spec.name))
+            || self
+                .custom_functions()
+                .iter()
+                .any(|f| Some(f.id) != id && f.name.eq_ignore_ascii_case(&spec.name))
+        {
+            return Err(EditError::Exists(spec.name.clone()));
+        }
+        for (i, p) in spec.params.iter().enumerate() {
+            if !plain_name(p) {
+                return Err(EditError::Invalid(format!(
+                    "{p:?} is not a valid parameter name"
+                )));
+            }
+            if spec.params[..i].iter().any(|q| q.eq_ignore_ascii_case(p)) {
+                return Err(EditError::Exists(p.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Node `[16].[5].[id]` and the catalog member's name; the
+    /// calculation is compiled with the function itself known (recursion).
+    fn write_custom_function(&mut self, id: u32, spec: &CustomFunctionSpec) -> Res<()> {
+        let node = sp(&[16, 5, id]);
+        self.set(node.clone(), 16, encode_text(&spec.name));
+        self.set(sp(&[16, 1, 7, id]), 16, encode_text(&spec.name));
+        let c = calc::compile_function(&spec.formula, &spec.params, &self.names())?;
+        let n = spec.params.len() as u16;
+        self.set(
+            node.clone(),
+            32,
+            [vec![2], n.to_be_bytes().to_vec()].concat(),
+        );
+        if spec.params.is_empty() {
+            self.remove_kv(&node, 33);
+        } else {
+            self.set(node.clone(), 33, encode_text(&spec.params.join(";")));
+        }
+        let mut cp = node.clone();
+        cp.push(path_elem(35));
+        self.set_long(cp.clone(), 5, c.tokens);
+        self.set_long(cp, 6, c.compiled);
+        self.set(node, 36, vec![u8::from(!spec.full_access_only)]);
+        Ok(())
+    }
+
+    /// Adds a custom function at the end of the list; returns its id.
+    pub fn add_custom_function(&mut self, spec: &CustomFunctionSpec) -> Res<u32> {
+        self.check_custom_function(None, spec)?;
+        let c = Self::custom_functions_cat();
+        // A file without custom functions has no catalog yet.
+        if self.get(&c.header, 216).is_none() {
+            let u = self.uuid();
+            self.set(c.header.clone(), 216, u);
+            self.set(c.header.clone(), 32, vec![1]);
+        }
+        let id = self
+            .custom_functions()
+            .iter()
+            .map(|f| f.id)
+            .fold(self.cat_last(&c), u32::max)
+            + 1;
+        self.cat_add(&c, id, &spec.name);
+        let node = sp(&[16, 5, id]);
+        let u = self.uuid();
+        self.set(node.clone(), 216, u);
+        self.set(node, 252, len_int(1));
+        if let Err(e) = self.write_custom_function(id, spec) {
+            self.delete_custom_function(id)?;
+            return Err(e);
+        }
+        Ok(id)
+    }
+
+    /// Replaces custom function `id` (name, parameters, calculation,
+    /// availability). Calculations that call it keep calling it: they
+    /// refer to its id.
+    pub fn set_custom_function(&mut self, id: u32, spec: &CustomFunctionSpec) -> Res<()> {
+        let old = self
+            .custom_functions()
+            .into_iter()
+            .find(|f| f.id == id && f.kind == custom_functions::Kind::Function)
+            .ok_or_else(|| EditError::NotFound(format!("custom function {id}")))?;
+        self.check_custom_function(Some(id), spec)?;
+        // Compile first: a bad calculation leaves the function as it was.
+        let before = self.entries.clone();
+        let c = Self::custom_functions_cat();
+        if old.name != spec.name {
+            self.cat_rename(&c, id, &spec.name);
+        } else {
+            self.bump(c.header);
+        }
+        if let Err(e) = self.write_custom_function(id, spec) {
+            self.entries = before;
+            return Err(e);
+        }
+        self.bump(sp(&[16, 5, id]));
+        Ok(())
+    }
+
+    /// Deletes custom function `id`. Calculations that call it show
+    /// `<Function Missing>`, as in FileMaker.
+    pub fn delete_custom_function(&mut self, id: u32) -> Res<()> {
+        if !self.custom_functions().iter().any(|f| f.id == id) {
+            return Err(EditError::NotFound(format!("custom function {id}")));
+        }
+        self.remove_tree(&sp(&[16, 5, id]));
+        self.remove_tree(&sp(&[16, 1, 7, id]));
+        self.cat_remove(&Self::custom_functions_cat(), id);
         Ok(())
     }
 }

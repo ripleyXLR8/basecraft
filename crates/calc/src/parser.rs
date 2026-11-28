@@ -12,11 +12,18 @@ pub fn is_bare_function(name: &str) -> bool {
 }
 
 pub fn parse(src: &str) -> Result<Expr, ParseError> {
+    parse_with(src, &|_| false)
+}
+
+/// [`parse`] where `custom(name)` tells the names of the file's custom
+/// functions, which are called like built-in ones.
+pub fn parse_with(src: &str, custom: &dyn Fn(&str) -> bool) -> Result<Expr, ParseError> {
     let toks = lex(src)?;
     let mut p = Parser {
         toks,
         i: 0,
         depth: 0,
+        custom,
     };
     if p.peek() == &Tok::Eof {
         return p.fail(code::OPERAND_EXPECTED, "empty calculation");
@@ -30,10 +37,11 @@ pub fn parse(src: &str) -> Result<Expr, ParseError> {
 
 const MAX_DEPTH: usize = 200;
 
-struct Parser {
+struct Parser<'a> {
     toks: Vec<Token>,
     i: usize,
     depth: usize,
+    custom: &'a dyn Fn(&str) -> bool,
 }
 
 fn keyword(t: &Tok) -> Option<&'static str> {
@@ -77,7 +85,7 @@ fn binop(t: &Tok) -> Option<BinOp> {
     })
 }
 
-impl Parser {
+impl Parser<'_> {
     fn peek(&self) -> &Tok {
         &self.toks[self.i].tok
     }
@@ -212,7 +220,7 @@ impl Parser {
                     return Ok(Expr::Call { name, args: vec![] });
                 }
                 if !quoted && self.peek() == &Tok::Sym("(") {
-                    if !crate::functions::exists(&name) {
+                    if !crate::functions::exists(&name) && !(self.custom)(&name) {
                         self.i -= 1;
                         return self.fail(code::OPERATOR_MISSING, "function not found");
                     }

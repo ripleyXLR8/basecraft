@@ -18,13 +18,13 @@ pub mod value;
 
 pub use ast::Expr;
 pub use error::{EvalError, ParseError};
-pub use eval::{Context, Evaluator, MemoryContext};
-pub use parser::parse;
+pub use eval::{Context, CustomFunction, Evaluator, MemoryContext};
+pub use parser::{parse, parse_with};
 pub use value::Value;
 
 /// Parses and evaluates `src`.
 pub fn evaluate(src: &str, ctx: &mut dyn Context) -> Result<Value, EvalError> {
-    let e = parse(src)?;
+    let e = parse_with(src, &|n| ctx.custom_function(n).is_some())?;
     Evaluator::new(ctx).eval(&e)
 }
 

@@ -815,6 +815,25 @@ impl Database {
 }
 
 impl Database {
+    /// Auto-complete using previously entered values: the distinct values
+    /// of `field` in `table` that start with `prefix` (ignoring case),
+    /// sorted, `prefix` itself excluded.
+    // ponytail: scans every record; read the field's index if tables get large.
+    pub fn completions(&self, table: u32, field: u32, prefix: &str) -> Vec<String> {
+        let p = prefix.to_lowercase();
+        let n = self.table(table).map_or(0, |t| t.records.len());
+        let mut v: Vec<String> = (0..n)
+            .map(|r| self.value(table, r, field).to_text())
+            .filter(|s| {
+                let l = s.to_lowercase();
+                !p.is_empty() && l.starts_with(&p) && l != p
+            })
+            .collect();
+        v.sort_by_key(|s| s.to_lowercase());
+        v.dedup_by_key(|s| s.to_lowercase());
+        v
+    }
+
     /// Values of value list `id`: custom values, or the distinct values of
     /// its field (the values stored, sorted by the first or the second
     /// field).
@@ -2381,6 +2400,15 @@ pub(crate) mod tests {
             stored_text(&Value::Number(calc::num::parse("12.75").unwrap()), &fr),
             "12,75"
         );
+    }
+
+    #[test]
+    fn completions_offer_entered_values() {
+        let db = sample();
+        assert_eq!(db.completions(T, CITY, "r"), ["Rome"]);
+        assert_eq!(db.completions(T, CITY, "O"), ["Oslo"]);
+        assert!(db.completions(T, CITY, "rome").is_empty());
+        assert!(db.completions(T, CITY, "").is_empty());
     }
 
     struct NoNames;

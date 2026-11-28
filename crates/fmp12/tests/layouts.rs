@@ -142,6 +142,10 @@ fn edited_layout_redecodes() {
         right: 700.0,
     };
     o.name = "LastNameField".into();
+    use fmp12::layouts::field_flags::{AUTO_COMPLETE, NO_QUICK_FIND};
+    assert_eq!(o.field_flags & (AUTO_COMPLETE | NO_QUICK_FIND), 0);
+    o.field_flags |= AUTO_COMPLETE | NO_QUICK_FIND;
+    let flags = o.field_flags;
     // Retext the "Company" label, delete object 6, grow the body.
     l.objects.iter_mut().find(|o| o.id == 3).unwrap().text = Some("Société".into());
     l.objects.retain(|o| o.id != 6);
@@ -183,6 +187,7 @@ fn edited_layout_redecodes() {
     assert_eq!(l2.parts, edited.parts);
     assert_eq!(object(l2, 9).bounds, object(&edited, 9).bounds);
     assert_eq!(object(l2, 9).name, "LastNameField");
+    assert_eq!(object(l2, 9).field_flags, flags);
     assert_eq!(object(l2, 3).text.as_deref(), Some("Société"));
     assert!(l2.objects.iter().all(|o| o.id != 6));
     assert_eq!(object(l2, 13).field, nf.field);

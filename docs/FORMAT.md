@@ -904,6 +904,22 @@ navigation. The break field of a sub-summary (field 6) is
   changed it, its meaning is not known. `0x3000` (lines): not decoded.
 * Field 8 of a field: `{1 options (0x1200E0 on edit boxes), 2 reference,
   3: 1, 4: 0, 5 control style, 6 value list, 7: 1, 8: 1}`.
+  Field 8.1 is the clipboard XML's `FieldObj flags` and the Save-as-XML
+  `<Field><Options>` (`fmp12::layouts::field_flags`). Decoded by pasting
+  field objects with one flag changed and reading FileMaker's Inspector ›
+  Data, and by unchecking a box there and diffing the saved file:
+  `0x400` "Include arrow icon to show and hide list" (drop-down list; the
+  arrow disappears without it); `0x800` auto-complete: "Auto-complete
+  using previously entered values" on an edit box, "Auto-complete using
+  value list" on a drop-down list; `0x8000` set = "Include field for
+  Quick Find" **off** (Inspector › Data › Behavior; the only byte that
+  changed, `0x1200E0` → `0x1280E0`; FileMaker's default is on, i.e. clear;
+  the templates' container fields `0x128000`/`0x128014` carry it). The
+  clipboard XML's `quickFind` attribute is not this bit alone: FileMaker
+  writes `quickFind="0"` for container fields without `0x8000`, and
+  ignores the attribute when pasting. Other bits (`0xE0`, `0x20000`,
+  `0x100000`, `0x1`/`0x8` on pop-up menus and drop-downs, `0x14` on
+  containers) are not decoded.
 * Portal (field 15): `{1: 0, 2 TO (XML form), 3 options (273), 5 first
   row, 6 rows (double), 7: 1}`.
 * Tab control (field 13): `{1: 264, 2: 0, 3 tab height (45), 5 front

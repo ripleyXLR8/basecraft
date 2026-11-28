@@ -786,6 +786,7 @@ impl App {
 
     /// Quick Find: records where every word starts a word of one of the
     /// layout's fields (the layout's table), as FileMaker's search box.
+    /// Fields whose "Include field for Quick Find" is off are skipped.
     pub fn quick_find(&mut self, text: &str) {
         let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         if words.is_empty() || !self.commit() {
@@ -799,7 +800,9 @@ impl App {
         let mut fields: Vec<u32> = l
             .objects
             .iter()
-            .filter(|o| o.kind == 1)
+            .filter(|o| {
+                o.kind == 1 && o.field_flags & fmp12::layouts::field_flags::NO_QUICK_FIND == 0
+            })
             .filter_map(|o| {
                 let (to, f, _) = o.field?;
                 (d.db.table_of((to & 0xFFF) as u32)?.id == t).then_some(f as u32)

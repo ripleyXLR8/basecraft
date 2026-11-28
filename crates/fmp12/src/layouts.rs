@@ -1078,7 +1078,12 @@ pub fn patch_object(
     if (new.field, new.display, new.value_list, new.field_flags)
         != (old.field, old.display, old.value_list, old.field_flags)
     {
-        let f = field_msg(m.msg(8), new);
+        let mut f = field_msg(m.msg(8), new);
+        // Every option cleared: the field goes (a new object's 0 means
+        // "the prototype's", so only here).
+        if new.field_flags == 0 {
+            f.remove(1);
+        }
         m.set_msg(8, &f);
         changed = true;
     }
@@ -1100,7 +1105,31 @@ pub fn patch_object(
         }
         changed = true;
     }
+    if new.kind == 2 && new.text != old.text {
+        changed |= set_merge_bit(&mut m, new);
+    }
     if changed { m.encode() } else { raw.to_vec() }
+}
+
+/// Text options (field 7.1) bit 0x8: the text holds stored merge-field
+/// references (in the object's `.[1]` node). Every text object of six
+/// templates has 10 with such a node and 2 without; FileMaker Server's
+/// XML export resolved the references of a copy only with the bit.
+/// Returns whether the message changed.
+fn set_merge_bit(m: &mut MsgBuf, o: &LayoutObject) -> bool {
+    let mut t = m.msg(7);
+    let cur = match t.get(1) {
+        Some(Field::Varint(v)) => *v,
+        _ => 2,
+    };
+    let refs = o.text.as_deref().is_some_and(|x| x.contains("<<\u{1}"));
+    let want = if refs { cur | 8 } else { cur & !8 };
+    if t.get(1).is_some() && want == cur {
+        return false;
+    }
+    t.set(1, Field::Varint(want));
+    m.set_msg(7, &t);
+    true
 }
 
 /// Options with the bits FileMaker keeps in step with the object's node:
@@ -1251,6 +1280,9 @@ pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject, children: &[u64]) -> V
             ),
             _ => {}
         }
+    }
+    if o.kind == 2 {
+        set_merge_bit(&mut m, o);
     }
     if o.kind == 11 {
         // The front panel must be one of its own: FileMaker does not draw a

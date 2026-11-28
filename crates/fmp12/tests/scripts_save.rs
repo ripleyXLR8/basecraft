@@ -461,3 +461,36 @@ fn scripts_of_128_steps_and_more_keep_their_parameters() {
         .unwrap();
     assert_eq!(count.item, [0x06, 0, 3, 2, 0x80, 0x0C]);
 }
+
+/// Script ids from 128 on are written in the catalog as FileMaker writes
+/// ids in its catalogs (`02 80 xx`, as in the base table catalog): the
+/// display order `[17].[1].[3]`, the name index and the last id. With
+/// len-ints (`01 80`) FileMaker Server's XML export listed them as
+/// `<unknown>` scripts.
+#[test]
+fn script_ids_from_128_in_the_catalog() {
+    let blank = fmp12::File::from_bytes(include_bytes!("../assets/blank.fmp12").to_vec()).unwrap();
+    let list: Vec<Script> = (1..=130)
+        .map(|n| Script {
+            id: n,
+            name: format!("S{n}"),
+            options: 8,
+            steps: vec![Step::new(id::BEEP)],
+        })
+        .collect();
+    let out = fmp12::File::from_bytes(save_scripts(&blank, &list).unwrap()).unwrap();
+    let es = write::entries(&out).unwrap();
+    let order: Vec<&Entry> = es
+        .iter()
+        .filter(|e| e.path == [vec![0x11], vec![1], vec![3]] && e.item != [0x80])
+        .collect();
+    assert!(order.last().unwrap().item.ends_with(&[3, 2, 0x80, 2]));
+    let last = es
+        .iter()
+        .find(|e| e.path == [vec![0x11], vec![1]] && e.item.starts_with(&[0x06, 0]))
+        .unwrap();
+    assert_eq!(last.item, [0x06, 0, 3, 2, 0x80, 2]);
+    let back = scripts(&out).unwrap();
+    assert_eq!(back.len(), 130);
+    assert_eq!((back[129].id, back[129].name.as_str()), (130, "S130"));
+}

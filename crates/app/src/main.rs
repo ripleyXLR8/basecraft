@@ -229,6 +229,20 @@ struct App {
     sizes: BTreeMap<String, egui::Vec2>,
 }
 
+/// The bytes File › Save writes for `d`: records, globals and containers
+/// (`Database::save`), then layouts, then the scripts when given.
+pub(crate) fn saved_bytes(
+    d: &Doc,
+    scripts: Option<&[fmp12::scripts::Script]>,
+) -> Result<Vec<u8>, fmp12::Error> {
+    let b = d.db.save(&d.file)?;
+    let b = fmp12::save::save_layouts(&fmp12::File::from_bytes(b)?, &d.db.layouts)?;
+    match scripts {
+        Some(list) => fmp12::scripts_save::save_scripts(&fmp12::File::from_bytes(b)?, list),
+        None => Ok(b),
+    }
+}
+
 impl App {
     fn mode(&self) -> Mode {
         self.mode.unwrap_or(Mode::Browse)
@@ -441,15 +455,7 @@ impl App {
             self.workspace.dirty = false;
         }
         let scripts = self.engine.as_ref().map(|e| e.scripts.clone());
-        let saved = d.db.save(&d.file).and_then(|b| {
-            let f = fmp12::File::from_bytes(b)?;
-            let b = fmp12::save::save_layouts(&f, &d.db.layouts)?;
-            match &scripts {
-                Some(list) => fmp12::scripts_save::save_scripts(&fmp12::File::from_bytes(b)?, list),
-                None => Ok(b),
-            }
-        });
-        let bytes = match saved {
+        let bytes = match saved_bytes(d, scripts.as_deref()) {
             Ok(b) => b,
             Err(e) => {
                 self.error = Some(e.to_string());
@@ -536,9 +542,20 @@ impl App {
         self.commit_record()
     }
 
-    /// Commits the record being edited: runs field validation like
-    /// FileMaker. Returns false (and shows a message) when it fails.
+    /// Commits the record being edited: runs OnRecordCommit, then field
+    /// validation like FileMaker. Returns false when the trigger returns
+    /// False or validation fails (with a message).
     fn commit_record(&mut self) -> bool {
+        if self.editing.is_none() {
+            return true;
+        }
+        // OnRecordCommit runs before the commit, the record still open: a
+        // False result keeps it open and uncommitted, as in FileMaker.
+        let trig = self.layout_trigger(event::RECORD_COMMIT);
+        if !self.run_pre(trig, Default::default()) {
+            return false;
+        }
+        // The trigger's script may have committed or reverted it.
         let Some((t, r)) = self.editing else {
             return true;
         };
@@ -551,7 +568,6 @@ impl App {
                 d.db.commit_record(t, r);
             }
             self.editing = None;
-            self.fire(event::RECORD_COMMIT);
             self.window_transaction("Modified", t, &[r]);
             return true;
         }

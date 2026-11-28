@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::calc::compiled;
 use crate::save::{
-    encode_text, entry_kv, fresh_uuid, ipath, kv_entry, len_int, marker, path_elem, read_len_int,
-    spelled, value_entries,
+    encode_text, entry_kv, fresh_uuid, id_ref, ipath, kv_entry, len_int, marker, path_elem,
+    read_id_ref, read_len_int, spelled, value_entries,
 };
 use crate::scripts::{
     Calc, FieldRef, LayoutDest, RawParams, RecordDest, STEP_LEN, Script, SortOrder, Step,
@@ -246,14 +246,6 @@ fn id_slot(v: u32) -> Vec<u8> {
     let r = id_ref(v);
     let mut out = vec![r.len() as u8];
     out.extend(r);
-    out
-}
-
-/// `n path-int`: an object id, `n` the path integer's length.
-fn id_ref(v: u32) -> Vec<u8> {
-    let e = path_elem(v);
-    let mut out = vec![e.len() as u8];
-    out.extend(e);
     out
 }
 
@@ -770,7 +762,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
         if news.contains(&o.id) {
             continue;
         }
-        let idv = len_int(o.id as u64);
+        let idv = id_ref(o.id);
         entries.retain(|e| {
             let p = ipath(e);
             !(in_script(e, o.id)
@@ -819,7 +811,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
                     add.push(kv_entry(&cp, 240, s.options.to_be_bytes().to_vec()));
                 }
                 if let Some(k) = collation_key(&s.name) {
-                    add.push(kvl(&[17, 1, 1], k, len_int(s.id as u64)));
+                    add.push(kvl(&[17, 1, 1], k, id_ref(s.id)));
                 }
             }
         }
@@ -835,7 +827,7 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
                 && let Some((k, v)) = entry_kv(e)
             {
                 if k == 0 {
-                    last = read_len_int(&v).unwrap_or(0) as u32;
+                    last = read_id_ref(&v).unwrap_or(0);
                 }
                 if k == 252 {
                     counter = read_len_int(&v).unwrap_or(0);
@@ -854,11 +846,11 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
             add.push(kvl(
                 &[17, 1, 3],
                 (i as u32 + 1).to_be_bytes().to_vec(),
-                len_int(*sid as u64),
+                id_ref(*sid),
             ));
         }
         let max = ids.iter().copied().max().unwrap_or(0).max(last);
-        add.push(kv_entry(&[17, 1], 0, len_int(max as u64)));
+        add.push(kv_entry(&[17, 1], 0, id_ref(max)));
         add.push(kv_entry(&[17, 1], 252, len_int(counter + 1)));
         add.push(kv_entry(
             &[17, 1],
@@ -937,7 +929,7 @@ pub fn catalog_digest(entries: &[Entry]) -> Option<[u8; 16]> {
 
 /// New name in the catalog, the script node and the name index.
 fn rename(entries: &mut Vec<Entry>, add: &mut Vec<Entry>, s: &Script) {
-    let idv = len_int(s.id as u64);
+    let idv = id_ref(s.id);
     let bases: [&[u32]; 2] = [&[17, 1, 7, s.id], &[17, 5, s.id]];
     for base in bases {
         let mut long = base.to_vec();

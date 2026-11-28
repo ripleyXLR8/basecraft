@@ -652,8 +652,8 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
         let Some(p) = int_path(path) else { return };
         match (p.as_slice(), c) {
             ([17, 1, 3], Chunk::KvLong { key, data }) => {
-                if let Some(id) = crate::save::read_len_int(data) {
-                    order.insert(key.to_vec(), id as u32);
+                if let Some(id) = crate::save::read_id_ref(data) {
+                    order.insert(key.to_vec(), id);
                 }
             }
             ([17, 5, id], Chunk::Kv { key, data }) => {

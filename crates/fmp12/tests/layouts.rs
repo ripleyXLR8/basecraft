@@ -424,3 +424,107 @@ fn merge_field_by_reference() {
     let hex: String = b[2..].iter().map(|x| format!("{x:02X}")).collect();
     assert_eq!(r(&format!("\u{1}\u{2}\u{e}{hex}")), Some((131, 12)));
 }
+
+/// Edited text with merge fields stays in the object's `.[1]` node, its
+/// key 0 sizes following; a node key 1 next to `.[1]` made FileMaker
+/// Server's consistency check report a damaged block (error 805).
+#[test]
+fn merge_field_text_edits_stay_in_their_node() {
+    let Some(dir) = template_dir() else { return };
+    let f = fmp12::File::open(dir.join("Meetings").join("en.fmp12")).unwrap();
+    let mut ls = fmp12::layouts::layouts(&f).unwrap();
+    let l = ls.iter_mut().find(|l| l.name == "Meeting Details").unwrap();
+    let o = l
+        .objects
+        .iter_mut()
+        .find(|o| o.kind == 2 && o.text.as_deref().is_some_and(|t| t.contains("<<")))
+        .unwrap();
+    let text = format!("{} (BC)", o.text.as_deref().unwrap());
+    o.text = Some(text.clone());
+    // A copy (Edit › Duplicate) is a new object with the same text.
+    let mut copy = o.clone();
+    let (lid, oid) = (l.id, o.id);
+    copy.id = l.objects.iter().map(|o| o.id).max().unwrap() + 1;
+    let cid = copy.id;
+    l.objects.insert(0, copy);
+    let out = fmp12::File::from_bytes(fmp12::save::save_layouts(&f, &ls).unwrap()).unwrap();
+    let es = fmp12::write::entries(&out).unwrap();
+    let keys = |p: &[Vec<u8>]| -> BTreeMap<u32, Vec<u8>> {
+        es.iter()
+            .filter(|e| e.path == p)
+            .filter_map(|e| match fmp12::chunk::parse(&e.item).ok()?.first()? {
+                fmp12::Chunk::Kv { key, data } => Some((*key, data.to_vec())),
+                _ => None,
+            })
+            .collect()
+    };
+    let back = fmp12::layouts::layouts(&out).unwrap();
+    let bl = back.iter().find(|l| l.id == lid).unwrap();
+    for id in [oid, cid] {
+        let node: Vec<Vec<u8>> = [4, 5, lid, 5, id as u32]
+            .iter()
+            .map(|x| fmp12::save::path_elem(*x))
+            .collect();
+        let sub = [node.clone(), vec![vec![1]]].concat();
+        assert!(!keys(&node).contains_key(&1), "node key 1 of {id}");
+        let sizes = &keys(&sub)[&0];
+        let bytes = fmp12::save::encode_text(&text).len() as u32;
+        let chars = text.encode_utf16().count() as u32;
+        let want = [bytes.to_be_bytes(), chars.to_be_bytes(), 4u32.to_be_bytes()].concat();
+        assert_eq!(sizes, &want);
+        assert!(es.iter().any(|e| e.path == sub && e.item == [0x80]));
+        assert_eq!(object(bl, id).text.as_deref(), Some(text.as_str()));
+    }
+}
+
+/// Text objects holding stored merge references get text option 0x8
+/// (field 7.1 = 10, as all such texts of the templates); without it
+/// FileMaker Server's XML export showed a copy's references raw.
+#[test]
+fn merge_reference_texts_get_their_option() {
+    use fmp12::pb::{Field, MsgBuf};
+    let mut proto = MsgBuf(vec![(1, Field::Varint(2)), (2, Field::Varint(9))]);
+    proto.set_msg(7, &MsgBuf(vec![(1, Field::Varint(2))]));
+    let proto = proto.encode();
+    let opts = |b: &[u8]| Msg::parse(b).unwrap().msg(7).unwrap().uint(1);
+    let mut o = LayoutObject {
+        id: 52,
+        kind: 2,
+        text: Some("<<\u{1}\u{2}\u{e}0003D000040107>>".into()),
+        ..Default::default()
+    };
+    let raw = fmp12::layouts::new_object(Some(&proto), &o, &[]);
+    assert_eq!(opts(&raw), Some(10));
+    let old = o.clone();
+    o.text = Some("plain".into());
+    assert_eq!(
+        opts(&fmp12::layouts::patch_object(&raw, &old, &o, None)),
+        Some(2)
+    );
+}
+
+/// A field object whose options are all cleared loses field 8.1 (it kept
+/// the old options: FileMaker Server's XML export showed them unchanged).
+#[test]
+fn cleared_field_options_are_written() {
+    use fmp12::pb::{Field, MsgBuf};
+    let f = MsgBuf(vec![(1, Field::Varint(0x200E0)), (5, Field::Varint(0))]);
+    let mut m = MsgBuf(vec![(1, Field::Varint(1)), (2, Field::Varint(30))]);
+    m.set_msg(8, &f);
+    let raw = m.encode();
+    let old = LayoutObject {
+        id: 30,
+        kind: 1,
+        field_flags: 0x200E0,
+        ..Default::default()
+    };
+    let flags = |o: &LayoutObject| {
+        let out = fmp12::layouts::patch_object(&raw, &old, o, None);
+        Msg::parse(&out).unwrap().msg(8).unwrap().uint(1)
+    };
+    let mut new = old.clone();
+    new.field_flags = 0x800;
+    assert_eq!(flags(&new), Some(0x800));
+    new.field_flags = 0;
+    assert_eq!(flags(&new), None);
+}

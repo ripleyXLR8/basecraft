@@ -5,6 +5,8 @@
 //! `tadd`/`tren`/`tdel` (tables), `fadd`/`fren`/`fdel` (fields of the first
 //! table), `ladd`/`ldup`/`lren`/`ldel` (layouts), `sadd`/`sren`/`sdel`
 //! (scripts). Prints `ERR <edit>: <error>` for an edit that does not apply.
+//! Edits made through the app and written by File › Save's path (globals,
+//! Layout Setup, triggers, objects, containers): `crates/app/src/design/fms_corpus.rs`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fmp12::schema::DataType;

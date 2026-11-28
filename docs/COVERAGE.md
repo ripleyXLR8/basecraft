@@ -47,30 +47,30 @@ decompiled.
 
 ## Top gaps by likely user impact
 
-1. **OnRecordCommit on user actions** is queued after the commit (FileMaker runs it
-   before and a False result keeps the record open); script steps run it before.
-2. **ExecuteSQL / ExecuteSQLe** have joins, GROUP BY, HAVING and the aggregates, but no
+1. **ExecuteSQL / ExecuteSQLe** have joins, GROUP BY, HAVING and the aggregates, but no
    SQL functions (UPPER, CAST, …), no arithmetic, no subqueries and no FileMaker_Tables /
    FileMaker_Fields system tables, which solutions use to read their own schema.
-3. **Revert Transaction**'s condition, error code and message are read from the step
+2. **Revert Transaction**'s condition, error code and message are read from the step
    by guess (no FileMaker-written step checked them), and Open Transaction's Skip
    auto-enter / Skip validation options are ignored.
-4. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
+3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
    editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
-5. **`Get()` flags a local solution still misses**: PageNumber and PageCount (page
+4. **`Get()` flags a local solution still misses**: PageNumber and PageCount (page
    headers in Preview and PDF), SystemLocaleElements / FileLocaleElements, CustomMenuSetName
    (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
    where FileMaker answers). The active-field flags see only fields a script entered, and
    RecordModificationCount is kept in memory (a save keeps the file's previous count). The
    other missing flags belong to servers, FileMaker Go or plug-ins.
-6. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
+5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-7. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
+6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
    and Flush Web Viewer Cookies have nothing to act on.
-8. **Steps FileMaker runs on Windows that BaseCraft refuses**: Perform JavaScript in Web
+7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Perform JavaScript in Web
    Viewer, Open Manage Database and the other design dialogs. Insert from URL, Save a Copy
    as XML, Save Records as JSONL and Execute FileMaker Data API run on the desktop build
    (partial, below) and still return 3 in the web build.
+8. **`Get ( RecordOpenState )` and `Get ( RecordOpenCount )`** answer 0 in scripts, also
+   in an OnRecordCommit script while the window's record is open (FileMaker: 1 or 2).
 
 ## Calculation functions: partial (37)
 
@@ -175,8 +175,8 @@ OnObjectValidate, OnPanelSwitch, OnLayoutEnter, OnLayoutKeystroke, OnRecordLoad,
 OnRecordCommit, OnRecordRevert, OnModeEnter, OnModeExit, OnLayoutExit, OnViewChange,
 OnLayoutSizeChange, OnFirstWindowOpen, OnLastWindowClose, OnWindowOpen, OnWindowClose,
 OnWindowTransaction. The "pre" ones (OnObjectValidate, OnObjectKeystroke,
-OnLayoutKeystroke, OnRecordRevert, OnModeExit, OnPanelSwitch, OnWindowClose,
-OnLastWindowClose, and OnObjectExit) run their script at once, and a False result (Exit
+OnLayoutKeystroke, OnRecordCommit, OnRecordRevert, OnModeExit, OnPanelSwitch,
+OnWindowClose, OnLastWindowClose, and OnObjectExit) run their script at once, and a False result (Exit
 Script) cancels the event; the others are queued. Script steps fire them too
 (`crates/script/src/triggers.rs`): pre triggers before the step (False: error 20), post
 triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".

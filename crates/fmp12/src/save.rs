@@ -21,6 +21,23 @@ pub fn path_elem(n: u32) -> Vec<u8> {
     }
 }
 
+/// An id in a catalog (display order, name index, last id): its length,
+/// then the path integer: `01 7F` = 127, `02 80 03` = 131 (FileMaker's
+/// base table catalog `[3].[16].[1]`). Below 128 it is [`len_int`].
+pub fn id_ref(id: u32) -> Vec<u8> {
+    let e = path_elem(id);
+    let mut v = vec![e.len() as u8];
+    v.extend(e);
+    v
+}
+
+/// Inverse of [`id_ref`] (also reads `01 83`, a len-int BaseCraft wrote
+/// for ids from 128 on before).
+pub fn read_id_ref(b: &[u8]) -> Option<u32> {
+    let (n, rest) = b.split_first()?;
+    crate::path_int(rest.get(..*n as usize)?)
+}
+
 /// FileMaker's length-prefixed integer: `01 28` = 40, `02 01 2C` = 300.
 pub fn len_int(n: u64) -> Vec<u8> {
     let b = n.to_be_bytes();
@@ -858,7 +875,32 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             if o.text != n.text
                 && let Some(t) = &n.text
             {
-                add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+                // Text with merge fields lives in `.[1]` (key 0 = byte
+                // length, character count, and a third u32 kept): a node
+                // key 1 next to it is a damaged block for FileMaker Server.
+                let sub = [4, 5, l, 5, n.id as u32, 1];
+                let mut in_sub = false;
+                for e in entries.iter_mut() {
+                    if ipath(e).as_deref() != Some(&sub) {
+                        continue;
+                    }
+                    let data = match entry_kv(e) {
+                        Some((1, _)) => encode_text(t),
+                        Some((0, d)) if d.len() == 12 => {
+                            let mut v = (encode_text(t).len() as u32).to_be_bytes().to_vec();
+                            v.extend((t.encode_utf16().count() as u32).to_be_bytes());
+                            v.extend_from_slice(&d[8..]);
+                            v
+                        }
+                        _ => continue,
+                    };
+                    in_sub = true;
+                    let key = entry_kv(e).map_or(0, |x| x.0);
+                    e.item = write::encode(&Item::Kv { key, data });
+                }
+                if !in_sub {
+                    add.extend(text_entries(&node(n.id), t));
+                }
                 if n.kind == 12 {
                     add.extend(calc_entries(n.id, &[2], &text_literal_tokens(t)));
                 }
@@ -871,7 +913,7 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         for n in &added {
             add.push(marker(&node(n.id)));
             if let Some(t) = &n.text {
-                add.push(kv_entry(&node(n.id), 1, encode_text(t)));
+                add.extend(text_entries(&node(n.id), t));
                 if n.kind == 12 {
                     add.extend(calc_entries(n.id, &[2], &text_literal_tokens(t)));
                 }
@@ -1273,6 +1315,27 @@ fn layout_triggers(
             (ts.len() as u32).to_be_bytes().to_vec(),
         ));
     }
+}
+
+/// Entries of an object's text at `node`: node key 1, or, for text holding
+/// a stored merge-field reference (`<<\u{1}…>>`, FORMAT.md §10), the
+/// `.[1]` node FileMaker keeps such text in (key 0 = byte length,
+/// character count, 4; key 1 = text). In node key 1 FileMaker Server's XML
+/// export read such a text as garbage after the reference.
+fn text_entries(node: &[u32], t: &str) -> Vec<Entry> {
+    let enc = encode_text(t);
+    if !t.contains("<<\u{1}") {
+        return vec![kv_entry(node, 1, enc)];
+    }
+    let sub = [node, &[1]].concat();
+    let mut sizes = (enc.len() as u32).to_be_bytes().to_vec();
+    sizes.extend((t.encode_utf16().count() as u32).to_be_bytes());
+    sizes.extend(4u32.to_be_bytes());
+    vec![
+        marker(&sub),
+        kv_entry(&sub, 0, sizes),
+        kv_entry(&sub, 1, enc),
+    ]
 }
 
 /// Reference to a layout object in its layout's indexes: `00 len 01 id`,

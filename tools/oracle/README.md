@@ -131,7 +131,11 @@ trial) gives a headless oracle that does not need FileMaker Pro's window:
 tools/oracle/fms_check.sh file.fmp12                       # consistency check, exit 0 = no problems
 tools/oracle/fms_check.sh file.fmp12 Admin "" out.xml      # also FileMaker's Save as XML export
 tools/oracle/fms_batch.sh a.fmp12 b.fmp12 …                # many files over one SSH session: OK/BAD per file
+cargo run -p fmp12 --example fmscorpus -- in.fmp12 outdir p # edited copies (tables, fields, layouts, scripts) to check
 ```
+
+Keep batches to about 10 files and check that the VM still answers
+(`ssh … uptime`) between them: a 40-file batch once froze it.
 
 The script copies the file into the VM over SSH (`127.0.0.1:2222`, key
 `~/.ssh/basecraft_vm`) and runs FMDeveloperTool `--checkConsistency` and

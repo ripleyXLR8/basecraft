@@ -900,88 +900,90 @@ impl Designer {
 /// Number, date, time and graphic formats of a field object.
 fn format_editor(ui: &mut egui::Ui, doc: &Doc, f: &mut Format) {
     let loc = &doc.db.locale;
-    ui.collapsing(tr("Number"), |ui| {
-        let n = &mut f.number;
-        let mut k = number_kind(n.flags);
-        egui::ComboBox::from_id_salt("num_kind")
-            .selected_text(tr(NUMBER_FORMATS[k]))
-            .show_ui(ui, |ui| {
-                for (i, name) in NUMBER_FORMATS.iter().enumerate() {
-                    ui.selectable_value(&mut k, i, tr(name));
+    egui::CollapsingHeader::new(tr("Number"))
+        .default_open(true)
+        .show(ui, |ui| {
+            let n = &mut f.number;
+            let mut k = number_kind(n.flags);
+            egui::ComboBox::from_id_salt("num_kind")
+                .selected_text(tr(NUMBER_FORMATS[k]))
+                .show_ui(ui, |ui| {
+                    for (i, name) in NUMBER_FORMATS.iter().enumerate() {
+                        ui.selectable_value(&mut k, i, tr(name));
+                    }
+                });
+            n.flags = with_number_kind(n.flags, k);
+            let bit = |ui: &mut egui::Ui, flags: &mut u16, b: u16, name: &'static str| {
+                let mut on = *flags & b != 0;
+                if ui.checkbox(&mut on, tr(name)).changed() {
+                    *flags ^= b;
                 }
-            });
-        n.flags = with_number_kind(n.flags, k);
-        let bit = |ui: &mut egui::Ui, flags: &mut u16, b: u16, name: &'static str| {
-            let mut on = *flags & b != 0;
-            if ui.checkbox(&mut on, tr(name)).changed() {
-                *flags ^= b;
-            }
-        };
-        match k {
-            2..=4 => {
-                ui.horizontal(|ui| {
+            };
+            match k {
+                2..=4 => {
+                    ui.horizontal(|ui| {
+                        bit(
+                            ui,
+                            &mut n.flags,
+                            num::FIXED_DIGITS,
+                            "Fixed number of decimal digits",
+                        );
+                        ui.add(egui::DragValue::new(&mut n.digits).range(0..=15));
+                    });
+                    bit(ui, &mut n.flags, num::THOUSANDS, "Use thousands separator");
                     bit(
                         ui,
                         &mut n.flags,
-                        num::FIXED_DIGITS,
-                        "Fixed number of decimal digits",
+                        num::SYSTEM_SEPARATORS,
+                        "Use system separators",
                     );
-                    ui.add(egui::DragValue::new(&mut n.digits).range(0..=15));
-                });
-                bit(ui, &mut n.flags, num::THOUSANDS, "Use thousands separator");
-                bit(
-                    ui,
-                    &mut n.flags,
-                    num::SYSTEM_SEPARATORS,
-                    "Use system separators",
-                );
-                ui.horizontal(|ui| {
-                    ui.label(tr("Decimal"));
-                    char_edit(ui, &mut n.decimal);
-                    ui.label(tr("Thousands"));
-                    char_edit(ui, &mut n.thousands);
-                });
-                if k == 3 {
                     ui.horizontal(|ui| {
-                        ui.label(tr("Currency symbol"));
-                        ui.add(egui::TextEdit::singleline(&mut n.currency).desired_width(40.0));
-                        bit(ui, &mut n.flags, num::LEADING, "Leading");
+                        ui.label(tr("Decimal"));
+                        char_edit(ui, &mut n.decimal);
+                        ui.label(tr("Thousands"));
+                        char_edit(ui, &mut n.thousands);
+                    });
+                    if k == 3 {
+                        ui.horizontal(|ui| {
+                            ui.label(tr("Currency symbol"));
+                            ui.add(egui::TextEdit::singleline(&mut n.currency).desired_width(40.0));
+                            bit(ui, &mut n.flags, num::LEADING, "Leading");
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Negative"));
+                        let styles = [
+                            "-1234",
+                            "1234-",
+                            "(1234)",
+                            "<1234>",
+                            "1234 CR",
+                            "\u{25B2}1234",
+                        ];
+                        let mut s = n.negative_style.min(5) as usize;
+                        egui::ComboBox::from_id_salt("num_neg")
+                            .selected_text(styles[s])
+                            .show_ui(ui, |ui| {
+                                for (i, x) in styles.iter().enumerate() {
+                                    ui.selectable_value(&mut s, i, *x);
+                                }
+                            });
+                        n.negative_style = s as u8;
+                    });
+                    bit(ui, &mut n.flags, num::NEGATIVE_COLOR, "Negative in red");
+                    bit(ui, &mut n.flags, num::HIDE_ZERO, "Hide zero");
+                }
+                5 => {
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Non-zero"));
+                        ui.add(egui::TextEdit::singleline(&mut n.true_text).desired_width(60.0));
+                        ui.label(tr("Zero"));
+                        ui.add(egui::TextEdit::singleline(&mut n.false_text).desired_width(60.0));
                     });
                 }
-                ui.horizontal(|ui| {
-                    ui.label(tr("Negative"));
-                    let styles = [
-                        "-1234",
-                        "1234-",
-                        "(1234)",
-                        "<1234>",
-                        "1234 CR",
-                        "\u{25B2}1234",
-                    ];
-                    let mut s = n.negative_style.min(5) as usize;
-                    egui::ComboBox::from_id_salt("num_neg")
-                        .selected_text(styles[s])
-                        .show_ui(ui, |ui| {
-                            for (i, x) in styles.iter().enumerate() {
-                                ui.selectable_value(&mut s, i, *x);
-                            }
-                        });
-                    n.negative_style = s as u8;
-                });
-                bit(ui, &mut n.flags, num::NEGATIVE_COLOR, "Negative in red");
-                bit(ui, &mut n.flags, num::HIDE_ZERO, "Hide zero");
+                _ => {}
             }
-            5 => {
-                ui.horizontal(|ui| {
-                    ui.label(tr("Non-zero"));
-                    ui.add(egui::TextEdit::singleline(&mut n.true_text).desired_width(60.0));
-                    ui.label(tr("Zero"));
-                    ui.add(egui::TextEdit::singleline(&mut n.false_text).desired_width(60.0));
-                });
-            }
-            _ => {}
-        }
-    });
+        });
     ui.collapsing(tr("Date"), |ui| {
         let sample = calc::Value::Date(calc::value::day_number(2026, 3, 7));
         let show = |f: &Format| {
@@ -1267,7 +1269,7 @@ pub(crate) mod tests {
             .parts
             .iter()
             .position(|p| p.kind == ly::part::BODY)?;
-        super::super::resize_part(&mut ds.layout, bi, 560.0);
+        super::super::resize_part(&mut ds.layout, bi, 660.0);
         let y = ds.layout.parts[bi].top + 10.0;
         let ids: BTreeMap<&str, u32> = [
             "Name",
@@ -1283,7 +1285,7 @@ pub(crate) mod tests {
         .collect();
         let f = |n: &str| ids[n];
         // Name: placeholder; red bold when "Laptop"; yellow when no price.
-        ds.insert_field(&d, b(y, 140.0, y + 30.0, 340.0), to, f("Name"), true);
+        ds.insert_field(&d, b(y, 140.0, y + 44.0, 340.0), to, f("Name"), true);
         let name = last(&ds);
         let mut laptop = CondRow::new();
         laptop.value1 = "Laptop".into();
@@ -1304,7 +1306,7 @@ pub(crate) mod tests {
         // Price: currency, thousands, parentheses, red when negative.
         ds.insert_field(
             &d,
-            b(y + 40.0, 140.0, y + 70.0, 340.0),
+            b(y + 50.0, 140.0, y + 94.0, 340.0),
             to,
             f("Price"),
             true,
@@ -1320,7 +1322,7 @@ pub(crate) mod tests {
         // Purchase Date: "Saturday, March 7, 2026".
         ds.insert_field(
             &d,
-            b(y + 80.0, 140.0, y + 110.0, 400.0),
+            b(y + 100.0, 140.0, y + 144.0, 400.0),
             to,
             f("Purchase Date"),
             true,
@@ -1330,7 +1332,7 @@ pub(crate) mod tests {
         df.date.format = 6;
         ds.object_mut(date)?.format = Some(df);
         // Creation timestamp: "Mar 7, 2026 2:05 PM".
-        let r = b(y + 120.0, 140.0, y + 150.0, 400.0);
+        let r = b(y + 150.0, 140.0, y + 194.0, 400.0);
         ds.insert_field(&d, r, to, f("CreationTimestamp"), true);
         let stamp = last(&ds);
         let mut tf = Format::new_default();
@@ -1341,7 +1343,7 @@ pub(crate) mod tests {
         // Description: hidden when the price is over 1,000; slides up.
         ds.insert_field(
             &d,
-            b(y + 160.0, 140.0, y + 190.0, 400.0),
+            b(y + 200.0, 140.0, y + 244.0, 400.0),
             to,
             f("Description"),
             true,
@@ -1353,7 +1355,7 @@ pub(crate) mod tests {
             o.options |= ly::SLIDE_UP | ly::SLIDE_DIRECTLY_ABOVE | ly::RESIZE_PART;
         }
         // Popover button "Details" and, in its popover, the serial number.
-        ds.insert_popover_button(b(y, 450.0, y + 30.0, 560.0));
+        ds.insert_popover_button(b(y, 450.0, y + 44.0, 570.0));
         let pb = ds
             .layout
             .objects
@@ -1364,20 +1366,20 @@ pub(crate) mod tests {
         ds.object_mut(pb)?.text = Some("Details".into());
         if let Some(o) = ds.object_mut(pop) {
             o.label = Some(fmp12::save::text_literal_tokens("Asset details"));
-            o.bounds = b(y + 40.0, 450.0, y + 160.0, 740.0);
+            o.bounds = b(y + 54.0, 450.0, y + 194.0, 740.0);
         }
         ds.insert_field(
             &d,
-            b(y + 80.0, 470.0, y + 110.0, 720.0),
+            b(y + 100.0, 470.0, y + 144.0, 720.0),
             to,
             f("Serial Number"),
             false,
         );
         // Slide control: the vendor on the first panel, a text on the second.
-        ds.insert_slide_control(b(y + 210.0, 20.0, y + 330.0, 330.0));
+        ds.insert_slide_control(b(y + 260.0, 20.0, y + 380.0, 330.0));
         ds.insert_field(
             &d,
-            b(y + 230.0, 40.0, y + 260.0, 300.0),
+            b(y + 280.0, 40.0, y + 324.0, 300.0),
             to,
             f("Vendor"),
             false,
@@ -1406,7 +1408,7 @@ pub(crate) mod tests {
             },
         );
         // Button bar: the first segment goes to the Asset List layout.
-        ds.insert_button_bar(b(y + 350.0, 20.0, y + 380.0, 380.0));
+        ds.insert_button_bar(b(y + 400.0, 20.0, y + 430.0, 380.0));
         let bar = ds
             .layout
             .objects
@@ -1430,7 +1432,7 @@ pub(crate) mod tests {
         ds.object_mut(bar)?.selected = Some(seg);
         // Web viewer: an address computed from the name.
         let url = compile(&d, "\"https://example.com/?q=\" & Assets::Name").ok()?;
-        ds.insert_web_viewer(b(y + 400.0, 20.0, y + 540.0, 520.0), url);
+        ds.insert_web_viewer(b(y + 450.0, 20.0, y + 590.0, 520.0), url);
         // Tab order: name, price, date, the description, the timestamp.
         ds.layout.tab_order = vec![name, price, date, desc, stamp];
         ds.layout.width = ds.layout.width.max(760.0);
@@ -1508,5 +1510,140 @@ pub(crate) mod tests {
         };
         let Some(d) = objects_demo() else { return };
         std::fs::write(out, written(&d)).unwrap();
+    }
+
+    /// The app on the Objects Demo layout of the demo file, as written.
+    fn demo_app() -> Option<crate::App> {
+        let d = objects_demo()?;
+        let mut app = crate::App::default();
+        app.open("Assets".into(), written(&d));
+        let doc = app.doc.as_mut()?;
+        doc.path = None;
+        app.layout = doc.layouts.iter().position(|l| l.name == "Objects Demo")?;
+        Some(app)
+    }
+
+    fn demo_layout(app: &crate::App) -> Layout {
+        app.doc.as_ref().unwrap().layouts[app.layout].clone()
+    }
+
+    /// Browse mode: formats, conditional formats, the popover opened, the
+    /// second slide, the web viewer's confirmation, Tab following the tab
+    /// order. `BASECRAFT_SHOTS=<dir>` saves the screens.
+    #[test]
+    fn objects_in_browse_mode() {
+        use egui_kittest::kittest::Queryable;
+        let Some(app) = demo_app() else { return };
+        let l = demo_layout(&app);
+        let mut h = crate::ui_tests::harness_for(app);
+        h.run_steps(4);
+        crate::ui_tests::shot(&mut h, "l7_01_browse");
+        // The popover opens with its button.
+        let pop = l
+            .objects
+            .iter()
+            .find(|o| o.kind == kind::POPOVER)
+            .unwrap()
+            .id;
+        h.state_mut().objs.popover = Some(pop);
+        h.run_steps(2);
+        crate::ui_tests::shot(&mut h, "l7_02_popover");
+        h.state_mut().objs.popover = None;
+        // The second slide.
+        let sc = l
+            .objects
+            .iter()
+            .find(|o| o.kind == kind::SLIDE_CONTROL)
+            .unwrap();
+        let second = l
+            .objects
+            .iter()
+            .filter(|o| o.parent == Some(sc.id))
+            .map(|o| o.id)
+            .nth(1)
+            .unwrap();
+        h.state_mut().tabs.insert(sc.id, second);
+        h.run_steps(2);
+        crate::ui_tests::shot(&mut h, "l7_03_slide");
+        // Tab goes from the name to the price (the tab order).
+        let (name, price) = (l.tab_order[0], l.tab_order[1]);
+        h.state_mut().objs.focus = Some(name);
+        h.key_press(egui::Key::Tab);
+        h.run_steps(3);
+        assert_eq!(h.state().objs.focus, Some(price));
+        h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+        h.run_steps(3);
+        assert_eq!(h.state().objs.focus, Some(name));
+        crate::ui_tests::shot(&mut h, "l7_04_tab");
+        // "Open in Browser…" asks first; Cancel leaves the page closed.
+        h.get_by_label(tr("Open in Browser…")).click();
+        h.run_steps(4);
+        assert!(
+            h.state()
+                .objs
+                .open_url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("https://example.com/?q="))
+        );
+        crate::ui_tests::shot(&mut h, "l7_05_url");
+        h.get_by_label(tr("Cancel")).click();
+        h.run_steps(2);
+        assert!(h.state().objs.open_url.is_none());
+    }
+
+    /// Layout mode: the objects drawn, the Data tab's formats, the
+    /// Conditional Formatting and Set Tab Order dialogs.
+    #[test]
+    fn objects_in_layout_mode() {
+        use egui_kittest::kittest::Queryable;
+        let Some(mut app) = demo_app() else { return };
+        let l = demo_layout(&app);
+        app.enter_layout();
+        let price = l.tab_order[1];
+        let name = l.tab_order[0];
+        let mut h = crate::ui_tests::harness_for(app);
+        h.run_steps(3);
+        crate::ui_tests::shot(&mut h, "l7_10_layout");
+        if let Some(ds) = h.state_mut().designer.as_mut() {
+            ds.select([price]);
+            ds.tab = super::super::Tab::Data;
+        }
+        h.run_steps(3);
+        crate::ui_tests::shot(&mut h, "l7_11_data_formats");
+        if let Some(ds) = h.state_mut().designer.as_mut() {
+            ds.select([name]);
+        }
+        h.get_by_label(tr("Format")).click();
+        h.run_steps(2);
+        h.get_by_label(tr("Conditional Formatting…")).click();
+        h.run_steps(3);
+        assert!(
+            h.state().designer.as_ref().is_some_and(|d| d
+                .extra
+                .cond
+                .as_ref()
+                .is_some_and(|c| c.1.len() == 2))
+        );
+        crate::ui_tests::shot(&mut h, "l7_12_conditions");
+        h.get_by_label(tr("Cancel")).click();
+        h.run_steps(2);
+        h.get_by_label(tr("Arrange")).click();
+        h.run_steps(2);
+        h.get_by_label(tr("Set Tab Order…")).click();
+        h.run_steps(3);
+        crate::ui_tests::shot(&mut h, "l7_13_tab_order");
+        // Moving the price first and OK changes the layout's tab order.
+        if let Some(ds) = h.state_mut().designer.as_mut()
+            && let Some((order, at)) = ds.extra.tabs.as_mut()
+        {
+            *at = 1;
+            assert_eq!(order[1], price);
+        }
+        h.get_by_label("▲").click();
+        h.run_steps(2);
+        h.get_by_label(tr("OK")).click();
+        h.run_steps(2);
+        let ds = h.state().designer.as_ref().unwrap();
+        assert_eq!(ds.layout.tab_order[..2], [price, name]);
     }
 }

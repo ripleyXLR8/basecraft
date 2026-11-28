@@ -408,7 +408,7 @@ pub fn segment_highlight(painter: &egui::Painter, l: &Layout, o: &LayoutObject, 
 
 /// Tab / Shift+Tab: the next (previous) field of the tab order after the
 /// focused one, to focus this frame.
-pub fn tab_navigation(ui: &egui::Ui, l: &Layout, st: &State) {
+pub fn tab_navigation(ui: &egui::Ui, l: &Layout, st: &mut State) {
     let (tab, back) = ui.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
     let Some(cur) = st.focus.filter(|_| tab) else {
         return;
@@ -429,6 +429,7 @@ pub fn tab_navigation(ui: &egui::Ui, l: &Layout, st: &State) {
         order[(i + 1) % n]
     };
     ui.ctx().data_mut(|d| d.insert_temp(focus_id(), next));
+    st.focus = Some(next);
 }
 
 #[cfg(test)]

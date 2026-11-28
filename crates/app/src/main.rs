@@ -1572,7 +1572,7 @@ impl App {
         let mut clicked_tab = None;
         let browse = mode == Mode::Browse;
         if browse {
-            objects::tab_navigation(ui, &layout, &self.objs);
+            objects::tab_navigation(ui, &layout, &mut self.objs);
         }
         // The object list runs front to back: paint it in reverse (the open
         // popover last).

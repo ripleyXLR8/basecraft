@@ -21,7 +21,7 @@ use crate::Doc;
 use crate::i18n::tr;
 use crate::look::{self, Look};
 
-mod objects;
+pub(crate) mod objects;
 
 const RULER: f32 = 18.0;
 /// Left margin holding the part labels.

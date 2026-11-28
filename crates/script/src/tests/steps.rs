@@ -432,6 +432,38 @@ fn found_set_steps() {
 }
 
 #[test]
+fn constrain_with_omit_only() {
+    let mut h = TestHost::new(PEOPLE);
+    let steps = vec![
+        step(
+            id::PERFORM_FIND,
+            StepParams::Find {
+                restore: true,
+                requests: vec![FindRequest {
+                    omit: false,
+                    criteria: vec![(field(CITY), "Paris".into())],
+                }],
+                pause: false,
+            },
+        ),
+        step(
+            id::ENTER_FIND_MODE,
+            StepParams::Find {
+                restore: false,
+                requests: Vec::new(),
+                pause: false,
+            },
+        ),
+        set_field(AGE, "\"27\""),
+        plain(id::OMIT_RECORD),
+        rawp(sid::CONSTRAIN, &[], 0, 0),
+        exit_c(&h, "Get ( FoundCount ) & People::Name"),
+    ];
+    let (_, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "1Ann");
+}
+
+#[test]
 fn window_steps() {
     let mut h = TestHost::new(PEOPLE);
     h.win.name = "People".into();

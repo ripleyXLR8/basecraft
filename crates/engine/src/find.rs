@@ -1,8 +1,11 @@
 //! Find mode: FileMaker find requests and criteria syntax.
 //!
-//! A find runs a list of requests. Records matching any non-omit request
-//! are found, then records matching any omit request are removed. Within a
-//! request, every criterion must match (AND).
+//! A find runs its requests in order, as FileMaker's: a find request adds
+//! its matches to the set, an omit request removes its matches from it.
+//! The set starts empty, or with every record when the first request is an
+//! omit request. Requests without criteria are skipped (all of them empty
+//! is FileMaker's error 400, for the caller). Within a request, every
+//! criterion must match (AND).
 
 use calc::Value;
 use fmp12::schema::DataType;
@@ -27,10 +30,19 @@ pub fn find(db: &Database, table: u32, requests: &[Request]) -> Vec<usize> {
             matches_criterion(&db.value(table, r, *f), crit, dt)
         })
     };
-    (0..t.records.len())
-        .filter(|&r| requests.iter().any(|q| !q.omit && matches(r, q)))
-        .filter(|&r| !requests.iter().any(|q| q.omit && matches(r, q)))
-        .collect()
+    let mut reqs = requests
+        .iter()
+        .filter(|q| !q.criteria.is_empty())
+        .peekable();
+    let mut set = vec![reqs.peek().is_some_and(|q| q.omit); t.records.len()];
+    for q in reqs {
+        for (r, in_set) in set.iter_mut().enumerate() {
+            if *in_set == q.omit && matches(r, q) {
+                *in_set = !q.omit;
+            }
+        }
+    }
+    (0..set.len()).filter(|&r| set[r]).collect()
 }
 
 fn fold(s: &str) -> String {

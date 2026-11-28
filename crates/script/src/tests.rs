@@ -500,6 +500,43 @@ fn perform_find_table() {
             &["Dee"],
             0,
         ),
+        (
+            "omit only: all records but the omitted",
+            vec![request(true, &[(CITY, "Paris")])],
+            &["Bob", "Cid"],
+            0,
+        ),
+        (
+            "omit first, then find adds back",
+            vec![
+                request(true, &[(AGE, "27")]),
+                request(false, &[(NAME, "Dee")]),
+            ],
+            &["Ann", "Cid", "Dee"],
+            0,
+        ),
+        (
+            "find, omit, find again: in order",
+            vec![
+                request(false, &[(CITY, "Paris")]),
+                request(true, &[(AGE, "27")]),
+                request(false, &[(CITY, "Oslo")]),
+            ],
+            &["Ann", "Bob"],
+            0,
+        ),
+        (
+            "empty requests are skipped",
+            vec![request(false, &[]), request(true, &[(CITY, "Paris")])],
+            &["Bob", "Cid"],
+            0,
+        ),
+        (
+            "omit everything",
+            vec![request(true, &[(NAME, "*")])],
+            &[],
+            401,
+        ),
         ("no match", vec![request(false, &[(NAME, "Zed")])], &[], 401),
         (
             "no criteria",

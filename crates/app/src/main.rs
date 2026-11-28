@@ -280,7 +280,7 @@ impl App {
 
     /// Whether a file is open (or waiting for its login) in this window.
     fn busy(&self) -> bool {
-        self.doc.is_some() || self.security.login.is_some()
+        self.doc.is_some() || self.security.login.is_some() || self.security.ear.is_some()
     }
 
     /// Opens a file; with a file already open, in a window of its own
@@ -360,6 +360,9 @@ impl App {
                 if let Some(l) = self.security.login.as_mut() {
                     l.path = Some(p.to_path_buf());
                 }
+                if let Some(e) = self.security.ear.as_mut() {
+                    e.path = Some(p.to_path_buf());
+                }
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -367,13 +370,18 @@ impl App {
 
     fn open(&mut self, name: String, bytes: Vec<u8>) {
         let name = name.trim_end_matches(".fmp12").to_string();
-        let file = match fmp12::File::from_bytes(bytes) {
-            Ok(f) => f,
-            Err(e) => {
-                self.error = Some(e.to_string());
-                return;
-            }
-        };
+        // Encryption at rest: the password dialog decrypts it (`security_ui.rs`).
+        if fmp12::ear::is_encrypted(&bytes) {
+            return self.ask_encryption_password(name, bytes);
+        }
+        match fmp12::File::from_bytes(bytes) {
+            Ok(f) => self.open_file(name, f),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Opens a parsed file: logs in, or asks for an account.
+    fn open_file(&mut self, name: String, file: fmp12::File) {
         match Database::load(&file) {
             Ok(db) => self.opened(name, db, file),
             // A protected file: the login dialog opens it (`security_ui.rs`).
@@ -444,6 +452,11 @@ impl App {
             return;
         }
         let Some(d) = self.doc.as_mut() else { return };
+        // Writing it would store the file decrypted: read-only for now.
+        if d.file.is_encrypted() {
+            self.error = Some(security_ui::t("Encrypted files are read-only in BaseCraft.").into());
+            return;
+        }
         // In Layout mode, saving the file saves the layout first; an open
         // Script Workspace saves its scripts.
         if let Some(ds) = self.designer.as_mut() {

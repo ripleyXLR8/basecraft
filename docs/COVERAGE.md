@@ -13,7 +13,7 @@ test until this page and the test are updated together.
 
 | Category | Reference | Total | Implemented | Partial | Missing | Test |
 |----------|-----------|------:|------------:|--------:|--------:|------|
-| Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
+| Calculation functions | [functions.txt](reference/functions.txt) | 234 | 200 | 34 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
 | `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 95 | 8 | 36 | `cargo test -p script get_coverage -- --nocapture` |
 | Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 27 | 0 (+67 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
@@ -47,14 +47,19 @@ decompiled.
 
 ## Top gaps by likely user impact
 
-1. **ExecuteSQL / ExecuteSQLe** have joins, GROUP BY, HAVING and the aggregates, but no
-   SQL functions (UPPER, CAST, …), no arithmetic, no subqueries and no FileMaker_Tables /
-   FileMaker_Fields system tables, which solutions use to read their own schema.
+1. **ExecuteSQL / ExecuteSQLe** have joins, GROUP BY, HAVING, the aggregates, arithmetic,
+   CASE, CAST, the Claris SQL Reference's scalar functions, uncorrelated subqueries and the
+   FileMaker_Tables / FileMaker_Fields / FileMaker_BaseTables / FileMaker_BaseTableFields
+   system tables; still no correlated subqueries or EXISTS, ModCount is NULL, no
+   FileMaker_ValueLists, and nothing was checked against FileMaker's own output.
 2. **Revert Transaction**'s condition, error code and message are read from the step
    by guess (no FileMaker-written step checked them), and Open Transaction's Skip
    auto-enter / Skip validation options are ignored.
 3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
-   editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
+   editing"; their columns are not checked against FileMaker's (PROGRESS.md M4). The
+   flags of those two options are not known: the local Claris templates hold one checkbox
+   set (field options `0x20`) and no radio button set, too little to tell which bit is
+   which.
 4. **`Get()` flags a local solution still misses**: PageNumber and PageCount (page
    headers in Preview and PDF), SystemLocaleElements / FileLocaleElements, CustomMenuSetName
    (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
@@ -69,24 +74,35 @@ decompiled.
    Viewer, Open Manage Database and the other design dialogs. Insert from URL, Save a Copy
    as XML, Save Records as JSONL and Execute FileMaker Data API run on the desktop build
    (partial, below) and still return 3 in the web build.
-8. **`Get ( RecordOpenState )` and `Get ( RecordOpenCount )`** answer 0 in scripts, also
-   in an OnRecordCommit script while the window's record is open (FileMaker: 1 or 2).
 
-## Calculation functions: partial (37)
+## Calculation functions: partial (34)
 
-Left to `Context::host_function`, which no BaseCraft host implements yet (error 3, "not
+Left to `Context::host_function`, which no BaseCraft host answers (error 3, "not
 available", or empty text where FileMaker gives that on a desktop): Location,
 LocationValues, GetSensor, RangeBeacons, Furigana, GetLiveText, GetLiveTextAsJSON,
-ReadQRCode, GetTextFromPDF, GetThumbnail, GetAVPlayerAttribute, GetAddonInfo,
-GetPersistentData, ListPersistentDataIDs, GetLayoutObjectAttribute,
-GetLayoutObjectOwnerInfo, GetEmbedding, GetTokenCount, ComputeModel, PredictFromModel,
-GetModelAttributes, GetRAGSpaceInfo.
+ReadQRCode, GetAVPlayerAttribute (iOS, location and media features: FileMaker on a desktop
+answers empty or "not available"); GetTextFromPDF (no PDF text extractor in the build);
+GetLayoutObjectOwnerInfo (layout object UUIDs are not decoded); GetEmbedding,
+GetTokenCount, ComputeModel, PredictFromModel, GetModelAttributes, GetRAGSpaceInfo (AI
+models).
+
+Answered by the script engine (`script::hostfns`, in scripts and the Data Viewer):
+GetPersistentData and ListPersistentDataIDs read Configure Persistent Data's entries (name
+and instance id, the value's type kept, IDs in creation order, "?" when missing; kept in
+memory for the session, not saved in the file). GetThumbnail (computed by calc, so in
+every calculation) scales PNG, JPEG and BMP pictures down to fit, proportions kept, never
+enlarged; a GIF comes back unscaled, a file path empty.
 
 Short of FileMaker: TextColor, TextColorRemove, TextFont, TextFontRemove, TextFormatRemove,
 TextSize, TextSizeRemove, TextStyleAdd, TextStyleRemove (styles dropped); CryptEncrypt,
 CryptDecrypt, CryptEncryptBase64, CryptDecryptBase64 (own byte layout); ExecuteSQL,
-ExecuteSQLe (joins, GROUP BY, HAVING and the aggregates work; no functions such as UPPER or
-CAST, no arithmetic, no subqueries, no FileMaker_Tables / FileMaker_Fields system tables).
+ExecuteSQLe (no correlated subqueries or EXISTS, ModCount NULL, no FileMaker_ValueLists,
+ExecuteSQLe's messages are BaseCraft's); GetAddonInfo (empty: no add-ons are installed;
+FileMaker's answer for that is not documented or checked); GetLayoutObjectAttribute
+(answers in scripts and the Data Viewer only, so empty in layout calculations; rotation 0;
+the window's chrome is taken to sit above the content; the front tab panel is the stored
+one; a graphic's source and a chart's or web viewer's content are empty; `content` is the
+value's text, not its display format).
 
 Missing: none.
 
@@ -105,6 +121,10 @@ Revert Transaction's custom message, else the failing script, step and line of a
 transaction that fails or reverts; Claris's other cases (ODBC, SSL, cURL, plug-ins, locked
 records) do not arise in BaseCraft. RecordAccess and LayoutAccess come from the privilege
 set; EncryptionState is 0 (encrypted files are not opened).
+
+RecordOpenState and RecordOpenCount see a record a script opened, and the app's record
+being edited when a script starts (an OnRecordCommit script sees it open: 1 new, 2
+modified).
 
 Partial (8): ActiveFieldName, ActiveFieldTableName, ActiveFieldContents,
 ActiveRepetitionNumber, ActiveLayoutObjectName (empty / 0 with no active field, but only
@@ -195,7 +215,7 @@ as references resolve in Browse, Preview and PDF; Layout mode shows the raw refe
 
 Partial control styles (2): Checkbox Set, Radio Button Set (one checkbox or radio button per
 value-list value, in columns, in Browse and Find modes; no "Other…" item, "Allow editing"
-ignored). Drop-down Calendar (a month popup, the picked day written in the file's date
+ignored: the flags of these options are not decoded, see the top gaps). Drop-down Calendar (a month popup, the picked day written in the file's date
 format) and Concealed Edit Box (bullets) are implemented.
 
 ## Error codes

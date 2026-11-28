@@ -644,6 +644,26 @@ impl App {
                 .and_then(|p| std::fs::metadata(p).ok())
                 .map(|m| m.len()),
             quick_find: self.bar.quick.clone(),
+            // Get ( RecordOpenState ): the record being edited, if current.
+            record_open: match self.editing {
+                Some(e)
+                    if e == (
+                        t,
+                        window
+                            .found
+                            .get(window.current)
+                            .copied()
+                            .unwrap_or(usize::MAX),
+                    ) =>
+                {
+                    if self.created == Some(e) {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                _ => 0,
+            },
             ..self.seen.clone()
         };
         window.mode = match self.mode() {

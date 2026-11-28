@@ -595,7 +595,37 @@ fn list_of_records_persistent_data_and_inserts() {
         .kv
         .insert((vec![128], 1), b"key".iter().map(|c| c ^ 0x5A).collect());
     assert_eq!(run(&mut e, &mut h, s), 0);
-    assert_eq!(e.more.persistent["key"], "v1");
+    // Claris help: entries by name and instance id, types kept, IDs in
+    // creation order, "?" when missing, deleting a missing one 10.
+    let named = |calcs: &[&str]| {
+        let mut x = st(CONFIGURE_PERSISTENT_DATA, 0xC004, 0, None, None, calcs);
+        let name = b"key".iter().map(|c| c ^ 0x5A).collect();
+        x.raw_params.kv.insert((vec![128], 1), name);
+        x
+    };
+    assert_eq!(run(&mut e, &mut h, named(&["", "41 + 1", "\"A\""])), 0);
+    assert_eq!(run(&mut e, &mut h, named(&["", "\"v2\""])), 0);
+    let ev =
+        |e: &mut Engine, h: &mut FileHost, c: &str| e.evaluate(h, &compile(c)).unwrap().to_text();
+    assert_eq!(
+        ev(&mut e, &mut h, "GetPersistentData ( \"key\" ; \"\" )"),
+        "v2"
+    );
+    assert_eq!(
+        ev(&mut e, &mut h, "GetPersistentData ( \"key\" ; \"A\" ) + 1"),
+        "43"
+    );
+    assert_eq!(
+        ev(&mut e, &mut h, "GetPersistentData ( \"key\" ; \"B\" )"),
+        "?"
+    );
+    assert_eq!(
+        ev(&mut e, &mut h, "ListPersistentDataIDs ( \"key\" )"),
+        "\rA"
+    );
+    assert_eq!(run(&mut e, &mut h, named(&[""])), 0);
+    assert_eq!(ev(&mut e, &mut h, "ListPersistentDataIDs ( \"key\" )"), "A");
+    assert_eq!(run(&mut e, &mut h, named(&[""])), 10);
     // Insert Object is obsolete (4); Insert PDF / Audio-Video with no field 3.
     assert_eq!(run(&mut e, &mut h, Step::new(INSERT_OBJECT)), 4);
     assert_eq!(run(&mut e, &mut h, Step::new(INSERT_PDF)), 3);

@@ -24,6 +24,7 @@ use std::collections::HashMap;
 mod accounts;
 pub mod datafiles;
 pub mod files;
+mod hostfns;
 mod net;
 mod steps;
 pub mod text;
@@ -144,6 +145,10 @@ pub struct HostInfo {
     pub modifier_keys: Option<u32>,
     /// Text of the window's Quick Find box.
     pub quick_find: String,
+    /// The app's record being edited, if it is the window's current
+    /// record: 1 new, 2 modified (`Get ( RecordOpenState )`); 0 none.
+    /// A script started then sees it open (an OnRecordCommit script).
+    pub record_open: u8,
 }
 
 /// View As.
@@ -730,6 +735,10 @@ pub struct Engine {
     step_detail: String,
     /// Open data files, the PDF being built, persistent data.
     pub more: datafiles::State,
+    /// `open` is the app's record ([`HostInfo::record_open`]), and the
+    /// record it is when that record is new.
+    host_open: bool,
+    host_new: Option<(u32, usize)>,
 }
 
 /// Install OnTimer Script.
@@ -851,6 +860,7 @@ struct ScriptEnv<'a> {
     locals: &'a mut Vars,
     globals: &'a mut Vars,
     flags: HashMap<&'static str, Value>,
+    seen: hostfns::Seen<'a>,
 }
 
 impl engine::Env for ScriptEnv<'_> {
@@ -874,6 +884,13 @@ impl engine::Env for ScriptEnv<'_> {
     }
     fn get(&mut self, flag: &str) -> Option<Value> {
         self.flags.get(flag.to_lowercase().as_str()).cloned()
+    }
+    fn host_function(
+        &mut self,
+        name: &str,
+        args: &[Value],
+    ) -> Option<Result<Value, calc::EvalError>> {
+        self.seen.call(name, args).map(Ok)
     }
 }
 
@@ -905,7 +922,38 @@ impl Engine {
             error_detail: String::new(),
             step_detail: String::new(),
             more: Default::default(),
+            host_open: false,
+            host_new: None,
         }
+    }
+
+    /// Takes the app's open record ([`HostInfo::record_open`]) as the one
+    /// the run has open, or drops the one taken earlier once the app has
+    /// closed it.
+    fn adopt_open(&mut self, host: &mut dyn Host) {
+        let open = host.window().host.record_open;
+        if open == 0 {
+            if std::mem::take(&mut self.host_open) {
+                self.open = None;
+                self.host_new = None;
+            }
+            return;
+        }
+        let (table, _, Some(r)) = Self::context(host) else {
+            return;
+        };
+        if !matches!(&self.open, Some((t, x, _)) if (*t, *x) == (table, r)) {
+            // Its values before the edit are the app's: Revert Record in
+            // the script leaves them as they are.
+            let now = host
+                .db()
+                .table(table)
+                .and_then(|t| t.records.get(r))
+                .cloned();
+            self.open = Some((table, r, now));
+            self.host_open = true;
+        }
+        self.host_new = (open == 1).then_some((table, r));
     }
 
     /// `Get ( LastError )` after the last step.
@@ -920,6 +968,7 @@ impl Engine {
 
     /// Starts script `id` with an optional parameter; [`Run::resume`] runs it.
     pub fn start(&mut self, host: &mut dyn Host, id: u32, parameter: Option<Value>) -> Run {
+        self.adopt_open(host);
         self.error_capture = false;
         self.allow_abort = true;
         let mut run = Run::new(Vec::new());
@@ -933,6 +982,7 @@ impl Engine {
     /// Starts one step outside a script: a layout button's action
     /// (`LayoutObject::button`).
     pub fn start_step(&mut self, host: &mut dyn Host, step: &Step) -> Run {
+        self.adopt_open(host);
         self.error_capture = false;
         let steps = vec![step.clone()];
         Run::new(vec![Call {
@@ -1459,10 +1509,30 @@ impl Engine {
             flags.insert("layouttablename", Value::text(&t.name));
         }
         flags.insert("sortstate", num(w.sorted as usize));
+        // The record a script opened, or the app's one it was handed.
+        let open = self
+            .open
+            .as_ref()
+            .filter(|o| (o.0, Some(o.1)) == (table, record));
+        let state = match open {
+            Some((t, r, old)) => 1 + (old.is_some() && self.host_new != Some((*t, *r))) as usize,
+            None => 0,
+        };
+        flags.insert("recordopenstate", num(state));
+        flags.insert("recordopencount", num(self.open.is_some() as usize));
+        let db: &Database = db;
         let mut env = ScriptEnv {
             locals: &mut frame.locals,
             globals: &mut self.globals,
             flags,
+            seen: hostfns::Seen {
+                db,
+                window: &w,
+                table,
+                to,
+                record,
+                persistent: &self.more.persistent,
+            },
         };
         // The window's found set and sort: summary fields, GetSummary,
         // GetNthRecord.

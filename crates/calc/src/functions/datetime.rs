@@ -101,7 +101,7 @@ pub fn day_of_year(_: &mut Evaluator, a: &[Value]) -> R {
     on_date(a, "DayOfYear", |d| Value::int(doy(d)))
 }
 
-const DAYS: [&str; 7] = [
+pub(super) const DAYS: [&str; 7] = [
     "Sunday",
     "Monday",
     "Tuesday",
@@ -119,7 +119,7 @@ const DAYS_J: [&str; 7] = [
     "金曜日",
     "土曜日",
 ];
-const MONTHS: [&str; 12] = [
+pub(super) const MONTHS: [&str; 12] = [
     "January",
     "February",
     "March",

@@ -619,6 +619,111 @@ fn sql_joins_and_groups() {
     check(&cases);
 }
 
+/// SQL functions, arithmetic, CASE, CAST, subqueries and the system
+/// tables, as the Claris SQL Reference documents them.
+#[test]
+fn sql_functions_and_system_tables() {
+    let q = |sql: &str| format!("ExecuteSQL ( \"{sql}\" ; \"\" ; \"\" )");
+    let cases = [
+        // Documented examples.
+        (
+            "SELECT UPPER('Allen'), LOWER('Allen') FROM Orders FETCH FIRST 1 ROWS ONLY",
+            "ALLEN,allen",
+        ),
+        (
+            "SELECT TRIM(' ABC '), LTRIM(' ABC'), RTRIM('  ABC ') FROM Orders FETCH FIRST 1 ROWS ONLY",
+            "ABC,ABC,  ABC",
+        ),
+        (
+            "SELECT LEFT('Mattson',3), RIGHT('Mattson',4), SUBSTR('Conrad',2,3), SUBSTRING('Conrad',2) FROM Orders FETCH FIRST 1 ROWS ONLY",
+            "Mat,tson,onr,onrad",
+        ),
+        (
+            "SELECT LENGTH('ABC'), CHR(67), ROUND(123.456,2), ROUND(123.456,-2), MOD(10,3), INT(6.4321) FROM Orders FETCH FIRST 1 ROWS ONLY",
+            "3,C,123.46,100,1,6",
+        ),
+        (
+            "SELECT YEAR(DATE '2028-01-30'), MONTH(DATE '2028-01-30'), DAY(DATE '2028-01-30'), DAYOFWEEK(DATE '2004-05-01') FROM Orders FETCH FIRST 1 ROWS ONLY",
+            "2028,1,30,7",
+        ),
+        (
+            "SELECT DATEVAL('2028-01-30') + 3, DATE '2028-01-30' - DATE '2028-01-01' FROM Orders FETCH FIRST 1 ROWS ONLY",
+            "2028-02-02,29",
+        ),
+        // Arithmetic, text joins, POSITION, COALESCE, NULLIF, ABS.
+        (
+            "SELECT Customer + '/' + CAST(Amount * 2 + 1 AS VARCHAR) FROM Orders WHERE Amount > 6",
+            "Ann/21\rbob/15",
+        ),
+        (
+            "SELECT 'a  ' - 'b', 'x' || 'y', -Amount / 2 FROM Orders WHERE Customer = 'Zed'",
+            "ab  ,xy,-1.5",
+        ),
+        (
+            "SELECT POSITION('b' IN Name), COALESCE(Age, 0), NULLIF(City, 'Paris'), ABS(0 - 2) FROM Customers ORDER BY Name",
+            "0,34,,2\r0,0,,2\r1,25,Lyon,2",
+        ),
+        (
+            "SELECT CAST('12' AS INTEGER) + 1, CAST(Joined AS VARCHAR) FROM Customers WHERE Name = 'bob'",
+            "13,2021-06-01",
+        ),
+        // CASE, simple and searched.
+        (
+            "SELECT Customer, CASE WHEN Amount > 6 THEN 'big' WHEN Amount < 4 THEN 'small' ELSE 'mid' END FROM Orders",
+            "Ann,big\rAnn,mid\rbob,big\rZed,small",
+        ),
+        (
+            "SELECT CASE City WHEN 'Paris' THEN 1 ELSE 0 END FROM Customers ORDER BY Name",
+            "1\r1\r0",
+        ),
+        (
+            "SELECT Customer, SUM(Amount) * 2 FROM Orders GROUP BY Customer HAVING SUM(Amount) + 1 > 7 ORDER BY 2",
+            "bob,14\rAnn,30",
+        ),
+        // Subqueries.
+        (
+            "SELECT Name FROM Customers WHERE Name IN (SELECT Customer FROM Orders) ORDER BY Name",
+            "Ann\rbob",
+        ),
+        (
+            "SELECT Customer FROM Orders WHERE Amount = (SELECT MAX(Amount) FROM Orders)",
+            "Ann",
+        ),
+        (
+            "SELECT COUNT(*) FROM Orders WHERE CURRENT_DATE > DATE '2020-01-01' AND CURRENT_TIMESTAMP IS NOT NULL",
+            "4",
+        ),
+        // System tables.
+        (
+            "SELECT TableName, TableId, BaseTableName, BaseFileName FROM FileMaker_Tables",
+            "Customers,1065089,Customers,Contacts\rInvoices,1065090,Invoices,Contacts",
+        ),
+        (
+            "SELECT FieldName, FieldType, FieldId, FieldClass, FieldReps FROM FileMaker_Fields WHERE TableName = 'Customers' AND FieldId IN (3, 4, 5, 6)",
+            "Phone Number,varchar,3,Normal,3\rCurrent Balance,decimal,4,Calculated,1\rToday's Date,global date,5,Normal,1\rStatement,binary,6,Normal,1",
+        ),
+        (
+            "SELECT COUNT(*) FROM FileMaker_Fields WHERE TableName = 'Invoices'",
+            "4",
+        ),
+        (
+            "SELECT BaseTableName, BaseTableId, Source FROM FileMaker_BaseTables",
+            "Customers,129,<Internal>\rInvoices,130,<Internal>",
+        ),
+        (
+            "SELECT FieldName FROM FileMaker_BaseTableFields WHERE BaseTableName = 'Invoices' AND FieldType = 'decimal'",
+            "Total",
+        ),
+        ("SELECT NOPE(1) FROM Orders", "?"),
+        ("SELECT CASE WHEN 1 = 1 THEN 2 FROM Orders", "?"),
+    ];
+    let cases: Vec<(String, &str)> = cases.iter().map(|(s, w)| (q(s), *w)).collect();
+    let mut cases: Vec<(&str, &str)> = cases.iter().map(|(s, w)| (s.as_str(), *w)).collect();
+    let param = "ExecuteSQL ( \"SELECT Name FROM Customers WHERE Name NOT IN (SELECT Customer FROM Orders WHERE Amount > ?) ORDER BY Name\" ; \"\" ; \"\" ; 6 )";
+    cases.push((param, "Cy"));
+    check(&cases);
+}
+
 #[test]
 fn json_parse_and_values() {
     check(&[

@@ -67,8 +67,11 @@ pub(crate) struct DataFile {
 pub struct State {
     files: BTreeMap<u32, DataFile>,
     last_id: u32,
-    /// Configure Persistent Data: name → value.
-    pub persistent: BTreeMap<String, String>,
+    /// Configure Persistent Data: (name, instance id, value), oldest first
+    /// (ListPersistentDataIDs lists them in that order). Kept for the
+    /// session, in memory.
+    // ponytail: not saved with the file; FileMaker keeps them in the file.
+    pub persistent: Vec<(String, String, Value)>,
     /// The PDF being built (Create / Open PDF): the documents appended.
     pdf: Option<Vec<Vec<u8>>>,
 }
@@ -296,20 +299,32 @@ impl Engine {
             }
             GO_TO_LIST_OF_RECORDS => self.go_to_list(host, frame, s),
             CONFIGURE_PERSISTENT_DATA => {
-                // [128] key 1 the name (required: 5), parameter 1 the value.
+                // [128] key 1 the name (required: 5), parameter 1 the
+                // value (none: Delete Entry), parameter 2 the instance id.
                 let name = s
                     .raw_params
                     .text(0)
                     .filter(|n| !n.is_empty())
                     .ok_or(err::COMMAND_INVALID)?;
+                let id = match s.raw_params.calc(2) {
+                    Some(c) => self.eval(host, frame, &c)?.to_text(),
+                    None => String::new(),
+                };
                 let v = match s.raw_params.calc(1) {
-                    Some(c) => Some(self.eval(host, frame, &c)?.to_text()),
+                    Some(c) => Some(self.eval(host, frame, &c)?),
                     None => None,
                 };
-                match v {
-                    Some(v) => self.more.persistent.insert(name, v),
-                    None => self.more.persistent.remove(&name),
-                };
+                let store = &mut self.more.persistent;
+                let at = store.iter().position(|e| e.0 == name && e.1 == id);
+                match (v, at) {
+                    (Some(v), Some(i)) => store[i].2 = v,
+                    (Some(v), None) => store.push((name, id, v)),
+                    (None, Some(i)) => {
+                        store.remove(i);
+                    }
+                    // Deleting a missing entry: 10 (Claris help).
+                    (None, None) => return Err(err::DATA_MISSING),
+                }
                 Ok(Flow::Next)
             }
             CREATE_PDF => {

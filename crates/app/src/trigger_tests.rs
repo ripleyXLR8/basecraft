@@ -389,7 +389,7 @@ fn record_commit_runs_before_and_cancels() {
         &mut app,
         90,
         "open",
-        "$$open & \"[\" & $$tx & \"]\" & Invoices::Size",
+        "$$open & \"[\" & $$tx & \"]\" & Invoices::Size & Get ( RecordOpenState )",
         Some("$$allow"),
     );
     script(&mut app, 91, "tx", "$$tx + 1", None);
@@ -423,8 +423,9 @@ fn record_commit_runs_before_and_cancels() {
     h.run_steps(3);
     assert!(h.state().editing.is_none());
     assert_eq!(global(&h, "$$tx"), "1");
-    // Both runs saw the record's new value before any transaction.
-    assert_eq!(global(&h, "$$open"), "[]S[]S");
+    // Both runs saw the record open (2, modified) with its new value,
+    // before any transaction.
+    assert_eq!(global(&h, "$$open"), "[]S2[]S2");
 }
 
 /// OnObjectExit returning False keeps the focus in the field (no other

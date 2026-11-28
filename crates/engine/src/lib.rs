@@ -2029,6 +2029,16 @@ pub trait Env {
     fn set_variable(&mut self, name: &str, repetition: usize, value: Value);
     /// `None` falls back to the calculation engine's built-in flags.
     fn get(&mut self, flag: &str) -> Option<Value>;
+    /// [`calc::Context::host_function`]: functions only the window or the
+    /// running script can answer (GetLayoutObjectAttribute, persistent data).
+    fn host_function(
+        &mut self,
+        name: &str,
+        args: &[Value],
+    ) -> Option<Result<Value, calc::EvalError>> {
+        let _ = (name, args);
+        None
+    }
 }
 
 /// A window's found set: record indexes of `table` in the order shown, and
@@ -2350,6 +2360,14 @@ impl calc::Context for RecordContext<'_, '_> {
             .and_then(|e| e.get(flag))
             .or_else(|| self.db.account_flag(flag))
             .or_else(|| self.found_flag(flag))
+    }
+
+    fn host_function(
+        &mut self,
+        name: &str,
+        args: &[Value],
+    ) -> Option<Result<Value, calc::EvalError>> {
+        self.env.as_mut()?.host_function(name, args)
     }
 
     fn variable(&mut self, name: &str, repetition: usize) -> Value {

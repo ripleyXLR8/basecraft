@@ -785,14 +785,16 @@ fn registry_coverage() {
     println!("missing: {missing:?}");
     println!("Get() flags built in: {builtin} / {}", flags.len());
     assert_eq!(reference.len(), 234);
-    assert_eq!((implemented, partial.len()), (234, 37));
+    assert_eq!((implemented, partial.len()), (234, 34));
     assert_eq!(flags.len(), 139); // plus the "Get ( flag )" header line
 }
 
 /// Registered functions short of FileMaker (docs/COVERAGE.md): styled
 /// text keeps no styles, CryptEncrypt has its own byte layout, ExecuteSQL
-/// has no functions, arithmetic or system tables.
-const PARTIAL_FUNCTIONS: [&str; 15] = [
+/// has no correlated subqueries and no ModCount, GetAddonInfo is empty
+/// (no add-ons; not checked), GetLayoutObjectAttribute answers only in
+/// scripts and misses some attributes.
+const PARTIAL_FUNCTIONS: [&str; 17] = [
     "TextColor",
     "TextColorRemove",
     "TextFont",
@@ -808,6 +810,8 @@ const PARTIAL_FUNCTIONS: [&str; 15] = [
     "CryptDecryptBase64",
     "ExecuteSQL",
     "ExecuteSQLe",
+    "GetAddonInfo",
+    "GetLayoutObjectAttribute",
 ];
 
 /// The custom functions pasted into FileMaker Pro 26 to check these

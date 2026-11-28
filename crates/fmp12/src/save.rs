@@ -870,13 +870,23 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             });
         }
 
-        // Tab order: the object's node key 7 = `00 n`. New fields go to the end.
-        let mut tabs: Vec<u64> = old_tabs
+        // Tab order: the object's node key 7 = `00 n`.
+        // The layout's tab order (as edited), then new fields, web viewers,
+        // slide controls and button bars, as FileMaker adds them.
+        let mut tabs: Vec<u64> = new
+            .tab_order
             .iter()
             .copied()
             .filter(|id| news.contains_key(id))
             .collect();
-        tabs.extend(added.iter().filter(|n| n.kind == 1).map(|n| n.id));
+        for n in &added {
+            let web = n
+                .external
+                .is_some_and(|e| e.0 == crate::layouts::WEB_VIEWER);
+            if (matches!(n.kind, 1 | 16 | 18) || web) && !tabs.contains(&n.id) {
+                tabs.push(n.id);
+            }
+        }
         if tabs != old_tabs {
             entries.retain(|e| {
                 let p = ipath(e);

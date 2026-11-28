@@ -1123,7 +1123,12 @@ impl App {
                 }
             });
             ui.menu_button(tr("Format"), |ui| {
-                ui.label(tr("Not implemented yet"));
+                match (self.designer.as_mut(), self.doc.as_ref()) {
+                    (Some(ds), Some(d)) => ds.format_menu(ui, d),
+                    _ => {
+                        ui.label(tr("Not implemented yet"));
+                    }
+                }
             });
             // Layout mode adds the Layouts and Arrange menus.
             if let (Some(ds), Some(d)) = (self.designer.as_mut(), self.doc.as_ref()) {

@@ -1183,7 +1183,12 @@ impl Designer {
         let r = rect_of(b);
         l.objects
             .iter()
-            .filter(|c| matches!(c.kind, kind::PORTAL | kind::TAB_PANEL))
+            .filter(|c| {
+                matches!(
+                    c.kind,
+                    kind::PORTAL | kind::TAB_PANEL | kind::SLIDE_PANEL | 15
+                )
+            })
             .filter(|c| !not.contains(&c.id) && visible(l, c))
             .filter(|c| rect_of(&l.absolute(c)).expand(0.5).contains_rect(r))
             // The innermost, then the frontmost (first in the list).
@@ -1351,7 +1356,8 @@ impl Designer {
     fn place_inside(&mut self, id: u64) {
         let Some(o) = self.object(id) else { return };
         let b = self.layout.absolute(o);
-        let parent = self.container_for(&b, &BTreeSet::from([id]));
+        // Not into itself or its own panels.
+        let parent = self.container_for(&b, &subtree(&self.layout, id));
         self.set_parent(id, parent);
     }
 

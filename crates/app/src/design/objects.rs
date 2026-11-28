@@ -1213,8 +1213,9 @@ pub(super) fn paint(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::design::{LayoutOp, run_layout_op};
 
     #[test]
     fn number_kinds_round_trip() {
@@ -1223,5 +1224,289 @@ mod tests {
         }
         // Currency keeps the leading symbol and fixed digits.
         assert_eq!(with_number_kind(0x0900, 3), 0x0A04);
+    }
+
+    fn b(t: f64, l: f64, bt: f64, r: f64) -> Bounds {
+        Bounds {
+            top: t,
+            left: l,
+            bottom: bt,
+            right: r,
+        }
+    }
+
+    fn field_id(d: &Doc, table: &str, name: &str) -> u32 {
+        d.db.tables
+            .iter()
+            .find(|t| t.name == table)
+            .and_then(|t| t.field_by_name(name))
+            .map(|f| f.id)
+            .unwrap()
+    }
+
+    fn last(ds: &Designer) -> u64 {
+        *ds.sel.iter().max().unwrap_or(&0)
+    }
+
+    /// "Objects Demo", a new layout of the Assets template made through the
+    /// designer's commands: formatted fields, conditional formats, a
+    /// placeholder, a hide condition, a popover, a slide control, a button
+    /// bar running a script step, a web viewer and a tab order. Two records.
+    pub(crate) fn objects_demo() -> Option<Doc> {
+        let mut d = super::super::tests::template("Assets")?;
+        let list = d.layouts.iter().position(|l| l.name == "Asset List")?;
+        let to = (d.layouts[list].table_occurrence & 0xFFF) as u32;
+        let new = LayoutOp::New {
+            name: "Objects Demo".into(),
+            to,
+        };
+        let i = run_layout_op(&mut d, list, &new).ok()?;
+        let mut ds = Designer::new(&d, i);
+        let bi = ds
+            .layout
+            .parts
+            .iter()
+            .position(|p| p.kind == ly::part::BODY)?;
+        super::super::resize_part(&mut ds.layout, bi, 560.0);
+        let y = ds.layout.parts[bi].top + 10.0;
+        let ids: BTreeMap<&str, u32> = [
+            "Name",
+            "Price",
+            "Purchase Date",
+            "CreationTimestamp",
+            "Description",
+            "Serial Number",
+            "Vendor",
+        ]
+        .into_iter()
+        .map(|n| (n, field_id(&d, "Assets", n)))
+        .collect();
+        let f = |n: &str| ids[n];
+        // Name: placeholder; red bold when "Laptop"; yellow when no price.
+        ds.insert_field(&d, b(y, 140.0, y + 30.0, 340.0), to, f("Name"), true);
+        let name = last(&ds);
+        let mut laptop = CondRow::new();
+        laptop.value1 = "Laptop".into();
+        laptop.bold = true;
+        let mut no_price = CondRow::new();
+        no_price.op = op::FORMULA;
+        no_price.formula = "IsEmpty ( Assets::Price )".into();
+        no_price.color = None;
+        no_price.fill = Some(Color32::from_rgb(255, 240, 150));
+        let conds = vec![laptop.build(&d).ok()?, no_price.build(&d).ok()?];
+        let placeholder = compile(&d, "\"Asset name\"").ok()?;
+        let tip = compile(&d, "\"The asset's name\"").ok()?;
+        if let Some(o) = ds.object_mut(name) {
+            o.placeholder = Some(placeholder);
+            o.tooltip = Some(tip);
+            o.conditions = conds;
+        }
+        // Price: currency, thousands, parentheses, red when negative.
+        ds.insert_field(
+            &d,
+            b(y + 40.0, 140.0, y + 70.0, 340.0),
+            to,
+            f("Price"),
+            true,
+        );
+        let price = last(&ds);
+        let mut fmt = Format::new_default();
+        fmt.number.flags =
+            with_number_kind(0x0800, 3) | num::FIXED_DIGITS | num::THOUSANDS | num::NEGATIVE_COLOR;
+        fmt.number.currency = "$".into();
+        fmt.number.digits = 2;
+        fmt.number.negative_style = 2;
+        ds.object_mut(price)?.format = Some(fmt);
+        // Purchase Date: "Saturday, March 7, 2026".
+        ds.insert_field(
+            &d,
+            b(y + 80.0, 140.0, y + 110.0, 400.0),
+            to,
+            f("Purchase Date"),
+            true,
+        );
+        let date = last(&ds);
+        let mut df = Format::new_default();
+        df.date.format = 6;
+        ds.object_mut(date)?.format = Some(df);
+        // Creation timestamp: "Mar 7, 2026 2:05 PM".
+        let r = b(y + 120.0, 140.0, y + 150.0, 400.0);
+        ds.insert_field(&d, r, to, f("CreationTimestamp"), true);
+        let stamp = last(&ds);
+        let mut tf = Format::new_default();
+        tf.date.format = 4;
+        tf.time.flags = 0x83;
+        tf.time.minsec_style = 1;
+        ds.object_mut(stamp)?.format = Some(tf);
+        // Description: hidden when the price is over 1,000; slides up.
+        ds.insert_field(
+            &d,
+            b(y + 160.0, 140.0, y + 190.0, 400.0),
+            to,
+            f("Description"),
+            true,
+        );
+        let desc = last(&ds);
+        let hide = compile(&d, "Assets::Price > 1000").ok()?;
+        if let Some(o) = ds.object_mut(desc) {
+            o.hide = Some(hide);
+            o.options |= ly::SLIDE_UP | ly::SLIDE_DIRECTLY_ABOVE | ly::RESIZE_PART;
+        }
+        // Popover button "Details" and, in its popover, the serial number.
+        ds.insert_popover_button(b(y, 450.0, y + 30.0, 560.0));
+        let pb = ds
+            .layout
+            .objects
+            .iter()
+            .find(|o| o.kind == kind::POPOVER_BUTTON)?
+            .id;
+        let pop = ds.object(pb)?.popover?;
+        ds.object_mut(pb)?.text = Some("Details".into());
+        if let Some(o) = ds.object_mut(pop) {
+            o.label = Some(fmp12::save::text_literal_tokens("Asset details"));
+            o.bounds = b(y + 40.0, 450.0, y + 160.0, 740.0);
+        }
+        ds.insert_field(
+            &d,
+            b(y + 80.0, 470.0, y + 110.0, 720.0),
+            to,
+            f("Serial Number"),
+            false,
+        );
+        // Slide control: the vendor on the first panel, a text on the second.
+        ds.insert_slide_control(b(y + 210.0, 20.0, y + 330.0, 330.0));
+        ds.insert_field(
+            &d,
+            b(y + 230.0, 40.0, y + 260.0, 300.0),
+            to,
+            f("Vendor"),
+            false,
+        );
+        let sc = ds
+            .layout
+            .objects
+            .iter()
+            .find(|o| o.kind == kind::SLIDE_CONTROL)?
+            .id;
+        let second = ds
+            .layout
+            .objects
+            .iter()
+            .filter(|o| o.parent == Some(sc))
+            .map(|o| o.id)
+            .nth(1)?;
+        ds.add_child(
+            second,
+            LayoutObject {
+                kind: kind::TEXT,
+                bounds: b(20.0, 20.0, 44.0, 280.0),
+                style_raw: new_style(70),
+                text: Some("Second slide".into()),
+                ..Default::default()
+            },
+        );
+        // Button bar: the first segment goes to the Asset List layout.
+        ds.insert_button_bar(b(y + 350.0, 20.0, y + 380.0, 380.0));
+        let bar = ds
+            .layout
+            .objects
+            .iter()
+            .find(|o| o.kind == kind::BUTTON_BAR)?
+            .id;
+        let seg = ds
+            .layout
+            .objects
+            .iter()
+            .filter(|o| o.parent == Some(bar))
+            .map(|o| o.id)
+            .min()?;
+        let list_id = d.layouts[list].id;
+        let step = fmp12::scripts::targeted_step(fmp12::scripts::id::GO_TO_LAYOUT, list_id);
+        if let Some(o) = ds.object_mut(seg) {
+            o.button = Some(step);
+            o.label = Some(fmp12::save::text_literal_tokens("Asset List"));
+            o.text = Some("Asset List".into());
+        }
+        ds.object_mut(bar)?.selected = Some(seg);
+        // Web viewer: an address computed from the name.
+        let url = compile(&d, "\"https://example.com/?q=\" & Assets::Name").ok()?;
+        ds.insert_web_viewer(b(y + 400.0, 20.0, y + 540.0, 520.0), url);
+        // Tab order: name, price, date, the description, the timestamp.
+        ds.layout.tab_order = vec![name, price, date, desc, stamp];
+        ds.layout.width = ds.layout.width.max(760.0);
+        ds.apply(&mut d);
+        // Two records.
+        let ti = d.db.tables.iter().position(|t| t.name == "Assets")?;
+        let tid = d.db.tables[ti].id;
+        let rows = [
+            ("Laptop", "-1234.5", "3/7/2026"),
+            ("Desk", "300", "1/15/2025"),
+        ];
+        for (n, p, day) in rows {
+            let r = d.db.new_record(tid)?;
+            let v = &mut d.db.tables[ti].records[r].values;
+            v.insert(f("Name"), n.into());
+            v.insert(f("Price"), p.into());
+            v.insert(f("Purchase Date"), day.into());
+            v.insert(f("Description"), format!("About the {n}"));
+        }
+        Some(d)
+    }
+
+    pub(crate) fn written(d: &Doc) -> Vec<u8> {
+        let b = d.db.save(&d.file).unwrap();
+        let f = fmp12::File::from_bytes(b).unwrap();
+        fmp12::save::save_layouts(&f, &d.db.layouts).unwrap()
+    }
+
+    /// Everything the demo set survives writing and reading back.
+    #[test]
+    fn objects_round_trip() {
+        let Some(d) = objects_demo() else { return };
+        let f = fmp12::File::from_bytes(written(&d)).unwrap();
+        let back = ly::layouts(&f).unwrap();
+        let l = back.iter().find(|l| l.name == "Objects Demo").unwrap();
+        let mine =
+            d.db.layouts
+                .iter()
+                .find(|x| x.name == "Objects Demo")
+                .unwrap();
+        let count = |k| l.objects.iter().filter(|o| o.kind == k).count();
+        assert_eq!(count(kind::POPOVER_BUTTON), 1);
+        assert_eq!(count(kind::POPOVER), 1);
+        assert_eq!(count(kind::SLIDE_CONTROL), 1);
+        assert_eq!(count(kind::SLIDE_PANEL), 3);
+        assert_eq!(count(kind::BUTTON_BAR), 1);
+        let one = |k| l.objects.iter().find(|o| o.kind == k).unwrap();
+        let (pb, pop) = (one(kind::POPOVER_BUTTON), one(kind::POPOVER));
+        assert_eq!((pb.popover, pop.popover), (Some(pop.id), Some(pb.id)));
+        let web = l.objects.iter().find(|o| o.url.is_some()).unwrap();
+        assert_eq!(web.external, Some((ly::WEB_VIEWER, WEB_FLAGS)));
+        for o in &mine.objects {
+            let x = l.objects.iter().find(|x| x.id == o.id).unwrap();
+            // New fields without formats take their prototype's.
+            if o.format.is_some() {
+                assert_eq!(x.format, o.format, "formats of {}", o.id);
+            }
+            assert_eq!(x.conditions, o.conditions, "conditions of {}", o.id);
+            assert_eq!(x.hide, o.hide);
+            assert_eq!(x.placeholder, o.placeholder);
+            assert_eq!(x.tooltip, o.tooltip);
+            assert_eq!(x.parent, o.parent, "parent of {}", o.id);
+            assert_eq!(ly::effective_options(o), x.options, "options of {}", o.id);
+        }
+        assert_eq!(l.tab_order[..5], mine.tab_order[..]);
+        assert!(one(kind::BUTTON_BAR).selected.is_some());
+    }
+
+    /// `BASECRAFT_OBJECTS_DEMO=<out.fmp12>`: writes the demo for
+    /// `tools/oracle/layout_check.ps1`.
+    #[test]
+    fn objects_demo_file() {
+        let Some(out) = std::env::var_os("BASECRAFT_OBJECTS_DEMO") else {
+            return;
+        };
+        let Some(d) = objects_demo() else { return };
+        std::fs::write(out, written(&d)).unwrap();
     }
 }

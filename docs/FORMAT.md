@@ -775,7 +775,11 @@ navigation. The break field of a sub-summary (field 6) is
 * Object kinds (XML `kind`): 1 field, 2 text, 3 graphic, 4 line (style
   type 50), 5 rectangle (51), 6 opens in FileMaker (rounded rectangle,
   🔸), 7 oval (53), 8 group (no style), 9 portal (83), 10 button (80),
-  11 tab control (81), 12 tab panel (82), 13 web viewer, 18 button bar.
+  11 tab control (81), 12 tab panel (82), 13 external object (web
+  viewer 86, chart 85), 14 popover button (80), 15 popover (89), 16 slide
+  control (91), 17 slide panel (92), 18 button bar (78; its segments are
+  buttons of style type 79). Kinds 13–18 were made with FileMaker's Insert
+  menu and read back.
   Kinds 3, 7 and 8 were checked by writing them and reading FileMaker's
   XML type names. A field's control style is field 8.5 (0 edit box,
   1 drop-down list, 2 pop-up menu, 3 checkbox set, 4 radio button set,
@@ -786,9 +790,17 @@ navigation. The break field of a sub-summary (field 6) is
   FileMaker's Layout mode): autosizing anchors in the top bits, `1 << 28`
   left, `1 << 29` top, `1 << 30` right, `1 << 31` bottom (left + top =
   FileMaker's default); `0x2` locked; `0x10` slide up (based on all
-  objects above); `0x20` slide left; `0x200` hide when printing. Seen,
-  meaning unknown: `0x1`, `0x8`, `0x3000` (lines), `0x4000` (fields,
-  buttons).
+  objects above); `0x20` slide left; `0x200` hide when printing;
+  `0x8000` slide up based on the objects directly above only, `0x40` also
+  resize the enclosing part (each set in FileMaker's Inspector, Sliding &
+  visibility); `0x4` the object has a "Hide object when" calculation,
+  `0x100` the hide condition applies in Find mode (Inspector › Data ›
+  Behavior). `0x1` = the object has conditional formats (`.[138]`) and
+  `0x4000` = it has a tooltip (`.[3]`): both hold on every template object
+  and on the objects FileMaker wrote in the experiments. `0x8` is set by
+  FileMaker on new popover buttons and button bar segments (and on some
+  template buttons and containers); toggling every Inspector option never
+  changed it, its meaning is not known. `0x3000` (lines): not decoded.
 * Field 8 of a field: `{1 options (0x1200E0 on edit boxes), 2 reference,
   3: 1, 4: 0, 5 control style, 6 value list, 7: 1, 8: 1}`.
 * Portal (field 15): `{1: 0, 2 TO (XML form), 3 options (273), 5 first
@@ -799,12 +811,70 @@ navigation. The break field of a sub-summary (field 6) is
   3 tab width, 4: 0}`; its label is node key 1 and the calculation `.[2]`.
 * `[4].[5].[L].[5]` key 0 = last object id (length-prefixed integer).
 * `[4].[5].[L].[5].[obj]`: key 1 text, key 7 = position in the tab order
-  (`00 n`, 1-based), key 13 (field formatting, `00 00` elsewhere: number,
-  date and time formats, the XML's `<ExtendedAttributes><Formatting>`; not
-  decoded), key 16 = object name (empty: `00 10`), keys 216/217 = UUIDs;
-  `.[3]` button label or field tooltip `{4: 01 00, 5: tokens, 6: tokens}`
-  (a text literal is `13 len text 00`, §11); `.[6]` placeholder; `.[17]`
-  button step parameters. A button without node key 1 shows no label.
+  (`00 n`, 1-based), key 13 = data formatting (below; `00 00` without),
+  key 16 = object name (empty: `00 10`), keys 216/217 = UUIDs.
+  Calculations are sub-nodes `{4: 01 00, 5: tokens, 6: compiled form}`
+  (a text literal is `13 len text 00`, §11): `.[2]` button, popover
+  button or segment label (a popover's title; a tab panel's label),
+  `.[3]` tooltip (of any object), `.[6]` placeholder text of a field,
+  `.[141]` "Hide object when", `.[128]` a web viewer's address (a
+  chart's title, see Charts); `.[138]` conditional formats (below);
+  `.[17]` button step parameters. A static button label is node key 1
+  plus styled text runs in `.[1]`.
+* Popover button (field 17): `{1: 0, 2: 2, 3 popover id, 5 icon size 12,
+  6: 0}`; its popover (field 18): `{1 options, 3 position, 4 popover
+  button id}`. The popover is a top-level object that lists its objects
+  in field 6; it is not in the tab order. Slide control (field 19) `{1
+  options}`, slide panel (field 20) `{1: 0}`, the panels are the
+  control's children (field 6) and the front one is the first.
+  🔸 slide options bits are not decoded (`slideFlagSet` of the clipboard
+  XML; BaseCraft assumes 1 = no swipe, 2 = no dots). Button bar (field
+  21): `{1 options, 2 active segment id}`. Web viewer (field 11): `{1:
+  0x57454256 'WEBV', 2: 0, 3 options}`; a new one has options 32781.
+* **Conditional formats** `[obj].[138]`: key 4 = count (u16), then
+  `.[128 + i]` per condition, in order: key 1 = first value as typed,
+  key 6 = second value (between), key 13 = `{1 options, 2 style {1 local
+  rules, 3: 0}, 3 operator}`, `.[5]` = the formula FileMaker evaluates.
+  Operators, in the order of the Conditional Formatting dialog: 0
+  formula, 1 between, 2 not between, 3 equal, 4 not equal, 5 greater, 6
+  less, 7 greater or equal, 8 less or equal, 9 containing, 10 not
+  containing, 11 beginning with, 12 ending with, 13 empty, 14 before
+  today, 15 today, 16 after today, 17–20 more / less than x days
+  after / before. For a value test FileMaker writes the formula itself
+  on `Self` (`Self = "hello"` for "equal to hello", tokens `FA 00 44 13
+  …`): a value test pasted without it never applies. The style holds the
+  `.self` normal-state properties the dialog sets (text and fill colour,
+  weight, style, underline…).
+* **Data formatting** (node key 13, `fmp12::formats`): a 210-byte record
+  (213 with the container format), big endian, strings UTF-16 BE padded
+  with zeros. Offsets were mapped by pasting field objects whose
+  clipboard XML (`NumFormat`, `DateFormat`, `TimeFormat` attributes)
+  took one value at a time, and meanings by reading how FileMaker Pro 26
+  shows -1234.5678, 7 March 2026 and 14:05:09 with each one
+  (`print::format` tests).
+
+  | Bytes | Meaning |
+  |------:|---------|
+  | 2–3 | number options: `0x1` general, `0x2` thousands separator, `0x4` notation (currency, or percent with `0x10`), `0x8` fixed decimals, `0x20` Boolean, `0x100` as entered, `0x200` set with currency (no visible effect), `0x400` symbol before the minus sign, `0x800` leading symbol (else trailing), `0x1000` negative colour, `0x2000` hide zero, `0x4000` system separators (the locale's, with thousands) |
+  | 4 | numeral style |
+  | 5 | negative style: 0 `-1234`, 1 `1234-`, 2 `(1234)`, 3 `<1234>`, 4 `1234 CR`, 5 `▲1234`, 6–7 no sign |
+  | 6–17 | currency symbol |
+  | 18–19, 20–21 | thousands and decimal separators |
+  | 22–24 | negative colour (RGB) |
+  | 26–27 | decimal digits |
+  | 28–43, 44–59 | Boolean texts (non-zero, zero) |
+  | 60 | date format: 0 as entered, 1 custom, 2 numeric with 2-digit year and separator (`7/3/26`, the locale's order), 7 the same with 4 digits, 3 long month (`March 7, 2026`), 4 abbreviated month, 5 abbreviated weekday and month, 6 full, 8 system short (as entered), 9–11 system long |
+  | 61, 62, 63 | date numeral style; month and day style: 0 none, 1 leading zero, 2 leading space |
+  | 64–65 | date separator (formats 2 and 7) |
+  | 66–69 | custom date elements: 1 day, 2 abbreviated weekday, 3 weekday, 4 month number, 5 abbreviated month, 6 month name, 7 2-digit year, 8 4-digit year, 9 quarter (`Q1`, `T1` in French), 10 quarter name, 11–17 Japanese eras and names |
+  | 70–149 | custom date texts: before the first element, between, after (5 × 16 bytes) |
+  | 150–151 | time options: `0x1` hours, `0x2` minutes, `0x4` seconds, `0x8` the system's format (shown as entered; FileMaker's default `0x8F`), `0x80` formatted. Custom times are 12-hour with the AM/PM texts; minutes without hours count from midnight; seconds take the number format's fixed decimals |
+  | 152, 153, 154 | time numeral style; hour style and minutes/seconds style: 0 none, 1 leading zero, 2 leading space |
+  | 156–157 | time separator |
+  | 158–173, 174–189, 190–205 | AM, PM and 24-hour suffix texts |
+  | 210–211 | container (graphic) format (🔍 values 0–7, FileMaker's default 5; scaling not decoded) |
+
+  Timestamps take the date format only with a custom time format.
 * `[4].[5].[L].[10]`: a spatial index of the fields, buttons, tab controls
   and button bars: byte-string key = top, left (u16, absolute), id − 1
   (u16); value = `00 len 01 id …` (`len` = length of `01 id`), then

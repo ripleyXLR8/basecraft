@@ -15,7 +15,7 @@ test until this page and the test are updated together.
 |----------|-----------|------:|------------:|--------:|--------:|------|
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 200 | 34 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
 | `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 97 | 8 | 34 | `cargo test -p script get_coverage -- --nocapture` |
-| Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 130 | 28 | 0 (+64 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
+| Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 131 | 28 | 0 (+63 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
 | Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 5 | 2 | 0 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
@@ -52,21 +52,17 @@ decompiled.
    FileMaker_Tables / FileMaker_Fields / FileMaker_BaseTables / FileMaker_BaseTableFields
    system tables; still no correlated subqueries or EXISTS, ModCount is NULL, no
    FileMaker_ValueLists, and nothing was checked against FileMaker's own output.
-2. **Open Transaction**'s Skip auto-enter options (`0x1000`), Skip data entry
-   validation (`0x100`) and Override ESS locking conflicts (`0x200`) are decoded
-   (FileMaker 26, FORMAT.md §8) but not applied.
-3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
-   editing"; their columns are not checked against FileMaker's (PROGRESS.md M4). The
-   flags are known (FileMaker 26, field options `0x1` "Other…", `0x8` "Allow editing",
-   the latter offered for pop-up menus and drop-down lists only) but not drawn.
-4. **`Get()` flags a local solution still misses**: SystemLocaleElements / FileLocaleElements, CustomMenuSetName
+2. **Checkbox sets and radio button sets**: their columns are not checked against
+   FileMaker's (PROGRESS.md M4), and the "Other…" flag of radio button sets is assumed
+   to be the checkbox sets' (`0x1`).
+3. **`Get()` flags a local solution still misses**: SystemLocaleElements / FileLocaleElements, CustomMenuSetName
    (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
    where FileMaker answers). The active-field flags see only fields a script entered, and
    RecordModificationCount is written back on save (a record changed without a commit counts one). The
    other missing flags belong to servers, FileMaker Go or plug-ins.
-5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
+4. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-6. **Web viewers** show their page on Windows, macOS and Linux under X11 or XWayland
+5. **Web viewers** show their page on Windows, macOS and Linux under X11 or XWayland
    (native webview: WebView2, WKWebView, WebKitGTK 4.1) and in the web
    version (a sandboxed `<iframe>` over the canvas: scripts and forms only, no same origin,
    no popups or top navigation), in the main window only (a placeholder box elsewhere:
@@ -82,7 +78,7 @@ decompiled.
    framing (`X-Frame-Options`, CSP `frame-ancestors`) stay blank, and pages have no cookies
    or storage of their own (opaque origin). Set Web Viewer's action codes and Perform JavaScript's parameter layout are confirmed in FileMaker;
    PerformScriptWithOption ignores its option (every call waits for the running script).
-7. **Steps FileMaker runs on Windows that BaseCraft refuses**: the dialogs BaseCraft does
+6. **Steps FileMaker runs on Windows that BaseCraft refuses**: the dialogs BaseCraft does
    not have: Open Manage Database, Manage Value
    Lists, Manage Layouts, Manage Data Sources, Manage Containers, Manage Themes, File
    Options, Sharing (error 9 without full access, else 3), Open Help, Edit Saved Finds,
@@ -169,18 +165,25 @@ LastStepTokensUsed, GuidedAccessState, AccountPasswordDaysRemaining, WindowUUID.
 
 ## Script steps
 
-Partial (29): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
-35 Import Records, 36 Export Records
-(stored options not used, the dialog opens); 37 Save a Copy as (stored path not used);
+Partial (28): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
+35 Import Records (with no dialog and a stored file, the stored mapping, action, auto-enter
+and character set are used; "Don't import first record" is not decoded, so every row is
+imported; folder and XML sources open the dialog), 36 Export Records (with no dialog and a
+stored file, the stored fields, group-by fields, formatting and character set are used;
+the type comes from the extension; Windows, DOS and Mac are written as Latin-1); 37 Save a
+Copy as (the stored path in the file's folder is used; a clone has no records; compacted
+and self-contained copies are plain copies);
 42 Print Setup (no dialog; pages are US Letter, portrait); 43 Print (no print dialog of
-its own and no stored print options, see "Printing" below); 56 Insert Picture, 131 Insert File (stored path and options not
-decoded, a file picker opens); 132 Export Field Contents (stored path not decoded);
+its own and no stored print options, see "Printing" below); 56 Insert Picture, 131 Insert File (a stored file is read with no
+picker; "store only a reference" keeps the path and the data; Insert File's storage and
+compression dialog options are not applied); 132 Export Field Contents (a stored file is
+written with no dialog, a container's file or the text; "automatically open" and "create
+email" ignored);
 63 Send Mail (`mailto:` only, no SMTP); 81 Scroll Window, 84 Set Multi-User, 94 Set Use
 System Formats, 120 Arrange All Windows (do nothing); 128 Perform Find/Replace (a
 script's "current field" searches every field); 138 Re-Login ("with dialog" shows none);
 175 Perform JavaScript in Web Viewer (error 3 where there are no webviews); 169 Close Popover (does nothing); 209 Set
-Dictionary (no dictionaries); 205 Open Transaction (Skip auto-enter / Skip data entry
-validation / Override ESS locking options decoded, not applied); 237 Flush Web Viewer
+Dictionary (no dictionaries); 237 Flush Web Viewer
 Cookies (desktop app only).
 
 Desktop build only (the web build returns 3; `crates/script/src/net.rs` and `net/`): 160
@@ -196,8 +199,7 @@ criteria, sort, offset, limit, `layout.response`, portals; metaData; create, upd
 duplicate, delete; not done: `portalData` writes, `prohibitmode`, the `modId` check: every
 record answers `"0"`; the request read as parameter 0); 225 Save Records as JSONL (both
 formats; the plain format's predefined system prompt is not documented, so no system
-message is written; the Table option is decoded only as its bit `0x100`: where FileMaker
-keeps the table is not known, the layout's table is used); 3 Save a Copy as XML (`FMSaveAsXML`
+message is written; the Table option, bit `0x100`, uses the occurrence at [128] key 17); 3 Save a Copy as XML (`FMSaveAsXML`
 2.3.0.0 with base tables, occurrences, relationships, custom value lists, fields with
 calculation text, script catalog, layouts with parts and top-level objects, steps with id,
 name, state and options; left out: UUIDs, `DDR_INFO`, `Metadata`, themes, custom menus,
@@ -242,8 +244,10 @@ font, and Helvetica in PDFs; non-Latin text in PDFs is not covered (WinAnsi). Me
 as references resolve in Browse, Preview and PDF; Layout mode shows the raw reference.
 
 Partial control styles (2): Checkbox Set, Radio Button Set (one checkbox or radio button per
-value-list value, in columns, in Browse and Find modes; no "Other…" item, "Allow editing"
-ignored, though their flags are decoded, see the top gaps). Drop-down Calendar (a month popup, the picked day written in the file's date
+value-list value, in columns, in Browse and Find modes; "Other…" comes last in Browse mode
+when "Allow entry of other values" is set and opens a dialog for the values outside the
+list; the radio set's flag is assumed to be the checkbox set's). Pop-up menus and drop-down
+lists offer "Other…" and, for a custom value list with "Allow editing", "Edit…". Drop-down Calendar (a month popup, the picked day written in the file's date
 format) and Concealed Edit Box (bullets) are implemented.
 
 ## Error codes

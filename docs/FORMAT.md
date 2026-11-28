@@ -694,7 +694,7 @@ did not know; those steps were left out below.
 | Undo/Redo | 1 undo, 2 redo, 3 toggle | — | — |
 | Set Next Serial Value | 0 | `0x4000` | inline field; [128] value |
 | Insert from Index, Insert from Last Visited | 0 | `0x1000` select | inline field |
-| Export Field Contents | 0 | `0x200` create folders | inline field; [128] key 130 path list |
+| Export Field Contents | 0 | `0x200` create folders, `0x2000_0000` automatically open | inline field; [128] key 130 path list |
 | Truncate Table | 1 a table (inline `03 02 <path int>`), 0 none | `0x80` no dialog | — |
 | Constrain / Extend Found Set | 0 | `0x200_0000` restore, `0x8000` | stored requests at `[6]`, as Perform Find |
 | Perform Quick Find | 0 | `0x4000` | [128] text |
@@ -709,8 +709,11 @@ did not know; those steps were left out below.
 | View As | 1 form, 2 list, 3 table, 4 cycle | — | — |
 | Set Zoom Level | 1–8: 25, 50, 75, 100, 150, 200, 300, 400 %; 9 zoom in, 10 zoom out | `0x8_0000` lock | — |
 | Open File, Close File | 0 | `0x100` hidden | key 32 file reference |
-| Save a Copy as | 1 copy, 2 compacted, 3 clone, 4 self-contained | `0x2000_0000` automatically open | [128] key 130 path list |
-| Print, Print Setup, Import / Export Records | (Import: 1) | `0x80` no dialog | — |
+| Save a Copy as | 1 copy, 2 compacted, 3 clone, 4 self-contained (clipboard `<SaveAsType value="Copy|CompactedCopy|Clone|SelfContainedCopy">`) | `0x2000_0000` automatically open, `0x200` create folders | [128] key 130 path list |
+| Print, Print Setup | 0 | `0x80` no dialog | — |
+| Import Records | 1 a file, 2 a folder, 4 XML | `0x80` no dialog, `0x200_0000` restore (with stored options), `0x8000` with a mapping, `0x1000_0000` verify SSL certificates | [128] key 130 the source; root key 132 the mapping (below) |
+| Export Records | 0 | `0x80` no dialog, `0x200_0000` restore, `0x200` create folders, `0x2000_0000` automatically open | [128] key 130 the output file; root key 133 the order (below) |
+| Insert Picture, Insert File | 0 | `0x800` store only a reference; Insert File `0x200` dialog options set | inline field; [128] key 130 the file (`image:` for pictures); Insert File: [128] key 3 storage (0 let user choose, 1 reference, 2 insert), [129] key 3 compression (0 let user choose, 1 never, 2 when possible), [130] key 3 display (0 icon, 1 content) |
 | Save Records as PDF / Excel | (PDF: 1 records being browsed) | `0x80` no dialog, `0x200` create folders | [128] key 130 path list |
 | Open URL | 0 | `0x80` no dialog | [128] URL |
 | Send Mail (client) | 0 | `0x80` no dialog | [128] To, [129] CC, [130] BCC, [131] subject, [132] message |
@@ -721,9 +724,47 @@ did not know; those steps were left out below.
 | Insert from URL | 0 | `0x1000` select, `0x80` no dialog, `0x100` do not encode the URL, `0x1000_0000` verify SSL certificates, `0x1`/`0x4` target | [128] URL, [129] cURL options; target as Insert Text: [160] key 1 variable, [160].[5] its repetition (XML position 32), or the inline field |
 | Execute FileMaker Data API | 0 | `0x1000` select, `0x1`/`0x4` target | [128] the request; target as Insert from URL |
 | Save a Copy as XML | 0 | `0x20` output file, `0x100` details for analysis tools, `0x200` each layout object's binary data, `0x8000` options as JSON | [128] key 130 the output file; [128] the window (XML "Window name"), [129] the JSON options |
-| Save Records as JSONL | 0 | `0x20` output file, `0x1000` format for fine-tuning, `0x200` create folders, `0x1` completion field, `0x100` a table | [128] key 130 the output file; [130] system, [131] user, [132] assistant prompt (XML positions 2–4); the completion field inline. 🔸 Where the table is kept is not known (not inline, not [129–134] key 17) |
-| Open Transaction, Commit Transaction | 14 (as FileMaker writes them) | Open: `0x1000` skip auto-enter options, `0x100` skip data entry validation, `0x200` override ESS locking conflicts | — |
+| Save Records as JSONL | 0 | `0x20` output file, `0x1000` format for fine-tuning, `0x200` create folders, `0x1` completion field, `0x100` a table | [128] key 130 the output file; [128] key 17 the table's occurrence (`03 D0 hi lo`, counted only with `0x100`; clipboard `<Option state="True"/>` and `<Table>`); [130] system, [131] user, [132] assistant prompt (XML positions 2–4); the completion field inline |
+| Open Transaction, Commit Transaction | 14 (as FileMaker writes them) | Open: `0x1000` skip auto-enter options, `0x100` skip data entry validation, `0x200` override ESS locking conflicts (BaseCraft applies the first two to records created or set until the commit) | — |
 | Revert Transaction | 0 | `0x100` with a condition, `0x200` with an error code | [128] condition, [129] error code, [130] error message |
+
+**Import and Export Records** (`script::io`; decoded Nov 2026 from steps
+pasted into copies of Tasks, copied back from the Script Workspace as
+FileMaker's own clipboard XML, read in Save a Copy as XML and in the raw
+file, then bytes overwritten in a copy and read back the same way):
+
+* Import, root key 132: `len TO | action | options | charset | u16 n |
+  n × (len 01 field, kind)`. One entry per source column, in order; kind
+  0 import, 1 do not import, 2 match. Action 0 add (clipboard
+  `method="Add"`), 1 update existing records in the found set (clipboard
+  `Update`, XML `Replace`), 2 update matching records (clipboard
+  `UpdateOnMatch`, XML `Update`); 3 has no name. Options: `0x01` split
+  repetitions, `0x02` auto-enter, `0x04` match field names, `0x08` add
+  remaining records (`AddRemainingRecords`), `0x10` keep containers
+  (`PreserveContainer`), `0x20` keep original data (`KeepOriginalData`);
+  `0x40` and `0x80` show nothing in the XML. Character set 0 Windows
+  ANSI, 1 DOS, 2 Mac Roman, 3 Unicode, 5 UTF-8 (clipboard `Windows`,
+  `DOS`, `Macintosh`, `Unicode`, `UTF-8`).
+* Import, root key 240: `00 | u16 n | n × (len 01 field, u8)`, the
+  target fields of the mapping with their `FieldOptions` (1, 2 seen; not
+  used). 🔸 "Don't import first record (contains field names)" was not
+  found in either key (its clipboard name is unknown): BaseCraft imports
+  every row.
+* Export, root key 133: `u16 n | n × (len TO, len 01 field, u16 1,
+  len 01 id, len 01 summary field, u16 1) | u16 g | g × (len TO, len 01
+  field, u16 1, u8 selected) | formatting | charset | 01`. The TO is the
+  field's own occurrence (a related field has its TO); the second id is
+  the summary field the XML shows under the field (the first and the u16s
+  showed nothing when changed). Group-by fields are clipboard
+  `<SummaryFields><Field GroupByFieldIsSelected>`. Character set 0
+  Windows ANSI, 1 ASCII DOS, 2 Macintosh, 3 UTF-16, 4 UTF-8; formatting
+  = "Apply current layout's data formatting". The step stores no file
+  type: the extension of the output file names it.
+
+BaseCraft runs both with no dialog when the step names a file (folder and
+XML sources, and steps with dialog, still open the dialog): the mapping
+or order as stored, the format from the extension, the character set
+converted (Windows, DOS and Mac read and written as Latin-1).
 
 The path list ([128] key 130, `script::files::decode_path_list`): a u32
 count, then per path a u8-prefixed kind (`file`; empty for a variable

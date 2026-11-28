@@ -11,12 +11,109 @@ pub(crate) fn concealed(o: &fmp12::layouts::LayoutObject) -> bool {
     o.display == 0 && o.field_flags & fmp12::layouts::field_flags::CONCEALED != 0
 }
 
+fn t(key: &'static str) -> &'static str {
+    if !crate::i18n::french() {
+        return key;
+    }
+    match key {
+        "Other…" => "Autre…",
+        "Edit…" => "Modifier…",
+        "Other" => "Autre",
+        "Edit Value List" => "Modifier la liste de valeurs",
+        "Cancel" => "Annuler",
+        k => k,
+    }
+}
+
+/// The two dialogs of "Other…" and "Edit…", keyed by the control's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Ask {
+    /// "Allow entry of other values" (`field_flags::OTHER`).
+    Other,
+    /// "Allow editing of value list" (`field_flags::EDIT_VALUES`).
+    EditValues,
+}
+
+/// The menu item that opens `ask`.
+pub(crate) fn item(ask: Ask) -> &'static str {
+    t(match ask {
+        Ask::Other => "Other…",
+        Ask::EditValues => "Edit…",
+    })
+}
+
+/// Opens the dialog `ask` of control `id` on `text` (lines = values).
+pub(crate) fn open(ctx: &egui::Context, id: egui::Id, ask: Ask, text: String) {
+    ctx.data_mut(|d| d.insert_temp(id.with(ask), text));
+}
+
+/// Shows the dialog `ask` of control `id` while it is open; the typed
+/// text, one value per line (`\r`-separated), once OK is clicked.
+pub(crate) fn dialog(ctx: &egui::Context, id: egui::Id, ask: Ask) -> Option<String> {
+    let key = id.with(ask);
+    let mut text = ctx.data(|d| d.get_temp::<String>(key))?;
+    let mut done = None;
+    egui::Modal::new(key.with("modal")).show(ctx, |ui| {
+        ui.set_min_width(260.0);
+        ui.heading(t(match ask {
+            Ask::Other => "Other",
+            Ask::EditValues => "Edit Value List",
+        }));
+        let rows = if ask == Ask::Other { 3 } else { 8 };
+        ui.add(egui::TextEdit::multiline(&mut text).desired_rows(rows));
+        ui.horizontal(|ui| {
+            if ui.button("OK").clicked() {
+                done = Some(true);
+            }
+            if ui.button(t("Cancel")).clicked() {
+                done = Some(false);
+            }
+        });
+    });
+    match done {
+        None => {
+            ctx.data_mut(|d| d.insert_temp(key, text));
+            None
+        }
+        Some(ok) => {
+            ctx.data_mut(|d| d.remove::<String>(key));
+            let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            ok.then(|| lines.join("\r"))
+        }
+    }
+}
+
+/// The field text after the "Other…" dialog of a checkbox set: the list
+/// values checked, then the typed ones; of a radio set: the typed value.
+pub(crate) fn with_other(display: u64, current: &str, values: &[String], typed: &str) -> String {
+    if display != 3 {
+        return typed.split('\r').next().unwrap_or_default().to_string();
+    }
+    let mut out: Vec<&str> = current
+        .split('\r')
+        .filter(|x| values.iter().any(|v| v == x))
+        .collect();
+    out.extend(typed.split('\r').filter(|x| !x.is_empty()));
+    out.join("\r")
+}
+
+/// The field's values that are not in the value list (what "Other…" shows).
+pub(crate) fn others(current: &str, values: &[String]) -> String {
+    current
+        .split('\r')
+        .filter(|x| !x.is_empty() && !values.iter().any(|v| v == x))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A checkbox set (`display` 3) or radio button set (4) of `values`, laid
 /// out in columns filling `r`: as many rows as fit in its height, then the
 /// next column. Returns the field's new text when the user clicks one.
+/// With `other` (`field_flags::OTHER`) an "Other…" item comes last, on
+/// when the field holds values that are not in the list; it opens the
+/// [`Ask::Other`] dialog of `other`'s id.
 // ponytail: column-major order and an even column width are not checked
-// against FileMaker; "Other…" (`field_flags::OTHER`) and "Allow editing"
-// (`field_flags::EDIT_VALUES`, pop-ups and drop-downs only) are not drawn.
+// against FileMaker.
 pub(crate) fn value_set(
     ui: &mut egui::Ui,
     lk: &Look,
@@ -24,15 +121,36 @@ pub(crate) fn value_set(
     display: u64,
     values: &[String],
     current: &str,
+    other: Option<egui::Id>,
 ) -> Option<String> {
-    if values.is_empty() {
+    if values.is_empty() && other.is_none() {
         return None;
     }
+    let n = values.len() + other.is_some() as usize;
     let line = lk.font().size + 6.0;
     let rows = ((r.height() / line).floor() as usize).max(1);
-    let cols = values.len().div_ceil(rows);
+    let cols = n.div_ceil(rows);
     let w = r.width() / cols as f32;
     let mut picked = None;
+    if let Some(id) = other {
+        let i = values.len();
+        let at = r.min + Vec2::new((i / rows) as f32 * w, (i % rows) as f32 * line);
+        let cell = Rect::from_min_size(at, Vec2::new(w, line)).intersect(r);
+        let text = RichText::new(item(Ask::Other))
+            .font(lk.font())
+            .color(lk.color);
+        let rest = others(current, values);
+        let on = !rest.is_empty();
+        let clicked = if display == 3 {
+            let mut b = on;
+            ui.put(cell, egui::Checkbox::new(&mut b, text)).clicked()
+        } else {
+            ui.put(cell, egui::RadioButton::new(on, text)).clicked()
+        };
+        if clicked {
+            open(ui.ctx(), id, Ask::Other, rest);
+        }
+    }
     for (i, v) in values.iter().enumerate() {
         let at = r.min + Vec2::new((i / rows) as f32 * w, (i % rows) as f32 * line);
         let cell = Rect::from_min_size(at, Vec2::new(w, line)).intersect(r);
@@ -184,5 +302,14 @@ mod tests {
         assert_eq!(super::toggle("Blue", &vl, "Red"), "Red\rBlue");
         assert_eq!(super::toggle("Red\rBlue", &vl, "Red"), "Blue");
         assert_eq!(super::toggle("x\rBlue", &vl, "Green"), "Green\rBlue\rx");
+    }
+
+    /// "Other…": the values outside the list are what the dialog edits.
+    #[test]
+    fn other_values() {
+        let vl: Vec<String> = ["Red", "Green"].map(String::from).to_vec();
+        assert_eq!(super::others("Red\rx\ry", &vl), "x\ny");
+        assert_eq!(super::with_other(3, "Red\rx", &vl, "z\rw"), "Red\rz\rw");
+        assert_eq!(super::with_other(4, "Red", &vl, "z\rw"), "z");
     }
 }

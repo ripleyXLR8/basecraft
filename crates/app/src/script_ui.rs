@@ -108,10 +108,16 @@ impl App {
                 self.write_output(ctx, path.as_deref(), path.is_none(), "txt", bytes);
                 Some(Answer::Continue)
             }
-            // ponytail: the stored path of Save a Copy as is not used;
-            // the save dialog always asks.
-            UiRequest::SaveCopy { .. } => {
-                self.save(ctx, true);
+            // A stored path in the file's folder is used with no dialog.
+            // ponytail: compacted and self-contained copies are plain
+            // copies (BaseCraft always writes a fresh image).
+            UiRequest::SaveCopy {
+                path,
+                kind,
+                folders,
+            } => {
+                let target = self.stored_target(path.as_deref(), *folders);
+                self.save_to(ctx, true, target, *kind == 3);
                 Some(Answer::Continue)
             }
             UiRequest::Import { .. } => {
@@ -375,6 +381,17 @@ impl App {
             }
             .write(engine::export::Format::Xlsx),
         )
+    }
+
+    /// A stored `file:` path inside the open file's folder (its folders
+    /// made when `folders`); `None`: ask.
+    fn stored_target(&self, path: Option<&str>, folders: bool) -> Option<std::path::PathBuf> {
+        let rel = path.and_then(relative_path)?;
+        let p = self.doc.as_ref()?.path.as_ref()?.parent()?.join(rel);
+        if folders && let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        Some(p)
     }
 
     /// Writes a script's output file: next to the open file when the step

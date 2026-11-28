@@ -634,3 +634,53 @@ fn list_of_records_persistent_data_and_inserts() {
     assert_eq!(run(&mut e, &mut h, Step::new(187)), 5);
     assert_eq!(run(&mut e, &mut h, Step::new(212)), 5);
 }
+
+/// Import Records, Export Records and Export Field Contents with a stored
+/// file and no dialog, laid out as FileMaker 26 writes them (root keys 132
+/// and 133, FORMAT.md §8).
+#[test]
+fn stored_import_and_export() {
+    let mut h = host("io");
+    let mut e = Engine::new(Vec::new());
+    let dir = h.disk.folder.clone().unwrap();
+    std::fs::write(dir.join("in.csv"), "Eve,50\r\nFay,60\r\n").unwrap();
+    let to = [4, 3, 0xD0, 0, (T - 128) as u8];
+    // Add; auto-enter; UTF-8; Name ← 1, Age ← 2.
+    let mut imp = st(35, 0x80, 1, Some("file:in.csv"), None, &[]);
+    let mut b = to.to_vec();
+    b.extend([0, 2, 5, 0, 2, 2, 1, NAME as u8, 0, 2, 1, AGE as u8, 0]);
+    imp.raw_params.kv.insert((vec![], 132), b);
+    assert_eq!(run(&mut e, &mut h, imp.clone()), 0);
+    assert_eq!(h.h.names(), ["Eve", "Fay"]);
+    assert_eq!(h.h.db.tables[0].records.len(), 6);
+    // A missing file: 100, nothing imported.
+    imp.raw_params
+        .kv
+        .insert((vec![128], 130), encode_path_list(&["file:none.csv"]));
+    assert_eq!(run(&mut e, &mut h, imp), 100);
+    assert_eq!(h.h.db.tables[0].records.len(), 6);
+    // Export the found set's Name, Age as UTF-16 text.
+    let mut exp = st(36, 0x80, 0, Some("file:out.tab"), None, &[]);
+    let mut b = vec![0, 2];
+    for f in [NAME, AGE] {
+        b.extend(to);
+        b.extend([2, 1, f as u8, 0, 1, 2, 1, 0, 2, 1, 0, 0, 1]);
+    }
+    b.extend([0, 0, 0, 3, 1]);
+    exp.raw_params.kv.insert((vec![], 133), b);
+    assert_eq!(run(&mut e, &mut h, exp), 0);
+    let out = std::fs::read(dir.join("out.tab")).unwrap();
+    let text: Vec<u16> = out[2..]
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    assert_eq!(out[..2], [0xFF, 0xFE]);
+    assert_eq!(String::from_utf16_lossy(&text), "Eve\t50\r\nFay\t60\r\n");
+    // Export Field Contents [People::Name; file:sub/n.txt; create folders].
+    let mut ef = st(132, 0x200, 0, Some("file:sub/n.txt"), None, &[]);
+    ef.raw[6..11].copy_from_slice(&to);
+    ef.raw[12..15].copy_from_slice(&[2, 1, NAME as u8]);
+    ef.raw[18..20].copy_from_slice(&[0, 1]);
+    assert_eq!(run(&mut e, &mut h, ef), 0);
+    assert_eq!(std::fs::read(dir.join("sub/n.txt")).unwrap(), b"Eve");
+}

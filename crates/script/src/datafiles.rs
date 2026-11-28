@@ -401,7 +401,7 @@ impl Engine {
 
     /// The step's path list, variables (`$path`) replaced by their value;
     /// one entry per line.
-    fn paths(&self, frame: &Frame, s: &Step) -> Vec<String> {
+    pub(crate) fn paths(&self, frame: &Frame, s: &Step) -> Vec<String> {
         let list = s
             .raw_params
             .get(&[128], 130)

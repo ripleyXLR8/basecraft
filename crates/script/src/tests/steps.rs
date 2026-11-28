@@ -249,28 +249,33 @@ const PARTIAL_GET: [&str; 8] = [
 
 /// Steps that run but ignore stored options or do nothing where FileMaker
 /// acts (docs/COVERAGE.md), with the reason.
-const PARTIAL_STEPS: [(u16, &str); 29] = [
+const PARTIAL_STEPS: [(u16, &str); 28] = [
     (18, "no spelling check"),
     (19, "no spelling check"),
     (20, "no spelling check"),
-    (35, "stored import options not used (dialog)"),
-    (36, "stored export options not used (dialog)"),
-    (37, "stored path not used"),
-    (56, "stored path and options not decoded (file picker)"),
+    (
+        35,
+        "first-row option not decoded; folder and XML sources use the dialog",
+    ),
+    (
+        36,
+        "type from the extension; ANSI, DOS, Mac written as Latin-1",
+    ),
+    (37, "compacted and self-contained written as plain copies"),
+    (56, "a reference keeps the file data too"),
     (63, "mailto: only, no SMTP"),
     (81, "does nothing"),
     (84, "does nothing"),
     (94, "does nothing"),
     (120, "does nothing"),
     (128, "a script's \"current field\" searches every field"),
-    (131, "stored path and options not decoded (file picker)"),
-    (132, "stored path not decoded (save dialog)"),
+    (131, "dialog storage and compression options not applied"),
+    (132, "automatically open and create email ignored"),
     (138, "\"with dialog\" shows no dialog"),
     (146, "action codes other than 5 assumed"),
     (175, "parameter layout assumed"),
     (169, "popover not closed"),
     (209, "no dictionaries"),
-    (205, "Skip auto-enter / Skip data entry validation ignored"),
     (
         207,
         "condition, error code, message read as parameters 0-2: not checked",
@@ -1062,6 +1067,44 @@ fn transaction_revert_on_error() {
     assert_eq!(o.result.to_text(), "005|");
     assert_eq!(h.db.tables[0].records.len(), 5);
     assert_eq!(h.db.tables[0].records[0].values[&NAME], "Xavier");
+}
+
+/// Open Transaction [Skip auto-enter options (`0x1000`); Skip data entry
+/// validation (`0x100`)], as FileMaker 26 writes them: a new record gets
+/// no serial and commits with an empty Name that must not be empty.
+#[test]
+fn transaction_skips_auto_enter_and_validation() {
+    let setup = |bit: (u32, usize, u8)| {
+        let mut h = TestHost::new(PEOPLE);
+        for f in h.db.tables[0].fields.iter_mut().filter(|f| f.id == bit.0) {
+            f.def.options.resize(26, 0);
+            f.def.options[bit.1] |= bit.2;
+        }
+        h
+    };
+    let body = |h: &TestHost, o: u32| {
+        vec![
+            rawp(sid::OPEN_TRANSACTION, &[], o, 0),
+            plain(id::NEW_RECORD),
+            var_c(h, "$age", "People::Age"),
+            rawp(sid::COMMIT_TRANSACTION, &[], 0, 0),
+            exit_c(h, "Get(LastError) & \"|\" & $age"),
+        ]
+    };
+    let run = |h: &mut TestHost, o: u32| {
+        let s = body(h, o);
+        go(h, s).1.result.to_text()
+    };
+    // Age a serial number.
+    let mut h = setup((AGE, 10, 1 << 1));
+    assert_ne!(run(&mut h, 0), "0|");
+    assert_eq!(run(&mut h, 0x1000), "0|");
+    // Name not empty: validation fails, unless skipped.
+    let mut h = setup((NAME, 15, 1 << 3));
+    assert_ne!(run(&mut h, 0), "0|");
+    assert_eq!(h.db.tables[0].records.len(), 4);
+    assert_eq!(run(&mut h, 0x100), "0|");
+    assert_eq!(h.db.tables[0].records.len(), 5);
 }
 
 /// Open Script Workspace, Open Settings and Open Find/Replace open the

@@ -9,7 +9,7 @@
 //! basecraft-cli records <file> <table> [--find Field=criterion]… [--omit Field=criterion]…
 //!                       [--sort Field[:desc]]… [--limit N]
 //! basecraft-cli eval    <file> <calculation> [--table T] [--record ID]
-//! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place)
+//! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place; Container=@file inserts a file)
 //! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)
 //! basecraft-cli export  <file> <table> [-o out.csv|.tab|.mer|.xml|.xlsx|.json] [--format F]
@@ -337,11 +337,27 @@ fn eval(d: &Doc, src: &str, table: Option<&str>, record: Option<u32>) -> Res<Jso
 
 fn set_fields(d: &mut Doc, table: u32, idx: usize, values: &[(String, String)]) -> Res<()> {
     let t = d.db.table(table).ok_or("no table")?;
-    let ids: Vec<(u32, String)> = values
-        .iter()
-        .map(|(f, v)| Ok((d.field_id(t, f)?, v.clone())))
-        .collect::<Res<_>>()?;
+    let mut ids: Vec<(u32, String)> = Vec::new();
+    // `Container=@path`: inserts that file, as Insert File does.
+    let mut files: Vec<(u32, String)> = Vec::new();
+    for (f, v) in values {
+        let id = d.field_id(t, f)?;
+        let container = t
+            .field(id)
+            .is_some_and(|x| x.data_type == fmp12::schema::DataType::Container);
+        match v.strip_prefix('@') {
+            Some(p) if container => files.push((id, p.to_string())),
+            _ => ids.push((id, v.clone())),
+        }
+    }
     d.db.set_values(table, idx, &ids);
+    for (id, p) in files {
+        let data = std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?;
+        let name = std::path::Path::new(&p)
+            .file_name()
+            .map_or(p.clone(), |n| n.to_string_lossy().into_owned());
+        d.db.insert_file(table, idx, id, 1, &name, data);
+    }
     denied(d)
 }
 

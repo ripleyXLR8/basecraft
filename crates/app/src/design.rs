@@ -232,6 +232,9 @@ pub struct Designer {
     drag: Option<Drag>,
     tab: Tab,
     text_edit: Option<(u64, String)>,
+    /// Merge fields of the text being edited: as shown (`<<Name>>`) and
+    /// as stored (by reference), to store them back the same way.
+    text_refs: Vec<(String, String)>,
     dialog: Option<Dialog>,
     /// Layout Setup dialog (`layout_setup.rs`).
     setup: Option<crate::layout_setup::Setup>,
@@ -420,6 +423,7 @@ impl Designer {
             drag: None,
             tab: Tab::Position,
             text_edit: None,
+            text_refs: Vec::new(),
             dialog: None,
             setup: None,
             ask: None,
@@ -447,9 +451,46 @@ impl Designer {
         if let Some((id, t)) = &self.text_edit
             && let Some(o) = l.objects.iter_mut().find(|o| o.id == *id)
         {
-            o.text = Some(t.clone());
+            let t = self.stored_text(t);
+            if o.text.as_deref() != Some(t.as_str()) {
+                o.text = Some(t);
+                o.text_runs.clear();
+            }
         }
         l
+    }
+
+    /// Edited text with the merge fields it showed by name stored by
+    /// reference again (fields typed by name stay by name, as FileMaker
+    /// keeps pasted ones).
+    fn stored_text(&self, shown: &str) -> String {
+        self.text_refs
+            .iter()
+            .fold(shown.to_string(), |t, (name, stored)| {
+                t.replace(name, stored)
+            })
+    }
+
+    /// Starts editing text object `id` in place, its merge fields spelled
+    /// by name.
+    fn start_text_edit(&mut self, doc: &Doc, id: u64) {
+        let to = (self.layout.table_occurrence & 0xFFF) as u32;
+        let text = self
+            .object(id)
+            .and_then(|o| o.text.clone())
+            .unwrap_or_default();
+        self.text_refs.clear();
+        let mut rest = text.as_str();
+        while let Some(a) = rest.find("<<") {
+            let Some(b) = rest[a..].find(">>") else { break };
+            let stored = &rest[a..a + b + 2];
+            let shown = doc.db.merge_names(stored, to);
+            if shown != stored {
+                self.text_refs.push((shown, stored.to_string()));
+            }
+            rest = &rest[a + b + 2..];
+        }
+        self.text_edit = Some((id, doc.db.merge_names(&text, to)));
     }
 
     /// Copies the edited layout into the document (FileMaker's "Save").
@@ -716,6 +757,8 @@ impl Designer {
 
     fn end_text_edit(&mut self) {
         if let Some((id, t)) = self.text_edit.take() {
+            let t = self.stored_text(&t);
+            self.text_refs.clear();
             let cur = self
                 .layout
                 .objects
@@ -726,6 +769,9 @@ impl Designer {
                 self.checkpoint();
                 if let Some(o) = self.layout.objects.iter_mut().find(|o| o.id == id) {
                     o.text = Some(t);
+                    // ponytail: style runs index the old text; an edited
+                    // text loses them (FileMaker keeps them per character).
+                    o.text_runs.clear();
                 }
             }
         }
@@ -1997,7 +2043,7 @@ impl Designer {
             && let Some(o) = self.object(id)
         {
             match o.kind {
-                kind::TEXT => self.text_edit = Some((id, o.text.clone().unwrap_or_default())),
+                kind::TEXT => self.start_text_edit(doc, id),
                 fmp12::layouts::kind::EXTERNAL
                     if o.external
                         .is_some_and(|e| e.0 == fmp12::layouts::WEB_VIEWER) =>
@@ -3612,7 +3658,8 @@ fn paint_object(
                 _ => {}
             }
         }
-        kind::TEXT => lk.paint_text(painter, r, o.text.as_deref().unwrap_or("")),
+        // Merge fields by name, as FileMaker's Layout mode shows them.
+        kind::TEXT => lk.paint_styled(painter, r, o, |s| doc.db.merge_names(s, layout_to)),
         kind::RECT if !boxed => {
             painter.rect_stroke(r, 0.0, thin, StrokeKind::Inside);
         }
@@ -4361,5 +4408,32 @@ mod tests {
         ds.apply(&mut d);
         let bytes = fmp12::save::save_layouts(&d.file, &d.db.layouts).unwrap();
         std::fs::write(out, bytes).unwrap();
+    }
+
+    /// Layout mode shows stored merge references by name; editing such a
+    /// text stores them by reference again and replaces the `.[1]` node.
+    #[test]
+    fn merge_fields_edit_by_name() {
+        let Some(mut d) = template("Meetings") else {
+            return;
+        };
+        let mut ds = designer(&d, "Meeting Details");
+        ds.start_text_edit(&d, 26);
+        assert_eq!(
+            ds.text_edit.as_ref().map(|t| t.1.as_str()),
+            Some("DURATION <<Duration>>")
+        );
+        let stored = ds.object(26).unwrap().text.clone().unwrap();
+        if let Some(t) = ds.text_edit.as_mut() {
+            t.1 = "LENGTH <<Duration>>".into();
+        }
+        ds.end_text_edit();
+        let want = stored.replace("DURATION", "LENGTH");
+        assert_eq!(ds.object(26).unwrap().text.as_deref(), Some(want.as_str()));
+        ds.apply(&mut d);
+        let (_, back) = saved(&d);
+        let l = back.iter().find(|l| l.name == "Meeting Details").unwrap();
+        let o = l.objects.iter().find(|o| o.id == 26).unwrap();
+        assert_eq!(o.text.as_deref(), Some(want.as_str()));
     }
 }

@@ -434,6 +434,100 @@ fn paint_text(pdf: &mut Pdf, lk: &Look, r: Rect, text: &str) {
     }
 }
 
+/// Paints a text object's text with its style runs and paragraph
+/// alignment (FORMAT.md §10), each piece of stored text passed through
+/// `f` (merge fields resolved). Font families other than Helvetica are not
+/// embedded: pieces keep their size, colour, bold, italic, underline and
+/// strikethrough.
+fn paint_styled(pdf: &mut Pdf, lk: &Look, r: Rect, o: &LayoutObject, f: impl Fn(&str) -> String) {
+    use fmp12::layouts::{CharStyle, face};
+    let text = o.text.as_deref().unwrap_or("");
+    let runs = o.char_runs();
+    let aligns = o.paragraph_aligns();
+    if runs.is_empty() && aligns.iter().all(|a| *a == 0) {
+        return paint_text(pdf, lk, r, &f(text));
+    }
+    let mut lines: Vec<Vec<(String, CharStyle)>> = vec![Vec::new()];
+    for (piece, style) in fmp12::layouts::styled_pieces(text, &runs) {
+        for (i, s) in f(piece).split(['\r', '\n']).enumerate() {
+            if i > 0 {
+                lines.push(Vec::new());
+            }
+            if let Some(l) = lines.last_mut() {
+                l.push((s.to_string(), style));
+            }
+        }
+    }
+    let (x, y, w, h) = r;
+    let [pt, pr, pb, pl] = lk.padding.map(|p| p as f64);
+    let (cx, cy, cw, ch) = (
+        x + pl,
+        y + pt,
+        (w - pl - pr).max(0.0),
+        (h - pt - pb).max(0.0),
+    );
+    let size_of = |s: &CharStyle| s.size.map_or(lk.font_size, f32::from).max(4.0) as f64;
+    let face_of = |s: &CharStyle| s.face.unwrap_or(if lk.bold { face::BOLD } else { 0 });
+    let line_h = |l: &[(String, CharStyle)]| {
+        l.iter()
+            .map(|p| size_of(&p.1))
+            .fold(lk.font_size.max(4.0) as f64, f64::max)
+            * 1.2
+    };
+    let block: f64 = lines.iter().map(|l| line_h(l)).sum();
+    let mut top = match lk.valign {
+        0 => cy,
+        2 => cy + ch - block,
+        _ => cy + (ch - block) / 2.0,
+    };
+    for (i, line) in lines.iter().enumerate() {
+        let lh = line_h(line);
+        let width = |p: &(String, CharStyle)| {
+            text_width(&p.0, size_of(&p.1) as f32, face_of(&p.1) & face::BOLD != 0) as f64
+        };
+        let lw: f64 = line.iter().map(width).sum();
+        let align = match aligns.get(i).copied().unwrap_or(0) {
+            0 => lk.align,
+            2 => 1,
+            3 => 2,
+            _ => 0,
+        };
+        let mut px = match align {
+            1 => cx + (cw - lw) / 2.0,
+            2 => cx + cw - lw,
+            _ => cx,
+        };
+        let base = top + lh / 1.2 * 0.95;
+        for p in line {
+            let (size, fc) = (size_of(&p.1), face_of(&p.1));
+            let color =
+                p.1.color
+                    .map_or(lk.color, |[r, g, b, _]| look::rgb([r, g, b]));
+            let pw = width(p);
+            let on = |bit: u16| fc & bit != 0;
+            pdf.text_slanted(
+                px,
+                base,
+                size as f32,
+                on(face::BOLD),
+                on(face::ITALIC),
+                color,
+                &p.0,
+                (x, y, w, h),
+            );
+            let t = (size / 14.0).max(0.5);
+            if on(face::UNDERLINE | face::WORD_UNDERLINE | face::DOUBLE_UNDERLINE) {
+                pdf.fill_rect(px, base + size * 0.12, pw, t, color);
+            }
+            if on(face::STRIKETHROUGH) {
+                pdf.fill_rect(px, base - size * 0.3, pw, t, color);
+            }
+            px += pw;
+        }
+        top += lh;
+    }
+}
+
 /// Renders found set `found` (sorted by `sort`) on layout `layout_id` to PDF.
 /// Returns the PDF bytes and the page count.
 pub fn pdf(
@@ -587,8 +681,8 @@ fn draw(
         ctx.db
             .eval_tokens(l, t, layout_to(ctx.layout), record)
             .to_text()
-    } else if let Some(t) = &o.text {
-        ctx.merge(t, record, group, body)
+    } else if o.text.is_some() {
+        return paint_styled(out, lk, r, o, |t| ctx.merge(t, record, group, body));
     } else {
         return;
     };
@@ -632,8 +726,8 @@ fn portal(
                     let v = ctx.db.value(t.id, rr, fid as u32);
                     paint_text(out, lk, cr, &ctx.text(&v));
                 }
-            } else if let Some(t) = &c.text {
-                paint_text(out, lk, cr, t);
+            } else if c.text.is_some() {
+                paint_styled(out, lk, cr, c, str::to_string);
             }
         }
     }

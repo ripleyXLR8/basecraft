@@ -729,6 +729,36 @@ fn charts_render() {
     shot(&mut h, "ours_charts_preview");
 }
 
+/// Styled text objects (style runs, FORMAT.md §10) of a file made in
+/// FileMaker Pro: `BASECRAFT_STYLED=<file>|<layout>` renders that layout
+/// in Browse, Preview and Layout mode (`BASECRAFT_SHOTS`), to compare with
+/// FileMaker's own rendering.
+#[test]
+fn styled_text_render() {
+    let Some(spec) = std::env::var_os("BASECRAFT_STYLED") else {
+        return;
+    };
+    let spec = spec.to_string_lossy().to_string();
+    let (path, layout) = spec.split_once('|').unwrap();
+    let mut app = App::default();
+    app.open("styled".into(), std::fs::read(path).unwrap());
+    let mut h = harness_for(app);
+    h.run_steps(2);
+    let doc = h.state().doc.as_ref().unwrap();
+    let i = doc.layouts.iter().position(|l| l.name == layout);
+    h.state_mut().layout = i.unwrap();
+    h.state_mut().new_record();
+    h.run_steps(3);
+    shot(&mut h, "ours_styled_browse");
+    h.state_mut().mode = Some(Mode::Preview);
+    h.run_steps(3);
+    shot(&mut h, "ours_styled_preview");
+    h.state_mut().mode = Some(Mode::Browse);
+    h.state_mut().enter_layout();
+    h.run_steps(3);
+    shot(&mut h, "ours_styled_layout");
+}
+
 /// A mouse drag on the layout canvas, from and to layout coordinates.
 fn drag_canvas(h: &mut Harness<'_, App>, from: (f32, f32), to: (f32, f32)) {
     let o = h.state().designer.as_ref().unwrap().canvas_origin;

@@ -740,6 +740,34 @@ impl Database {
         Some((to, self.table_of(to)?.field_by_name(field)?.id))
     }
 
+    /// `text` with its stored merge references spelled as Layout mode
+    /// shows them: `<<Field>>` for a field of `layout_to`, else
+    /// `<<TO::Field>>`. Merge fields by name and unknown ones stay as is.
+    pub fn merge_names(&self, text: &str, layout_to: u32) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(a) = rest.find("<<") {
+            let Some(b) = rest[a..].find(">>") else { break };
+            let inner = &rest[a + 2..a + b];
+            out.push_str(&rest[..a + 2]);
+            let name = fmp12::layouts::merge_ref(inner)
+                .or_else(|| fmp12::layouts::merge_field_ref(inner))
+                .and_then(|(to, f)| {
+                    let field = &self.table_of(to)?.field(f)?.name;
+                    if to == layout_to {
+                        return Some(field.clone());
+                    }
+                    let o = self.occurrences.iter().find(|o| o.id == to)?;
+                    Some(format!("{}::{field}", o.name))
+                });
+            out.push_str(name.as_deref().unwrap_or(inner));
+            out.push_str(">>");
+            rest = &rest[a + b + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// Base table of a table occurrence.
     pub fn table_of(&self, to: u32) -> Option<&Table> {
         self.table(self.occurrences.iter().find(|o| o.id == to)?.base_table)
@@ -2542,6 +2570,18 @@ pub(crate) mod tests {
             base_directories: vec![],
             pictures: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn merge_names_spell_references() {
+        let db = sample();
+        let r = |to, f| fmp12::layouts::merge_ref_text(to, f, to != T);
+        let text = format!("Hi <<{}>>, <<{}>> <<Nope>>", r(T, NAME), r(PETS, 1));
+        assert_eq!(
+            db.merge_names(&text, T),
+            "Hi <<Name>>, <<Pets::Owner>> <<Nope>>"
+        );
+        assert_eq!(db.merge_field(&r(PETS, 1), T), Some((PETS, 1)));
     }
 
     /// Adds a summary field of `op` over `target` to People; returns its id.

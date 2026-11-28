@@ -183,8 +183,11 @@ pub fn draw(
                 doc.db
                     .eval_tokens(l, table, layout_to, band.record)
                     .to_text()
-            } else if let Some(t) = &o.text {
-                merge_fields(doc, &Default::default(), t, table, layout_to, band.record)
+            } else if o.text.is_some() {
+                lk.paint_styled(&painter, r, o, |s| {
+                    merge_fields(doc, &Default::default(), s, table, layout_to, band.record)
+                });
+                continue;
             } else {
                 String::new()
             };

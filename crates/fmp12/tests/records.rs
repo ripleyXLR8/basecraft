@@ -104,6 +104,39 @@ fn save_add_edit_delete_roundtrip() {
     assert!(name.auto_index());
 }
 
+/// Record key 252 (modification count) is read, and kept by a save that
+/// edits the record.
+#[test]
+fn modification_counts() {
+    use write::{Entry, Item, encode};
+    let f = synthetic();
+    let rec = |n: &str| std::collections::BTreeMap::from([(1, n.into())]);
+    let first = schema::Records::from([(1, rec("a")), (2, rec("b"))]);
+    let f1 =
+        File::from_bytes(save::save_records(&f, &[(130, first.clone())].into()).unwrap()).unwrap();
+    let mut es = write::entries(&f1).unwrap();
+    es.push(Entry {
+        path: vec![vec![0x80, 2], vec![5], save::path_elem(2)],
+        item: encode(&Item::Kv {
+            key: 252,
+            data: vec![1, 3],
+        }),
+    });
+    write::sort(&mut es);
+    let f2 = File::from_bytes(write::build(&f1.bytes()[..fmp12::SECTOR], &es)).unwrap();
+    assert_eq!(
+        schema::modification_counts(&f2, 130).unwrap(),
+        [(2, 3)].into()
+    );
+    let mut second = first;
+    second.insert(2, rec("edited"));
+    let f3 = File::from_bytes(save::save_records(&f2, &[(130, second)].into()).unwrap()).unwrap();
+    assert_eq!(
+        schema::modification_counts(&f3, 130).unwrap(),
+        [(2, 3)].into()
+    );
+}
+
 #[test]
 fn decodes_typed_values() {
     let Some(f) = local("inventory_records.fmp12") else {

@@ -51,3 +51,11 @@ stacker = "0.1.25"
 # Pinned: psm 0.1.24+ builds with ar_archive_writer, whose licence
 # (Apache-2.0 WITH LLVM-exception) deny.toml does not list.
 psm = "=0.1.23"
+# Get ( SystemLanguage ) on Windows and macOS (the user's locale lives
+# outside the environment there). Already in the tree (egui's font provider).
+sys-locale = "0.3.2"
+
+# Get ( CurrentDate ) etc. in local time: the JavaScript Date's offset.
+# Already in the tree (web-time and web-sys use it).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.107"

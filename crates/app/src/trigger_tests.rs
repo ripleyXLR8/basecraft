@@ -466,3 +466,22 @@ fn script_steps_fire_triggers() {
     );
     assert!(app.trigger_queue.is_empty());
 }
+
+/// Get ( RecordModificationCount ): a commit of an existing record counts,
+/// the commit that creates a record does not.
+#[test]
+fn record_modification_count() {
+    let mut app = shop_app();
+    let t = app.table().unwrap();
+    let count = |app: &App, r: usize| {
+        app.doc.as_ref().unwrap().db.table(t).unwrap().records[r].modifications
+    };
+    app.editing = Some((t, 0));
+    assert!(app.commit_record());
+    assert_eq!(count(&app, 0), 1);
+    app.new_record();
+    let r = app.current_record().unwrap();
+    app.editing = Some((t, r));
+    assert!(app.commit_record());
+    assert_eq!(count(&app, r), 0);
+}

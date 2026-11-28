@@ -49,6 +49,10 @@ pub struct Record {
     /// after the first). A container value is a store id
     /// ([`fmp12::containers::ref_text`]) or a reference path.
     pub values: BTreeMap<u32, String>,
+    /// `Get ( RecordModificationCount )`: commits of changes since the
+    /// record was created (the file's record key 252, FORMAT.md §13).
+    // ponytail: kept in memory; a save keeps the file's previous count.
+    pub modifications: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +120,7 @@ impl Table {
         self.next_record_id += 1;
         self.records.push(Record {
             id: self.next_record_id,
-            values: BTreeMap::new(),
+            ..Record::default()
         });
         self.records.len() - 1
     }
@@ -326,9 +330,14 @@ impl Database {
                     }
                 })
                 .collect();
+            let counts = fmp12::schema::modification_counts(file, t.id)?;
             let records: Vec<Record> = fmp12::schema::records(file, t)?
                 .into_iter()
-                .map(|(id, values)| Record { id, values })
+                .map(|(id, values)| Record {
+                    id,
+                    values,
+                    modifications: counts.get(&id).copied().unwrap_or(0),
+                })
                 .collect();
             let last = fmp12::save::last_record_id(file, t.id)?;
             tables.push(Table {
@@ -1383,6 +1392,20 @@ impl Database {
         gone
     }
 
+    /// Changes to an existing record were committed: its modification
+    /// count goes up (the commit that creates a record does not count;
+    /// callers skip it).
+    pub fn commit_record(&mut self, table: u32, record: usize) {
+        if let Some(r) = self
+            .tables
+            .iter_mut()
+            .find(|t| t.id == table)
+            .and_then(|t| t.records.get_mut(record))
+        {
+            r.modifications += 1;
+        }
+    }
+
     /// Applies modification stamps after a record changed.
     pub fn touch(&mut self, table: u32, record: usize) {
         let Some(ti) = self.tables.iter().position(|t| t.id == table) else {
@@ -2030,6 +2053,20 @@ impl<'a, 'e> RecordContext<'a, 'e> {
             "totalrecordcount" => int(t.records.len()),
             "recordnumber" => int(pos().map_or(0, |p| p + 1)),
             "recordid" => int(t.records.get(self.record).map_or(0, |r| r.id as usize)),
+            "recordmodificationcount" => int(t
+                .records
+                .get(self.record)
+                .map_or(0, |r| r.modifications as usize)),
+            // The privilege set's record access: 2 edit, 1 view, 0 none.
+            "recordaccess" => {
+                let r = (self.record < t.records.len()).then_some(self.record);
+                let can = |a| self.db.can(a, self.table, r);
+                int(if can(Action::Edit) {
+                    2
+                } else {
+                    can(Action::View) as usize
+                })
+            }
             // 0 unsorted, 1 sorted (2, semi-sorted, after records were added).
             "sortstate" => int(self.found.is_some_and(|f| !f.sort.is_empty()) as usize),
             "layoutcount" => int(self.db.layouts.len()),

@@ -1087,19 +1087,27 @@ impl Engine {
         let Some(s) = top.steps.get(top.pc) else {
             return;
         };
+        // FileMaker's Get ( LastErrorLocation ), and Get ( LastErrorDetail )
+        // of a transaction that fails or reverts: script, step, line.
+        let location = format!(
+            "{}\r{}\r{}",
+            top.frame.name,
+            s.name().unwrap_or_default(),
+            top.pc + 1
+        );
         if s.id != id::COMMENT {
             self.last_error = err;
-            if !matches!(flow, Flow::Reverted(..)) {
-                self.error_detail.clear();
+            match flow {
+                // Revert Transaction's custom message, else where it reverted.
+                Flow::Reverted(..) if self.error_detail.is_empty() => {
+                    self.error_detail = location.clone()
+                }
+                Flow::Reverted(..) => {}
+                _ => self.error_detail.clear(),
             }
         }
         if err != 0 {
-            self.last_error_location = format!(
-                "{}\r{}\r{}",
-                top.frame.name,
-                s.name().unwrap_or_default(),
-                top.pc + 1
-            );
+            self.last_error_location = location;
             if !self.error_capture && !host.error(s, err) {
                 Self::halt(run);
                 return;
@@ -1110,6 +1118,7 @@ impl Engine {
                 && self.revert_on_error
                 && let Some(level) = self.revert_transaction(host)
             {
+                self.error_detail = self.last_error_location.clone();
                 return Self::after_revert(run, level);
             }
         }
@@ -1436,6 +1445,9 @@ impl Engine {
             flags.insert("layoutname", Value::text(&l.name));
             let n = db.layouts.iter().position(|x| x.id == l.id).unwrap_or(0) + 1;
             flags.insert("layoutnumber", num(n));
+            // Records via this layout: 0 none, 1 view only, 2 modifiable.
+            let access = db.layout_records(l.id).saturating_sub(1);
+            flags.insert("layoutaccess", num(access as usize));
         }
         if let Some(t) = db.table(table) {
             flags.insert("layouttablename", Value::text(&t.name));
@@ -1515,7 +1527,7 @@ impl Engine {
     /// Commit Records; `skip` = "Skip data entry validation" (fields
     /// validated "always" are still checked).
     fn commit_with(&mut self, host: &mut dyn Host, skip: bool) -> Result<(), u32> {
-        let Some((table, r, _)) = self.open else {
+        let Some((table, r, ref old)) = self.open else {
             if let (t, _, Some(r)) = Self::context(host) {
                 self.last_visited = Some((t, r));
             }
@@ -1528,6 +1540,14 @@ impl Engine {
             .find(|e| !skip || e.always)
         {
             return Err(e.rule.code());
+        }
+        // Counted when an existing record changed (`old` is `None` for a
+        // record this edit created).
+        let now = host.db().table(table).and_then(|t| t.records.get(r));
+        if let Some(o) = old
+            && now.is_some_and(|n| n.values != o.values)
+        {
+            host.db().commit_record(table, r);
         }
         self.open = None;
         self.redo = None;

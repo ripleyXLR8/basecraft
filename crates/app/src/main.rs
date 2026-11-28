@@ -117,6 +117,9 @@ struct App {
     dirty: bool,
     /// Record modified since its last commit (table, record index).
     editing: Option<(u32, usize)>,
+    /// Record made by New Record and not committed yet: its first commit
+    /// leaves Get ( RecordModificationCount ) at 0.
+    created: Option<(u32, usize)>,
     /// Validation failure waiting for the user: message and whether it may be overridden.
     alert: Option<(String, bool)>,
     /// Script engine of the open file (keeps `$$globals` between runs).
@@ -499,11 +502,14 @@ impl App {
         let Some((t, r)) = self.editing else {
             return true;
         };
-        let Some(d) = self.doc.as_ref() else {
+        let Some(d) = self.doc.as_mut() else {
             return true;
         };
         let errs = d.db.validate(t, r);
         if errs.is_empty() {
+            if self.created.take() != Some((t, r)) {
+                d.db.commit_record(t, r);
+            }
             self.editing = None;
             self.fire(event::RECORD_COMMIT);
             self.window_transaction("Modified", t, &[r]);
@@ -948,6 +954,7 @@ impl App {
         f.push(r);
         let n = f.len();
         self.current.insert(t, n - 1);
+        self.created = Some((t, r));
         self.dirty = true;
         self.fire(event::RECORD_LOAD);
     }

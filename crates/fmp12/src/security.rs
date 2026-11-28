@@ -1139,9 +1139,10 @@ fn parse(entries: &[Entry]) -> Security {
             id,
             keyword: text_at(&m, &[], 0x10),
             description: text_at(&m, &[], 3),
+            // FileMaker reads the `[5]` list only when key 02 is `01 01`.
             sets: m
                 .keys()
-                .filter(|(p, _)| p.as_slice() == [5])
+                .filter(|(p, _)| p.as_slice() == [5] && sharing_byte(&m) == 1)
                 .filter_map(|(_, k)| int_key(k))
                 .collect(),
         });
@@ -1261,10 +1262,8 @@ impl Security {
         md5(&[&b])
     }
 
-    /// Extended privilege key 04: keyword, description, the sharing byte
-    /// (2), then each set's key.
-    /// ponytail: the sharing byte is 1 when key 02 is `01 01` (fmreauthenticate10
-    /// in every file we have); BaseCraft keeps key 02 as read.
+    /// Extended privilege key 04: keyword, description, the second byte
+    /// of key 02 (2 when absent), then each set's key.
     fn extended_digest(e: &ExtendedPrivilege, sharing: u8) -> [u8; 16] {
         let mut b = utf16be(&e.keyword);
         b.extend(utf16be(&e.description));
@@ -1569,6 +1568,8 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
                 == Some(&[23, 2, 1, 8])
             && e.path.len() > 4)
     });
+    // Sets with equal content (a copy) share one digest node.
+    let mut seen = BTreeSet::new();
     for s in &new.sets {
         let d = match olds.get(&s.id) {
             Some(o) if **o == *s => old.set_digest(o),
@@ -1576,10 +1577,12 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
         };
         let mut p = spelled(&[23, 2, 1, 8]);
         p.push(d.to_vec());
-        add.push(Entry {
-            path: p.clone(),
-            item: vec![0x80],
-        });
+        if seen.insert(d) {
+            add.push(Entry {
+                path: p.clone(),
+                item: vec![0x80],
+            });
+        }
         add.push(Entry {
             path: p,
             item: kv_entry(&[], s.id, Vec::new()).item,
@@ -1587,7 +1590,6 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
     }
 
     // Extended privileges: set lists (a deleted set leaves every list).
-    let ext = members(&entries, &[23, 3, 5]);
     for e in &new.extended {
         let mut e = e.clone();
         e.sets.retain(|s| sids.contains(s));
@@ -1598,15 +1600,18 @@ pub fn save(file: &File, session: &Session, new: &Security) -> Result<Vec<u8>, S
             continue;
         }
         let base = [23, 3, 5, e.id];
-        drop_keys(&mut entries, &base, &[4]);
+        drop_keys(&mut entries, &base, &[2, 4]);
         entries.retain(|x| ipath(x).is_none_or(|p| !(p.len() == 5 && p[..4] == base && p[4] == 5)));
+        // Key 02 `01 01` switches the set list on (FileMaker ignores `[5]`
+        // without it); `01 02` or no key: no set.
+        let sharing = if e.sets.is_empty() { 2 } else { 1 };
         if !e.sets.is_empty() {
+            add.push(kv_entry(&base, 2, vec![1, 1]));
             add.push(marker(&[23, 3, 5, e.id, 5]));
             for s in &e.sets {
                 add.push(kv_entry(&[23, 3, 5, e.id, 5], *s, Vec::new()));
             }
         }
-        let sharing = ext.get(&e.id).map_or(2, sharing_byte);
         add.push(kv_entry(
             &base,
             4,

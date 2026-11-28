@@ -11,6 +11,8 @@ bigdecimal = "0.4.11"
 calc = { version = "0.1.0", path = "../calc" }
 engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
+# Pictures (PNG, JPEG, BMP); already in the tree through eframe.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
 
 [lints]
 workspace = true

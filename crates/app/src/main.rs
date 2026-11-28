@@ -1824,22 +1824,15 @@ fn merge_fields(
             rest = &rest[a + b + 2..];
             continue;
         }
-        let (to_name, field) = name.split_once("::").unwrap_or(("", name));
-        let to = doc
-            .db
-            .occurrences
-            .iter()
-            .find(|o| o.name.eq_ignore_ascii_case(to_name))
-            .map_or(layout_to, |o| o.id);
-        let value = doc.db.table_of(to).and_then(|tbl| {
-            let f = tbl.field_by_name(field)?;
+        let value = doc.db.merge_field(name, layout_to).and_then(|(to, f)| {
+            let tbl = doc.db.table_of(to)?;
             let r = if to == layout_to {
                 rec?
             } else {
                 *doc.db.related(layout_to, rec?, to).first()?
             };
             let _ = t;
-            Some(doc.db.value(tbl.id, r, f.id).to_text())
+            Some(doc.db.value(tbl.id, r, f).to_text())
         });
         out.push_str(&value.unwrap_or_default());
         rest = &rest[a + b + 2..];

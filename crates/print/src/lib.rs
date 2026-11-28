@@ -16,6 +16,7 @@ pub mod look;
 pub mod merge;
 pub mod objects;
 pub mod pdf;
+pub mod picture;
 
 use std::ops::Range;
 
@@ -369,15 +370,8 @@ impl Ctx<'_> {
                 break;
             };
             let name = &rest[a + 2..a + b];
-            let (to_name, field) = name.split_once("::").unwrap_or(("", name));
-            let to = self
-                .db
-                .occurrences
-                .iter()
-                .find(|o| o.name.eq_ignore_ascii_case(to_name))
-                .map_or(layout_to(self.layout), |o| o.id);
-            if let Some(f) = self.db.table_of(to).and_then(|t| t.field_by_name(field)) {
-                out.push_str(&self.field_text((to as u64, f.id as u64, 1), record, group, body));
+            if let Some((to, f)) = self.db.merge_field(name, layout_to(self.layout)) {
+                out.push_str(&self.field_text((to as u64, f as u64, 1), record, group, body));
             }
             rest = &rest[a + b + 2..];
         }
@@ -561,6 +555,11 @@ fn draw(
         &cond
     };
     paint_box(out, lk, r);
+    if let Some(id) = o.picture
+        && let Some(p) = ctx.db.pictures.get(&id)
+    {
+        out.image(id as u64, p.data(), r);
+    }
     if o.kind == fmp12::layouts::kind::EXTERNAL
         && let Some(u) = &o.url
     {

@@ -548,6 +548,30 @@ struct Raw {
     actions: BTreeMap<u32, crate::scripts::RawParams>,
 }
 
+/// Occurrence and field id of a merge field as FileMaker stores it in a
+/// text object's `.[1]` node (the text between `<<` and `>>`): U+0001,
+/// U+0001 (a field of the layout's table) or U+0002 (related), the length
+/// of the rest as a character (14), then `0003D`, the occurrence id − 128
+/// in five hex digits, `01` and the field id in hex: `<<Duration>>` is
+/// `\u{1}\u{1}\u{e}0003D000020106` (occurrence 130, field 6).
+/// ponytail: only two-digit field ids are seen (the templates' fields are
+/// all below 256); `None` for other forms.
+pub fn merge_ref(inner: &str) -> Option<(u32, u32)> {
+    let rest = inner.strip_prefix('\u{1}')?;
+    let rest = rest
+        .strip_prefix('\u{1}')
+        .or_else(|| rest.strip_prefix('\u{2}'))?;
+    let mut chars = rest.chars();
+    let len = chars.next()? as usize;
+    let s = chars.as_str().strip_prefix("0003D")?;
+    if s.len() + 5 != len || s.len() < 9 || !s.is_ascii() {
+        return None;
+    }
+    let to = u32::from_str_radix(&s[..5], 16).ok()? + 128;
+    let field = u32::from_str_radix(&s[7..], 16).ok()?;
+    Some((to, field))
+}
+
 /// A big-endian integer of up to 8 bytes (keys 240, 241).
 fn be_u64(b: &[u8]) -> u64 {
     b.iter().fold(0, |a, x| (a << 8) | *x as u64)
@@ -761,9 +785,10 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             [4, 5, l, 5, obj] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
             }
-            // Styled text (several fonts or sizes): the characters in
-            // `.[1]` key 1, their lengths in key 0 and the style runs in
-            // `.[1].[255]` (not decoded).
+            // Text with merge fields: `.[1]` key 1, each `<<…>>` holding a
+            // stored reference ([`merge_ref`]); key 0 = three u32 (byte
+            // length, character count, 4). Style runs would be in
+            // `.[1].[255]` (not seen yet, see FORMAT.md §10).
             [4, 5, l, 5, obj, 1] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
             }

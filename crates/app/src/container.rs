@@ -1,4 +1,4 @@
-//! Container fields in Browse mode: pictures (PNG, JPEG), other files as an
+//! Container fields in Browse mode: pictures (PNG, JPEG, BMP), other files as an
 //! icon and a name; Insert Picture/File and Export Field Contents.
 
 use calc::Value;
@@ -98,22 +98,24 @@ pub fn picture(ctx: &egui::Context, painter: &egui::Painter, r: Rect, data: &[u8
     }
 }
 
-/// Picture data egui can show (PNG, JPEG), decoded once per content.
+/// Picture data egui can show (PNG, JPEG, BMP), decoded once per content.
+/// ponytail: no GIF decoder in the dependency tree.
 fn texture(ctx: &egui::Context, data: &[u8]) -> Option<egui::TextureHandle> {
-    let tag = fmp12::containers::image_tag(data)?;
-    if &tag == b"GIFf" {
-        return None; // ponytail: no GIF decoder in the dependency tree.
+    if data.is_empty() {
+        return None;
     }
     let id = egui::Id::NULL.with(("basecraft-container-image", data));
-    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
-        return Some(t);
+    if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)) {
+        return t;
     }
-    let img = image::load_from_memory(data).ok()?.to_rgba8();
-    let size = [img.width() as usize, img.height() as usize];
-    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    let tex = ctx.load_texture("container", color, egui::TextureOptions::LINEAR);
+    // Data that does not decode is remembered too, not retried each frame.
+    let tex = print::picture::decode(data).map(|img| {
+        let size = [img.width() as usize, img.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+        ctx.load_texture("container", color, egui::TextureOptions::LINEAR)
+    });
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
-    Some(tex)
+    tex
 }
 
 /// Runs Insert Picture/File (a file picked from disk goes into the
@@ -144,7 +146,7 @@ pub fn perform(db: &mut Database, action: Action, (t, rec, field, rep): Target) 
 pub fn pick_file(picture: bool) -> Option<(String, Vec<u8>)> {
     let mut d = rfd::FileDialog::new();
     if picture {
-        d = d.add_filter(tr("Pictures"), &["png", "jpg", "jpeg", "gif"]);
+        d = d.add_filter(tr("Pictures"), &["png", "jpg", "jpeg", "gif", "bmp"]);
     }
     let p = d.pick_file()?;
     let data = std::fs::read(&p).ok()?;

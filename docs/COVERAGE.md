@@ -152,9 +152,14 @@ the event; the others are queued. Limits: PROGRESS.md, "More triggers".
 
 ## Layout objects and control styles
 
-Partial objects (4): Graphic (drawn; no Insert › Picture in Layout mode), Rounded Rectangle
+Partial objects (4): Graphic (PNG, JPEG, BMP pictures drawn in Browse, Preview and PDF; not
+GIF, SVG or PDF pictures; no Insert › Picture in Layout mode), Rounded Rectangle
 (drawn as read; no tool makes one), Web Viewer (a placeholder box with its address),
 Chart (drawn; no Chart tool in Layout mode).
+
+Text objects draw in one style, their theme style's: style runs inside a text (several fonts,
+sizes or colours) are not decoded, for want of a sample (FORMAT.md §10). Merge fields stored
+as references resolve in Browse, Preview and PDF; Layout mode shows the raw reference.
 
 Partial control styles (2): Checkbox Set, Radio Button Set (one checkbox or radio button per
 value-list value, in columns, in Browse and Find modes; no "Other…" item, "Allow editing"

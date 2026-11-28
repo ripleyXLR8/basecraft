@@ -483,7 +483,6 @@ dependencies = [
  "egui_system_font_provider",
  "engine",
  "fmp12",
- "image",
  "print",
  "remote",
  "rfd",
@@ -3134,6 +3133,7 @@ dependencies = [
  "calc",
  "engine",
  "fmp12",
+ "image",
 ]
 
 [[package]]

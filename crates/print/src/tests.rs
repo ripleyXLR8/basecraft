@@ -221,6 +221,43 @@ fn pdf_smoke() {
     assert!(has(&bytes, "(20) Tj") && has(&bytes, "(40) Tj") && has(&bytes, "(100) Tj"));
 }
 
+/// A graphic object (kind 3) prints its picture from the file's store,
+/// once per PDF however many pages show it; `\r` breaks text lines.
+#[test]
+fn pdf_pictures_and_line_breaks() {
+    let mut db = db(&PEOPLE);
+    let mut bmp = b"BM".to_vec();
+    for v in [62u32, 0, 54, 40, 1, 1] {
+        bmp.extend(v.to_le_bytes());
+    }
+    bmp.extend(1u16.to_le_bytes());
+    bmp.extend(24u16.to_le_bytes());
+    bmp.extend([0; 24]);
+    bmp.extend([0, 255, 0, 0]);
+    db.pictures.insert(
+        7,
+        fmp12::containers::Stored {
+            streams: [(*b"BMPf", bmp)].into(),
+            ..Default::default()
+        },
+    );
+    let l = &mut db.layouts[0];
+    l.objects[0].text = Some("Two\rlines".into());
+    let mut g = obj(9, 2.0, 300.0, None, None);
+    g.kind = 3;
+    g.picture = Some(7);
+    l.objects.push(g);
+    let found = sorted(&db);
+    let paper = Paper::letter();
+    let (bytes, _) = pdf(&db, 1, &found, &[], &paper).unwrap();
+    assert!(has(&bytes, "(Two) Tj") && has(&bytes, "(lines) Tj"));
+    // 120 × 18 at (36 + 300, 36 + 2) from the top-left corner.
+    assert!(has(&bytes, "q 120 0 0 18 336 736 cm /Im0 Do Q"));
+    assert!(has(&bytes, "/Width 1 /Height 1 /ColorSpace /DeviceRGB"));
+    let green: &[u8] = b"/Length 3 >>\nstream\n\x00\xFF\x00\nendstream";
+    assert!(bytes.windows(green.len()).any(|w| w == green));
+}
+
 #[test]
 fn running_totals_in_bodies_and_sub_summaries() {
     // Total becomes a running total restarting for each City group.

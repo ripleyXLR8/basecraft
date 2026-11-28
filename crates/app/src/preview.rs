@@ -135,6 +135,9 @@ pub fn draw(
                 &cond_look
             };
             lk.paint_box(&painter, r);
+            if let Some(p) = o.picture.and_then(|id| doc.db.pictures.get(&id)) {
+                crate::container::picture(ui.ctx(), &painter, r, p.data());
+            }
             if let Some(u) = o.url.as_ref() {
                 let url = doc
                     .db
@@ -186,7 +189,8 @@ pub fn draw(
                 String::new()
             };
             if !text.is_empty() {
-                lk.paint_text(&painter, r, &text.replace('\r', " "));
+                // FileMaker's line breaks (`\r`) break lines, as in Browse.
+                lk.paint_text(&painter, r, &text);
             }
         }
     }

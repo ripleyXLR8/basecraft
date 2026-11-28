@@ -342,7 +342,10 @@ Engine API for the app (not wired in `crates/app` yet):
 | Summary field definitions (field key 9) and sub-summary break fields (part field 6) decoded | ✅ (operation numbers and options checked in FileMaker's Table view) |
 | Preview pagination (`crates/print`): header/footer per page, title header/footer on page 1, body per record, leading/trailing sub-summaries by sorted break field, grand summaries, letter/A4, landscape, margins | ✅ |
 | PDF output: hand-written PDF 1.4, Helvetica (WinAnsi), theme backgrounds, borders, text colours, sizes, bold, alignment, padding; fields, text with merge fields and `{{PageNumber}}`, button labels, portals | ✅ |
-| Part options (page break before/after, allow break across pages), sliding, layout number/date formats, images, Unicode fonts (non-Latin scripts) | ⏳ |
+| Graphic objects' pictures in Preview and PDF (`print::picture`: PNG, JPEG passed through as DCT, BMP; embedded once per PDF, soft mask for transparency); BMP in Browse too | ✅ (no `BMPf` sample seen) |
+| Merge fields stored as references (`<<\u{1}\u{1}\u{e}0003D…>>` in `.[1]`, FORMAT.md §10) resolved in Browse, Preview and PDF | ✅ checked on the Meetings template against Save as XML |
+| Style runs of text objects (fonts, sizes, colours per run) | ⏳ no sample: none in the templates, FMUpgradeTool drops them (FORMAT.md §10) |
+| Part options (page break before/after, allow break across pages), sliding, layout number/date formats, GIF/SVG pictures, Unicode fonts (non-Latin scripts) | ⏳ |
 | GUI Preview mode | ⏳ |
 | CLI `export`, `import`, `print-pdf`; MCP `export_records`, `import_records`, `print_pdf` | ✅ |
 | Builds for `wasm32-unknown-unknown` (`engine`, `print`) | ✅ |

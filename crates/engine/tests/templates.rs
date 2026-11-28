@@ -358,3 +358,35 @@ fn get_summary_by_break_field() {
     assert_eq!(ev("GetSummary ( Total ; Type )", 0), "1500");
     assert_eq!(ev("GetSummary ( Total ; Type )", 1), "300");
 }
+
+/// Merge fields stored as references (`.[1]` of a text object) resolve to
+/// the fields FileMaker's Save as XML names (`DURATION <<Duration>>`,
+/// `<<Action Items::Number of Action Items>>` on Meeting Details).
+#[test]
+fn stored_merge_fields_resolve() {
+    let Some(d) = dir() else { return };
+    let db = Database::open(d.join("Meetings").join("en.fmp12")).unwrap();
+    let l = db
+        .layouts
+        .iter()
+        .find(|l| l.name == "Meeting Details")
+        .unwrap();
+    let to = (l.table_occurrence & 0xFFF) as u32;
+    let name = |id: u64| {
+        let t = l.objects.iter().find(|o| o.id == id).unwrap();
+        let t = t.text.as_deref().unwrap();
+        let (head, rest) = t.split_once("<<").unwrap();
+        let inner = rest.strip_suffix(">>").unwrap();
+        let (o, f) = db.merge_field(inner, to).unwrap();
+        let occ = db.occurrences.iter().find(|x| x.id == o).unwrap();
+        let field = db.table_of(o).unwrap().field(f).unwrap();
+        format!("{head}<<{}::{}>>", occ.name, field.name)
+    };
+    assert_eq!(name(26), "DURATION <<Meetings::Duration>>");
+    assert_eq!(name(40), "<<Action Items::Number of Action Items>>");
+    assert_eq!(name(43), "<<Topics::Number of Topics>>");
+    assert_eq!(name(49), "<<Meetings::Title>>");
+    // Names still work.
+    assert!(db.merge_field("Topics::Number of Topics", to).is_some());
+    assert!(db.merge_field("Nope", to).is_none());
+}

@@ -679,6 +679,22 @@ impl Database {
         self.save_security(out)
     }
 
+    /// Occurrence and field id of the merge field `<<name>>` on a layout
+    /// of occurrence `layout_to`: `TO::Field`, `Field`, or the reference
+    /// FileMaker stores ([`fmp12::layouts::merge_ref`]).
+    pub fn merge_field(&self, name: &str, layout_to: u32) -> Option<(u32, u32)> {
+        if let Some(r) = fmp12::layouts::merge_ref(name) {
+            return Some(r);
+        }
+        let (to_name, field) = name.split_once("::").unwrap_or(("", name));
+        let to = self
+            .occurrences
+            .iter()
+            .find(|o| o.name.eq_ignore_ascii_case(to_name))
+            .map_or(layout_to, |o| o.id);
+        Some((to, self.table_of(to)?.field_by_name(field)?.id))
+    }
+
     /// Base table of a table occurrence.
     pub fn table_of(&self, to: u32) -> Option<&Table> {
         self.table(self.occurrences.iter().find(|o| o.id == to)?.base_table)

@@ -1,6 +1,7 @@
-//! A small PDF 1.4 writer: pages with filled rectangles, lines and text in
-//! the standard Helvetica fonts (WinAnsiEncoding). Content streams are not
-//! compressed. Coordinates are in points from the page's top-left corner.
+//! A small PDF 1.4 writer: pages with filled rectangles, lines, pictures
+//! and text in the standard Helvetica fonts (WinAnsiEncoding). Content
+//! streams are not compressed; JPEG pictures are embedded as they are,
+//! others as raw RGB samples (and a soft mask when they have transparency). Coordinates are in points from the page's top-left corner.
 
 use crate::look::Color;
 
@@ -8,6 +9,68 @@ use crate::look::Color;
 pub struct Pdf {
     /// (width, height, content stream) per page.
     pages: Vec<(f64, f64, Vec<u8>)>,
+    /// Image XObjects `/Im<i>`, shared by every page: (key, image).
+    images: Vec<(u64, Image)>,
+}
+
+/// An image XObject: its dictionary entries and samples, and the 8-bit
+/// alpha samples of its soft mask.
+struct Image {
+    width: u32,
+    height: u32,
+    dict: &'static str,
+    data: Vec<u8>,
+    alpha: Option<Vec<u8>>,
+}
+
+impl Image {
+    fn new(data: &[u8]) -> Option<Image> {
+        if let Some((width, height, comps)) = jpeg_info(data) {
+            return Some(Image {
+                width,
+                height,
+                dict: if comps == 1 {
+                    "/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode"
+                } else {
+                    "/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode"
+                },
+                data: data.to_vec(),
+                alpha: None,
+            });
+        }
+        let img = crate::picture::decode(data)?;
+        let alpha: Vec<u8> = img.pixels().map(|p| p.0[3]).collect();
+        Some(Image {
+            width: img.width(),
+            height: img.height(),
+            dict: "/ColorSpace /DeviceRGB /BitsPerComponent 8",
+            data: img
+                .pixels()
+                .flat_map(|p| [p.0[0], p.0[1], p.0[2]])
+                .collect(),
+            alpha: alpha.iter().any(|a| *a < 255).then_some(alpha),
+        })
+    }
+}
+
+/// Size and colour components of JPEG data in grey or RGB (others, such
+/// as CMYK, are decoded instead).
+fn jpeg_info(d: &[u8]) -> Option<(u32, u32, u8)> {
+    if !d.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let be16 = |i: usize| Some(u16::from_be_bytes([*d.get(i)?, *d.get(i + 1)?]) as u32);
+    let mut i = 2;
+    while i + 9 < d.len() {
+        let marker = *d.get(i + 1)?;
+        // SOF0–SOF15, except DHT (C4), JPG (C8) and DAC (CC).
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            let comps = *d.get(i + 9)?;
+            return matches!(comps, 1 | 3).then_some((be16(i + 7)?, be16(i + 5)?, comps));
+        }
+        i += 2 + be16(i + 2)? as usize;
+    }
+    None
 }
 
 /// Helvetica advance widths (1/1000 em) for ' ' to '~', from the standard
@@ -186,11 +249,71 @@ impl Pdf {
         s.extend_from_slice(b") Tj ET Q\n");
     }
 
+    /// Draws picture `data` stretched over (x, y, w, h); `key` identifies
+    /// the picture so that it is embedded once. Returns false for data that
+    /// is not a picture this writer can decode.
+    pub fn image(&mut self, key: u64, data: &[u8], r: (f64, f64, f64, f64)) -> bool {
+        let i = match self.images.iter().position(|(k, _)| *k == key) {
+            Some(i) => i,
+            None => {
+                let Some(img) = Image::new(data) else {
+                    return false;
+                };
+                self.images.push((key, img));
+                self.images.len() - 1
+            }
+        };
+        let (s, ph) = self.out();
+        let (x, y, w, h) = r;
+        let cmd = format!(
+            "q {} 0 0 {} {} {} cm /Im{i} Do Q\n",
+            num(w),
+            num(h),
+            num(x),
+            num(ph - y - h)
+        );
+        s.extend_from_slice(cmd.as_bytes());
+        true
+    }
+
     pub fn finish(self) -> Vec<u8> {
         let mut out: Vec<u8> = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
         let mut offsets = Vec::new();
         let n = self.pages.len();
-        // 1 catalog, 2 page tree, 3 and 4 fonts, then (page, contents) pairs.
+        // 1 catalog, 2 page tree, 3 and 4 fonts, then (page, contents)
+        // pairs, then the images (each followed by its soft mask, if any).
+        let stream = |dict: String, data: &[u8]| {
+            let mut o = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
+            o.extend_from_slice(data);
+            o.extend_from_slice(b"\nendstream");
+            o
+        };
+        let mut next = 5 + 2 * n;
+        let mut xobjects = String::new();
+        let mut image_objects = Vec::new();
+        for (i, (_, img)) in self.images.iter().enumerate() {
+            xobjects.push_str(&format!(" /Im{i} {next} 0 R"));
+            let size = format!(
+                "/Type /XObject /Subtype /Image /Width {} /Height {}",
+                img.width, img.height
+            );
+            let mask = match &img.alpha {
+                Some(_) => format!(" /SMask {} 0 R", next + 1),
+                None => String::new(),
+            };
+            image_objects.push(stream(format!("{size} {}{mask}", img.dict), &img.data));
+            next += 1;
+            if let Some(a) = &img.alpha {
+                let dict = format!("{size} /ColorSpace /DeviceGray /BitsPerComponent 8");
+                image_objects.push(stream(dict, a));
+                next += 1;
+            }
+        }
+        let xobjects = if xobjects.is_empty() {
+            String::new()
+        } else {
+            format!(" /XObject <<{xobjects} >>")
+        };
         let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 5 + 2 * i)).collect();
         let mut objects: Vec<Vec<u8>> = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -207,7 +330,7 @@ impl Pdf {
         for (i, (w, h, content)) in self.pages.into_iter().enumerate() {
             objects.push(
                 format!(
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {} 0 R >>",
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>{xobjects} >> /Contents {} 0 R >>",
                     num(w),
                     num(h),
                     6 + 2 * i
@@ -219,6 +342,7 @@ impl Pdf {
             stream.extend_from_slice(b"\nendstream");
             objects.push(stream);
         }
+        objects.extend(image_objects);
         for (i, o) in objects.iter().enumerate() {
             offsets.push(out.len());
             out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
@@ -274,5 +398,43 @@ mod tests {
         let first: usize = std::str::from_utf8(entry).unwrap().parse().unwrap();
         assert!(b[first..].starts_with(b"1 0 obj"));
         assert!((text_width("Hi", 10.0, false) - 9.44).abs() < 1e-4);
+    }
+
+    #[test]
+    fn embeds_pictures_once() {
+        let mut p = Pdf::new();
+        p.page(100.0, 100.0);
+        // JPEG: passed through with its SOF size and components.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 8, 0, 3, 0, 4, 3, 0, 0, 0, 0, 0, 0, 0xFF, 0xD9,
+        ];
+        assert!(p.image(1, &jpeg, (10.0, 10.0, 40.0, 30.0)));
+        assert!(p.image(1, &jpeg, (10.0, 50.0, 40.0, 30.0)));
+        assert!(!p.image(2, b"not a picture", (0.0, 0.0, 1.0, 1.0)));
+        // A 1×1 24-bit BMP, one red pixel: raw RGB, opaque (no soft mask).
+        let mut bmp = b"BM".to_vec();
+        bmp.extend(58u32.to_le_bytes());
+        bmp.extend([0; 4]);
+        bmp.extend(54u32.to_le_bytes());
+        bmp.extend(40u32.to_le_bytes());
+        bmp.extend(1i32.to_le_bytes());
+        bmp.extend(1i32.to_le_bytes());
+        bmp.extend(1u16.to_le_bytes());
+        bmp.extend(24u16.to_le_bytes());
+        bmp.extend([0; 24]);
+        bmp.extend([0, 0, 255, 0]);
+        assert!(p.image(3, &bmp, (0.0, 0.0, 10.0, 10.0)));
+        let b = p.finish();
+        let s = String::from_utf8_lossy(&b);
+        assert!(s.contains("q 40 0 0 30 10 60 cm /Im0 Do Q"));
+        assert!(s.contains("q 40 0 0 30 10 20 cm /Im0 Do Q"));
+        assert!(s.contains("/XObject << /Im0 7 0 R /Im1 8 0 R >>"));
+        assert!(s.contains(
+            "/Width 4 /Height 3 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode"
+        ));
+        let want: &[u8] = b"/Length 3 >>\nstream\n\xFF\x00\x00\nendstream";
+        assert!(b.windows(want.len()).any(|w| w == want));
+        assert!(!s.contains("/SMask"));
+        assert_eq!(crate::merge::pages(&b), Ok(1));
     }
 }

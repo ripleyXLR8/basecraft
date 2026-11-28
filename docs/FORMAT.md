@@ -885,7 +885,11 @@ navigation. The break field of a sub-summary (field 6) is
   XML type names. A graphic object (kind 3) names its picture in field
   10.1: an id in the file-wide picture store `[31].[5].[id]`, laid out
   like a table's container store (§13; `FNAM`, `JPEG`/`PNGf`/`PDF `
-  streams, `SIZE`, plus an undecoded 8-byte `FORK`). Files from the
+  streams, `SIZE`, plus an undecoded 8-byte `FORK`; the templates' store
+  holds `GLPH` and `SVG ` icon streams). BaseCraft draws PNG, JPEG and
+  BMP (`BMPf`, with or without the 14-byte `BM` header: 🔸 no `BMPf`
+  stream seen yet) in Browse, Preview and PDF; GIF, SVG and PDF pictures
+  are not drawn. Files from the
   FileMaker 12 era make buttons out of any object, often a group (kind 8):
   the action is then field 12, whose field 1 is the step message that
   newer buttons keep in field 16.3 (checked on a 2016 file whose three
@@ -951,8 +955,33 @@ navigation. The break field of a sub-summary (field 6) is
   `.[3]` tooltip (of any object), `.[6]` placeholder text of a field,
   `.[141]` "Hide object when", `.[128].[5]` a web viewer's address (a
   chart's title, see Charts); `.[138]` conditional formats (below);
-  `.[17]` button step parameters. A static button label is node key 1
-  plus styled text runs in `.[1]`.
+  `.[17]` button step parameters. A static button label is node key 1.
+* **Text with merge fields** keeps its text in `.[1]` key 1 instead of
+  node key 1 (all 80+ merge-field texts of the templates; Save as XML
+  shows `<StyledText><Data>DURATION <<Duration>></Data>`). Key 0 = three
+  big-endian u32: the byte length of key 1, its character count, and 4.
+  Each `<<…>>` holds a stored reference, not the name: U+0001, then
+  U+0001 for a field of the layout's table or U+0002 for a related one,
+  then the length of the rest as a character (U+000E = 14), then
+  `0003D` + the occurrence id − 128 in five hex digits + `01` + the field
+  id in two hex digits: `<<\u{1}\u{1}\u{e}0003D000020106>>` = occurrence
+  130 (Meetings), field 6 (Duration); `<<\u{1}\u{2}\u{e}0003D000040107>>`
+  = Action Items::Number of Action Items. Checked on Meeting Details
+  against the XML (`fmp12::layouts::merge_ref`, engine test
+  `stored_merge_fields_resolve`). 🔸 Field ids above 255 and the meaning of
+  `0003D`/`01` are unseen.
+* 🔸 **Style runs** (several fonts, sizes or colours in one text object)
+  are not decoded: none of the Claris templates or add-on modules has one
+  (no `.[1].[255]`, no `CharacterStyle` in their Save as XML), so there is
+  no ground truth yet. An FMUpgradeTool patch (FileMaker Server 26, VM)
+  adding a text object with `<CharacterStyleVector>` (the clipboard
+  grammar) or guessed `<CharacterStyleList>`/`<FontStyle>` children keeps
+  the text and silently drops the styles; FMEngine.dll names the Save as
+  XML elements `CharacterStyleList`, `CharacterStyle`, `FontReference`,
+  `FontStyle`, `ParagraphStyleList`, `ParagraphStyle` and attributes
+  `face`, `size`, `underline`, `postscriptName`, `textAlign`, `position`,
+  `offset`, but not their nesting. Needs a file with a styled text object
+  made in FileMaker Pro.
 * Popover button (field 17): `{1: 0, 2: 2, 3 popover id, 5 icon size 12,
   6: 0}`; its popover (field 18): `{1 options, 3 position, 4 popover
   button id}`. The popover is a top-level object that lists its objects

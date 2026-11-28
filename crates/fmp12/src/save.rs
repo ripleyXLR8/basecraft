@@ -515,13 +515,16 @@ fn node_calc(o: &crate::layouts::LayoutObject, sub: u32) -> Option<NodeCalc<'_>>
     })
 }
 
+/// Entries of a calculation node: (object, sub-path, token stream).
+type CalcEntries<'a> = dyn Fn(u64, &[u32], &[u8]) -> Vec<Entry> + 'a;
+
 /// Node entries of an object's conditional formats: `.[138]` key 4 = count,
 /// `.[138].[128 + i]`: key 1 / 6 = compared values (text), key 13 =
 /// format and operator, `.[5]` = formula.
 fn condition_entries(
     l: u32,
     o: &crate::layouts::LayoutObject,
-    calc: &dyn Fn(u64, &[u32], &[u8]) -> Vec<Entry>,
+    calc: &CalcEntries<'_>,
 ) -> Vec<Entry> {
     let base = [4, 5, l, 5, o.id as u32, 138];
     if o.conditions.is_empty() {

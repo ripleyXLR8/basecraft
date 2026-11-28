@@ -23,6 +23,7 @@ mod debugger;
 mod design;
 mod i18n;
 mod look;
+mod objects;
 mod preview;
 mod records;
 mod script_ui;
@@ -127,8 +128,10 @@ struct App {
     /// Preview mode: current page and page count.
     page: usize,
     pages: usize,
-    /// Front panel chosen by the user, per tab control id.
+    /// Front panel chosen by the user, per tab control or slide control id.
     tabs: BTreeMap<u64, u64>,
+    /// Popovers, web viewers and the tab order in Browse mode (`objects.rs`).
+    objs: objects::State,
     /// Layout mode state (the layout being edited).
     designer: Option<design::Designer>,
     /// Records menu, Find/Replace, import and export dialogs (`records.rs`).
@@ -1562,8 +1565,14 @@ impl App {
             })
         };
         let mut clicked_tab = None;
-        // The object list runs front to back: paint it in reverse.
-        for (o, lk) in layout.objects.iter().zip(&looks).rev() {
+        let browse = mode == Mode::Browse;
+        if browse {
+            objects::tab_navigation(ui, &layout, &self.objs);
+        }
+        // The object list runs front to back: paint it in reverse (the open
+        // popover last).
+        for i in objects::paint_order(&layout, &self.objs) {
+            let (o, lk) = (&layout.objects[i], &looks[i]);
             let anc = ancestors(o);
             // Hidden behind another tab, or drawn by its portal.
             let hidden = anc.iter().any(|a| {
@@ -1591,7 +1600,32 @@ impl App {
                     origin + Vec2::new(ab.left as f32, (ab.top + dy) as f32),
                     origin + Vec2::new(ab.right as f32, (ab.bottom + dy) as f32),
                 );
+                let oc = objects::context(t, layout_to, rec);
+                let skip = if browse {
+                    objects::skipped(doc, &layout, o, &self.objs, &self.tabs, oc)
+                } else {
+                    // Find mode: no record to test "hide object when" on.
+                    o.kind == fmp12::layouts::kind::SLIDE_PANEL
+                        || objects::popover_of(&layout, o)
+                            .is_some_and(|p| self.objs.popover != Some(p))
+                };
+                if skip {
+                    continue;
+                }
+                let cond_look;
+                let lk = if browse && !o.conditions.is_empty() {
+                    let owner = owner_of(doc, o, t, layout_to, rec);
+                    let v = objects::object_value(doc, o, owner);
+                    cond_look = objects::conditional_look(doc, theme.as_ref(), o, &v, oc);
+                    &cond_look
+                } else {
+                    lk
+                };
                 match o.kind {
+                    14 => objects::popover_button(ui, &painter, doc, o, lk, r, &mut self.objs, oc),
+                    15 => objects::popover(ui, &painter, doc, o, lk, r, &mut self.objs, oc),
+                    16 => objects::slide_control(ui, &painter, &layout, o, lk, r, &mut self.tabs),
+                    13 if objects::web_viewer(ui, &painter, doc, o, lk, r, &mut self.objs, oc) => {}
                     // Tab control: one clickable tab per panel.
                     11 => {
                         lk.paint_box(&painter, r);
@@ -1715,6 +1749,7 @@ impl App {
                         if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 18)) {
                             let text = doc.db.eval_tokens(l, t, layout_to, rec).to_text();
                             lk.paint_box(&painter, r);
+                            objects::segment_highlight(&painter, &layout, o, r);
                             lk.paint_text(&painter, r, &text);
                             continue;
                         }
@@ -1744,6 +1779,14 @@ impl App {
         }
         if let Some((tc, p)) = clicked_tab {
             self.tabs.insert(tc, p);
+        }
+        if browse {
+            objects::close_popover_on_click(ui, &mut self.objs);
+            for (id, ev) in &self.obj_events {
+                if *ev == event::OBJECT_ENTER {
+                    self.objs.focus = Some(*id);
+                }
+            }
         }
     }
 }
@@ -1994,19 +2037,37 @@ fn draw_field(
         }
         // Calculations, and fields the privileges make read-only.
         (Mode::Browse, Some(rec)) if is_calc || !doc.db.can_edit_field(t, rec, field) => {
-            let v = doc
-                .db
-                .value_rep(t, rec, field, rep)
-                .to_text()
-                .replace('\r', " ");
-            lk.paint_text(painter, r, &v);
+            let value = doc.db.value_rep(t, rec, field, rep);
+            match objects::formatted(doc, o, &value) {
+                Some((s, color)) => {
+                    let mut l2 = lk.clone();
+                    l2.color = color.unwrap_or(lk.color);
+                    l2.paint_text(painter, r, &s);
+                }
+                None => lk.paint_text(painter, r, &value.to_text().replace('\r', " ")),
+            }
         }
         (Mode::Browse, Some(rec)) => {
             // Placeholder text (a calculation, usually a literal).
             let placeholder = o
-                .label
+                .placeholder
                 .as_ref()
                 .map(|l| doc.db.eval_tokens(l, t, 0, Some(rec)).to_text());
+            let tip = o
+                .tooltip
+                .as_ref()
+                .map(|l| doc.db.eval_tokens(l, t, 0, Some(rec)).to_text());
+            // Data formats show while the field is not being edited.
+            let edit_id = egui::Id::NULL.with(("field", o.id, rec, rep));
+            let shown = if ui.memory(|m| m.has_focus(edit_id)) {
+                None
+            } else {
+                objects::formatted(doc, o, &doc.db.value_rep(t, rec, field, rep))
+            };
+            if ui.ctx().data(|d| d.get_temp::<u64>(objects::focus_id())) == Some(o.id) {
+                ui.ctx().data_mut(|d| d.remove::<u64>(objects::focus_id()));
+                ui.memory_mut(|m| m.request_focus(edit_id));
+            }
             // Pop-up menus and drop-down lists offer their value list.
             let choices = match (o.display, o.value_list) {
                 (1 | 2, Some(vl)) => Some(doc.db.value_list_values(vl)),
@@ -2049,7 +2110,26 @@ fn draw_field(
                                 Color32::from_gray(170),
                             );
                         }
-                        let r = ui.put(inner, lk.edit(s));
+                        let r = match &shown {
+                            Some((text, color)) => {
+                                let mut l2 = lk.clone();
+                                l2.color = color.unwrap_or(lk.color);
+                                l2.paint_text(painter, inner, text);
+                                let click = ui.interact(
+                                    inner,
+                                    edit_id.with("formatted"),
+                                    egui::Sense::click(),
+                                );
+                                if click.clicked() {
+                                    ui.memory_mut(|m| m.request_focus(edit_id));
+                                }
+                                click
+                            }
+                            None => ui.put(inner, lk.edit(s).id(edit_id)),
+                        };
+                        if let Some(tip) = &tip {
+                            r.clone().on_hover_text(tip.as_str());
+                        }
                         if r.gained_focus() {
                             events.push((o.id, event::OBJECT_ENTER));
                         }
@@ -2204,6 +2284,7 @@ impl eframe::App for App {
             }
         }
         self.layout_dialogs(&ctx);
+        objects::url_confirmation(&ctx, &mut self.objs);
         self.records_dialogs(&ctx);
         self.m5_frame(&ctx);
         self.security_dialogs(&ctx);

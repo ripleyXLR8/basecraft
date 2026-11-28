@@ -331,7 +331,8 @@ fn template_list_layout() {
         "(Laptop) Tj",
         "(Desk) Tj",
         "(Purchase Date) Tj",
-        "(1500.5) Tj",
+        // The total with the field object's currency format, as FileMaker shows it.
+        "($1,500.50) Tj",
     ] {
         assert!(has(&bytes, s), "{s}");
     }

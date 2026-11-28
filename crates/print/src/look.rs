@@ -91,3 +91,13 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
         .map_or(1, |v| v.clamp(0, 2) as u8);
     l
 }
+
+/// An RGB colour (bytes) as a paint colour.
+pub fn rgb(c: [u8; 3]) -> Color {
+    [
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+        1.0,
+    ]
+}

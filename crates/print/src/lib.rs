@@ -11,7 +11,9 @@
 //! * a part that does not fit in the space left on a page moves to the next.
 
 pub mod chart;
+pub mod format;
 pub mod look;
+pub mod objects;
 pub mod pdf;
 
 use std::ops::Range;
@@ -275,24 +277,25 @@ impl Ctx<'_> {
             self.layout
                 .objects
                 .iter()
-                .filter(|x| x.parent == Some(tc.id) && x.kind == 12)
+                .filter(|x| x.parent == Some(tc.id) && matches!(x.kind, 12 | 17))
                 .map(|x| x.id)
                 .min()
         })
     }
 
-    /// Hidden behind another tab, a panel itself, or drawn by its portal.
+    /// Hidden behind another tab or slide, a panel or popover itself (popovers
+    /// do not print), or drawn by its portal.
     fn skipped(&self, o: &LayoutObject) -> bool {
-        if o.kind == 12 {
+        if matches!(o.kind, 12 | 15 | 17) {
             return true;
         }
         let mut p = o.parent;
         while let Some(id) = p {
             let Some(a) = self.find(id) else { break };
-            if a.kind == 9 {
+            if matches!(a.kind, 9 | 15) {
                 return true;
             }
-            if a.kind == 12 {
+            if matches!(a.kind, 12 | 17) {
                 let tc = a.parent.and_then(|t| self.find(t));
                 if tc.is_some_and(|tc| self.front(tc) != Some(a.id)) {
                     return true;
@@ -315,16 +318,25 @@ impl Ctx<'_> {
         group: &[usize],
         body: bool,
     ) -> String {
+        self.field_value(field, record, group, body)
+            .map(|v| self.text(&v))
+            .unwrap_or_default()
+    }
+
+    /// Value a field object shows for `record`, summary fields over `group`.
+    fn field_value(
+        &self,
+        field: (u64, u64, u64),
+        record: Option<usize>,
+        group: &[usize],
+        body: bool,
+    ) -> Option<calc::Value> {
         let (to, fid) = ((field.0 & 0xFFF) as u32, field.1 as u32);
-        let Some(t) = self.db.table_of(to) else {
-            return String::new();
-        };
-        let Some(f) = t.field(fid) else {
-            return String::new();
-        };
+        let t = self.db.table_of(to)?;
+        let f = t.field(fid)?;
         let from = layout_to(self.layout);
         if f.kind == FieldKind::Summary {
-            let v = match record {
+            return Some(match record {
                 // Running summaries and fractions show the record's own value.
                 Some(r) if to == from && body => {
                     engine::summary_at(self.db, t.id, fid, r, self.found, self.sort)
@@ -336,16 +348,11 @@ impl Ctx<'_> {
                     let set = record.map_or_else(Vec::new, |r| self.db.related(from, r, to));
                     engine::summarize(self.db, t.id, fid, &set, &set)
                 }
-            };
-            return self.text(&v);
+            });
         }
-        let Some(r) = record else {
-            return String::new();
-        };
-        engine::export::values_through(self.db, from, r, to, fid, self.found)
-            .first()
-            .map(|v| self.text(v))
-            .unwrap_or_default()
+        engine::export::values_through(self.db, from, record?, to, fid, self.found)
+            .into_iter()
+            .next()
     }
 
     /// `<<Field>>`, `<<TO::Field>>`, `{{PageNumber}}` and `{{PageCount}}` in layout text.
@@ -529,11 +536,54 @@ fn draw(
     group: &[usize],
     body: bool,
 ) {
+    let t = ctx.db.table_of(layout_to(ctx.layout)).map_or(0, |t| t.id);
+    let oc = objects::Context {
+        table: t,
+        to: layout_to(ctx.layout),
+        record,
+    };
+    if objects::hidden(ctx.db, o, oc) {
+        return;
+    }
+    let value = o
+        .field
+        .and_then(|f| ctx.field_value(f, record, group, body));
+    let shown = value
+        .clone()
+        .unwrap_or_else(|| calc::Value::text(o.text.clone().unwrap_or_default()));
+    let cond;
+    let lk = if o.conditions.is_empty() {
+        lk
+    } else {
+        let style = objects::conditional_style(ctx.db, o, &shown, oc);
+        cond = resolve(ctx.theme, &ObjectStyle::parse(&style));
+        &cond
+    };
     paint_box(out, lk, r);
-    let text = if let Some(f) = o.field {
-        ctx.field_text(f, record, group, body)
-    } else if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 18)) {
-        let t = ctx.db.table_of(layout_to(ctx.layout)).map_or(0, |t| t.id);
+    if o.kind == fmp12::layouts::kind::EXTERNAL
+        && let Some(u) = &o.url
+    {
+        // Web viewers print their address (no browser engine here).
+        let url = ctx.db.eval_tokens(u, t, layout_to(ctx.layout), record);
+        paint_text(out, lk, r, &url.to_text());
+        return;
+    }
+    let text = if o.field.is_some() {
+        match (&value, &o.format) {
+            (Some(v), Some(f)) => match format::apply(f, v, &ctx.db.locale) {
+                Some((s, Some(c))) => {
+                    let mut red = lk.clone();
+                    red.color = look::rgb(c);
+                    paint_text(out, &red, r, &s);
+                    return;
+                }
+                Some((s, None)) => s,
+                None => ctx.text(v),
+            },
+            (Some(v), None) => ctx.text(v),
+            (None, _) => String::new(),
+        }
+    } else if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 14 | 18)) {
         ctx.db
             .eval_tokens(l, t, layout_to(ctx.layout), record)
             .to_text()

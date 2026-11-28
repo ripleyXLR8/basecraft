@@ -17,7 +17,7 @@ use calc::Value;
 use fmp12::schema::{DataType, FieldKind};
 use fmp12::schema_edit::{CustomFunctionSpec, EditError, Editor, FieldSpec, RelationshipSpec};
 
-pub use find::{Request, find};
+pub use find::{Request, find, find_from, related_key};
 pub use fmp12::containers::Stored;
 pub use fmp12::schema::{rep_key, split_rep_key};
 pub use summary::{groups, summarize, summarize_sorted, summary_at};

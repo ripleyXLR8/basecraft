@@ -6,6 +6,11 @@
 //! omit request. Requests without criteria are skipped (all of them empty
 //! is FileMaker's error 400, for the caller). Within a request, every
 //! criterion must match (AND).
+//!
+//! A criterion on a related field ([`related_key`]) matches a record when
+//! at least one of its related records matches, as FileMaker's; each such
+//! criterion is checked on its own (two criteria of one request may match
+//! different related records).
 
 use calc::Value;
 use fmp12::schema::DataType;
@@ -14,20 +19,56 @@ use crate::{Database, typed};
 
 #[derive(Debug, Clone, Default)]
 pub struct Request {
-    /// (field id, criterion text as typed in Find mode)
+    /// (field id or [`related_key`], criterion text as typed in Find mode)
     pub criteria: Vec<(u32, String)>,
     pub omit: bool,
 }
 
+/// Criterion key of a field of another table occurrence `to` (packed as
+/// [`crate::rep_key`] packs repetitions: find criteria are on repetition 1).
+pub fn related_key(to: u32, field: u32) -> u32 {
+    field | to << 16
+}
+
 /// Runs `requests` over every record of `table`; returns the found set.
+/// Related criteria are followed from the table's first occurrence.
 pub fn find(db: &Database, table: u32, requests: &[Request]) -> Vec<usize> {
+    let from = db.occurrences.iter().find(|o| o.base_table == table);
+    run(db, table, from.map_or(0, |o| o.id), requests)
+}
+
+/// Runs `requests` over every record of the table of occurrence `from`
+/// (a layout's), related criteria followed from `from`.
+pub fn find_from(db: &Database, from: u32, requests: &[Request]) -> Vec<usize> {
+    match db.table_of(from) {
+        Some(t) => run(db, t.id, from, requests),
+        None => Vec::new(),
+    }
+}
+
+fn run(db: &Database, table: u32, from: u32, requests: &[Request]) -> Vec<usize> {
     let Some(t) = db.table(table) else {
         return Vec::new();
     };
+    let one = |tbl: u32, r: usize, f: u32, crit: &str| {
+        let dt = db
+            .table(tbl)
+            .and_then(|t| t.field(f))
+            .map_or(DataType::Text, |f| f.data_type);
+        matches_criterion(&db.value(tbl, r, f), crit, dt)
+    };
     let matches = |r: usize, req: &Request| {
-        req.criteria.iter().all(|(f, crit)| {
-            let dt = t.field(*f).map_or(DataType::Text, |f| f.data_type);
-            matches_criterion(&db.value(table, r, *f), crit, dt)
+        req.criteria.iter().all(|(k, crit)| {
+            let (to, f) = (k >> 16, k & 0xFFFF);
+            if to == 0 {
+                return one(table, r, f, crit);
+            }
+            let Some(rt) = db.table_of(to) else {
+                return false;
+            };
+            db.related(from, r, to)
+                .into_iter()
+                .any(|x| one(rt.id, x, f, crit))
         })
     };
     let mut reqs = requests
@@ -138,12 +179,15 @@ pub fn matches_criterion(v: &Value, crit: &str, dt: DataType) -> bool {
             cmp_typed(v, crit, dt) == Some(Equal)
         }
         _ => {
-            // Every word of the criterion must start a word of the value.
+            // Every word of the criterion (split as the value's, wildcards
+            // kept) must start a word of the value.
             let vw = words(&text);
-            crit.split_whitespace().all(|cw| {
-                let p: Vec<char> = fold(cw).chars().chain(['*']).collect();
-                vw.iter().any(|w| glob(&p, &w.chars().collect::<Vec<_>>()))
-            })
+            crit.split(|c: char| !(c.is_alphanumeric() || "'.@_*#".contains(c)))
+                .filter(|w| !w.is_empty())
+                .all(|cw| {
+                    let p: Vec<char> = fold(cw).chars().chain(['*']).collect();
+                    vw.iter().any(|w| glob(&p, &w.chars().collect::<Vec<_>>()))
+                })
         }
     }
 }
@@ -172,6 +216,8 @@ mod tests {
         assert!(t("abc", "a@c"));
         assert!(t("a1c", "a#c"));
         assert!(t("Hello world", "\"lo wo\""));
+        assert!(t("555-0101", "555-0101"));
+        assert!(!t("555-0101", "555-02"));
     }
 
     #[test]

@@ -381,17 +381,17 @@ impl Engine {
             })(),
             CONSTRAIN | EXTEND => (|| {
                 self.commit(host)?;
-                let (table, _, _) = Self::context(host);
+                let (_, to, _) = Self::context(host);
                 let reqs = if o & fmp12::scripts::opt::RESTORE != 0 {
                     let stored = fmp12::scripts::find_requests(p);
-                    self.requests(host, table, &stored)
+                    self.requests(host, to, &stored)
                 } else {
                     host.window().requests.clone()
                 };
                 if reqs.iter().all(|r| r.criteria.is_empty()) {
                     return Err(error::NO_CRITERIA);
                 }
-                let hits = engine::find(host.db(), table, &reqs);
+                let hits = engine::find_from(host.db(), to, &reqs);
                 self.combine(host, hits, s.id == EXTEND, reqs)
             })(),
             FIND_MATCHING => (|| {
@@ -668,8 +668,11 @@ impl Engine {
             | REFRESH_OBJECT
             | CLOSE_POPOVER
             | REFRESH_PORTAL
-            | FLUSH_WEB_COOKIES
-            | REVERT_ON_ERROR => Ok(Flow::Next),
+            | FLUSH_WEB_COOKIES => Ok(Flow::Next),
+            REVERT_ON_ERROR => {
+                self.revert_on_error = o & bit::ON != 0;
+                Ok(Flow::Next)
+            }
             // Exit Application: BaseCraft closes the file.
             EXIT_APPLICATION => Ok(Flow::Suspend(
                 Suspend::Ui(UiRequest::CloseFile),
@@ -700,11 +703,20 @@ impl Engine {
                 w.sort = fields;
                 Ok(Flow::Next)
             })(),
-            // Transactions: every table as it was at Open Transaction.
+            // Transactions: every table as it was at Open Transaction. A
+            // sub-script's Open and Commit (one already open) are skipped.
             OPEN_TRANSACTION => (|| {
+                if self.transaction.is_some() {
+                    return Err(error::UNAVAILABLE);
+                }
                 self.commit(host)?;
                 let w = host.window().clone();
-                self.transaction = Some((host.db().tables.clone(), w.found, w.current));
+                self.transaction = Some(crate::Transaction {
+                    tables: host.db().tables.clone(),
+                    found: w.found,
+                    current: w.current,
+                    level: 0,
+                });
                 Ok(Flow::Next)
             })(),
             COMMIT_TRANSACTION => (|| {
@@ -712,15 +724,29 @@ impl Engine {
                 self.transaction.take().ok_or(err::COMMAND_INVALID)?;
                 Ok(Flow::Next)
             })(),
+            // ponytail: the stored condition, error code and message are
+            // read as parameters 0, 1, 2 (their dialog's order), not checked
+            // against a FileMaker-written step.
             REVERT_TRANSACTION => (|| {
-                let (tables, found, current) =
-                    self.transaction.take().ok_or(err::COMMAND_INVALID)?;
-                self.open = None;
-                host.db().tables = tables;
-                let w = host.window();
-                w.found = found;
-                w.current = current;
-                Ok(Flow::Next)
+                if self.transaction.is_none() {
+                    return Err(error::UNAVAILABLE);
+                }
+                let cond = p.calc(0);
+                if cond.is_some() && !self.truth(host, frame, &cond)? {
+                    return Ok(Flow::Next);
+                }
+                let code = match p.calc(1) {
+                    Some(c) => self.eval(host, frame, &c)?.to_text().trim().parse().ok(),
+                    None => None,
+                }
+                .filter(|c| (5000..=5499).contains(c));
+                let detail = match (code, p.calc(2)) {
+                    (Some(_), Some(c)) => self.eval(host, frame, &c)?.to_text(),
+                    _ => String::new(),
+                };
+                let level = self.revert_transaction(host).unwrap_or(1);
+                self.error_detail = detail;
+                Ok(Flow::Reverted(level, code.unwrap_or(0)))
             })(),
             SET_ALLOWED_ORIENTATIONS => Err(err::UNKNOWN_COMMAND),
             // iOS notifications and AI accounts: 5 with no parameters

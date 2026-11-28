@@ -698,8 +698,13 @@ pub struct Engine {
     /// Text of the last Cut, Copy, Copy Record (also given to
     /// [`Host::set_clipboard`]); Paste uses it when the host has none.
     pub clipboard: Option<String>,
-    /// Open Transaction: the tables, found set and record before it.
-    transaction: Option<(Vec<engine::Table>, Vec<usize>, usize)>,
+    /// Open Transaction: the data as it was before it.
+    transaction: Option<Transaction>,
+    /// Set Revert Transaction on Error (on by default and again when the
+    /// run ends).
+    revert_on_error: bool,
+    /// Revert Transaction's custom error message (`Get ( LastErrorDetail )`).
+    error_detail: String,
     /// Open data files, the PDF being built, persistent data.
     pub more: datafiles::State,
 }
@@ -721,8 +726,20 @@ struct Frame {
     original_layout: u32,
 }
 
+/// An open transaction: the tables, found set and record before it, and
+/// the call level of the script that opened it (0 until the step ends).
+struct Transaction {
+    tables: Vec<engine::Table>,
+    found: Vec<usize>,
+    current: usize,
+    level: usize,
+}
+
 enum Flow {
     Next,
+    /// Revert Transaction (the opening script's call level, the custom
+    /// error code or 0): on after that script's Commit Transaction.
+    Reverted(usize, u32),
     Jump(usize),
     Exit(Value),
     Halt,
@@ -861,6 +878,8 @@ impl Engine {
             redo: None,
             clipboard: None,
             transaction: None,
+            revert_on_error: true,
+            error_detail: String::new(),
             more: Default::default(),
         }
     }
@@ -974,6 +993,11 @@ impl Engine {
     fn drive(&mut self, run: &mut Run, host: &mut dyn Host) -> Status {
         loop {
             let Some(top) = run.stack.last_mut() else {
+                // Halt Script or a cancel reverts an open transaction.
+                if run.halted {
+                    self.revert_transaction(host);
+                }
+                self.revert_on_error = true;
                 return Status::Finished(Outcome {
                     result: std::mem::replace(&mut run.result, Value::empty()),
                     last_error: self.last_error,
@@ -997,6 +1021,9 @@ impl Engine {
             };
             let pc = top.pc;
             let r = self.exec(host, &top.steps, &top.links, pc, &mut top.frame);
+            if let Some(t) = self.transaction.as_mut().filter(|t| t.level == 0) {
+                t.level = run.stack.len();
+            }
             // An action the account's privileges refused (FileMaker's 200,
             // 201): the step's error.
             let r = match (r, host.db().last_denied()) {
@@ -1009,6 +1036,7 @@ impl Engine {
                     run.pending = Some(p);
                     return Status::Suspended(s);
                 }
+                Ok(Flow::Reverted(l, e)) => self.complete(run, host, Flow::Reverted(l, e), e),
                 Ok(flow) => self.complete(run, host, flow, 0),
                 Err(code) => self.complete(run, host, Flow::Next, code),
             }
@@ -1025,6 +1053,9 @@ impl Engine {
         };
         if s.id != id::COMMENT {
             self.last_error = err;
+            if !matches!(flow, Flow::Reverted(..)) {
+                self.error_detail.clear();
+            }
         }
         if err != 0 {
             self.last_error_location = format!(
@@ -1037,14 +1068,49 @@ impl Engine {
                 Self::halt(run);
                 return;
             }
+            // Validation and privilege errors revert an open transaction.
+            let reverts = matches!(err, 200..=299 | 500..=511);
+            if reverts
+                && self.revert_on_error
+                && let Some(level) = self.revert_transaction(host)
+            {
+                return Self::after_revert(run, level);
+            }
         }
         match flow {
+            Flow::Reverted(level, _) => Self::after_revert(run, level),
             Flow::Next => top.pc += 1,
             Flow::Jump(j) => top.pc = j,
             Flow::Exit(v) => self.ret(run, host, v, false),
             Flow::Halt => Self::halt(run),
             Flow::Call(..) | Flow::Suspend(..) => top.pc += 1,
         }
+    }
+
+    /// Puts the data back as it was at Open Transaction; the opening
+    /// script's call level, `None` when no transaction is open.
+    fn revert_transaction(&mut self, host: &mut dyn Host) -> Option<usize> {
+        let t = self.transaction.take()?;
+        self.open = None;
+        host.db().tables = t.tables;
+        let w = host.window();
+        w.found = t.found;
+        w.current = t.current;
+        Some(t.level)
+    }
+
+    /// After a revert: back in the script that opened the transaction
+    /// (call `level`), on after its Commit Transaction.
+    fn after_revert(run: &mut Run, level: usize) {
+        run.stack.truncate(level.max(1));
+        let Some(top) = run.stack.last_mut() else {
+            return;
+        };
+        let from = top.pc + 1;
+        top.pc = top.steps[from.min(top.steps.len())..]
+            .iter()
+            .position(|s| s.id == steps::sid::COMMIT_TRANSACTION)
+            .map_or(top.steps.len(), |i| from + i + 1);
     }
 
     /// Halt Script (or a cancelled error): every level stops.
@@ -1162,7 +1228,15 @@ impl Engine {
         flags.insert("scriptname", Value::text(&frame.name));
         flags.insert("lasterror", num(self.last_error as usize));
         flags.insert("lasterrorlocation", Value::text(&self.last_error_location));
-        flags.insert("lasterrordetail", Value::text(""));
+        flags.insert("lasterrordetail", Value::text(&self.error_detail));
+        flags.insert(
+            "transactionopenstate",
+            num(self.transaction.is_some() as usize),
+        );
+        flags.insert(
+            "reverttransactiononerrorstate",
+            num(self.revert_on_error as usize),
+        );
         flags.insert("scriptanimationstate", num(self.animation as usize));
         flags.insert("windowname", Value::text(&w.name));
         flags.insert("windowtop", num(w.top.max(0.0) as usize));
@@ -2080,16 +2154,16 @@ impl Engine {
                 id::PERFORM_FIND,
             ) => {
                 self.commit(host)?;
-                let (table, _, _) = Self::context(host);
+                let (_, to, _) = Self::context(host);
                 let reqs = if *restore {
-                    self.requests(host, table, requests)
+                    self.requests(host, to, requests)
                 } else {
                     host.window().requests.clone()
                 };
                 if reqs.iter().all(|r| r.criteria.is_empty()) {
                     return Err(error::NO_CRITERIA);
                 }
-                let found = engine::find(host.db(), table, &reqs);
+                let found = engine::find_from(host.db(), to, &reqs);
                 let w = host.window();
                 w.mode = Mode::Browse;
                 w.requests.clear();
@@ -2260,15 +2334,16 @@ impl Engine {
         Ok(())
     }
 
-    /// Stored find requests as engine requests on `table` (criteria on
-    /// other tables are dropped: related finds are not supported yet).
+    /// Stored find requests as engine requests from the layout's
+    /// occurrence `to` (criteria on other tables as [`engine::related_key`]).
     fn requests(
         &self,
         host: &mut dyn Host,
-        table: u32,
+        to: u32,
         stored: &[fmp12::scripts::FindRequest],
     ) -> Vec<Request> {
         let db = host.db();
+        let table = db.table_of(to).map(|t| t.id);
         stored
             .iter()
             .map(|r| Request {
@@ -2276,8 +2351,15 @@ impl Engine {
                 criteria: r
                     .criteria
                     .iter()
-                    .filter(|(f, _)| db.table_of(f.to).is_some_and(|t| t.id == table))
-                    .map(|(f, t)| (f.field, t.clone()))
+                    .map(|(f, t)| {
+                        let local = f.to == to || db.table_of(f.to).map(|t| t.id) == table;
+                        let k = if local {
+                            f.field
+                        } else {
+                            engine::related_key(f.to, f.field)
+                        };
+                        (k, t.clone())
+                    })
                     .collect(),
             })
             .collect()

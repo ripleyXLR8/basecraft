@@ -1,20 +1,21 @@
 //! ExecuteSQL: a minimal SELECT over the rows a host returns from
 //! [`Context::rows`](crate::Context::rows).
 //!
-//! Supported: `SELECT [DISTINCT] * | col, ... | COUNT(*) FROM t [alias]
-//! [WHERE ...] [ORDER BY col|n [ASC|DESC], ...] [OFFSET n ROWS]
-//! [FETCH FIRST n ROWS ONLY]`, with `= <> != < <= > >=`, `LIKE`, `IN`,
+//! Supported: `SELECT [DISTINCT] * | t.* | expr [AS name], ... FROM t [alias]
+//! {, t | [INNER | LEFT [OUTER]] JOIN t [alias] ON cond} [WHERE ...]
+//! [GROUP BY col, ...] [HAVING ...] [ORDER BY expr|n|name [ASC|DESC], ...]
+//! [OFFSET n ROWS] [FETCH FIRST n ROWS ONLY]`, aggregates `COUNT(*)`,
+//! `COUNT([DISTINCT] e)`, `SUM`, `AVG`, `MIN`, `MAX`, with `= <> != < <= > >=`, `LIKE`, `IN`,
 //! `BETWEEN`, `IS [NOT] NULL`, `AND`, `OR`, `NOT`, `?` parameters and
 //! `DATE 'yyyy-mm-dd'` / `TIME` / `TIMESTAMP` literals. Text comparisons are
 //! case-sensitive and an empty value is NULL, as in FileMaker's SQL.
-// ponytail: no joins, GROUP BY, expressions in the select list or the
+// ponytail: no arithmetic or functions in expressions, no subqueries, no
 // FileMaker_Tables / FileMaker_Fields system tables; add when files use them.
 
 use super::txt;
 use crate::error::{EvalError, code};
 use crate::eval::{Evaluator, R};
 use crate::num;
-use crate::schema::Rows;
 use crate::value::{self, Value, civil};
 use std::cmp::Ordering;
 
@@ -100,10 +101,24 @@ fn lex(s: &str) -> Result<Vec<Tok>, EvalError> {
     Ok(out)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Agg {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone)]
 enum Ex {
-    Col(String),
+    /// `[qualifier.]column`, bound to [`Ex::Idx`] before evaluation.
+    Col(Option<String>, String),
+    /// Column of the joined row.
+    Idx(usize),
     Lit(Value),
+    /// Aggregate over a group: `COUNT(*)` has no argument; DISTINCT.
+    Agg(Agg, Option<Box<Ex>>, bool),
     Cmp(&'static str, Box<Ex>, Box<Ex>),
     Like(Box<Ex>, Box<Ex>, bool),
     In(Box<Ex>, Vec<Ex>, bool),
@@ -115,20 +130,37 @@ enum Ex {
 }
 
 enum Item {
-    All,
-    Count,
-    Col(String),
+    /// `*` or `t.*`.
+    All(Option<String>),
+    /// An expression and its `AS` name.
+    Ex(Ex, Option<String>),
+}
+
+/// A table of the FROM clause: its name, the name it goes by, and how it
+/// joins the tables before it (LEFT, ON condition; none: a cross join).
+struct From {
+    name: String,
+    alias: String,
+    left: bool,
+    on: Option<Ex>,
 }
 
 struct Query {
     distinct: bool,
     items: Vec<Item>,
-    table: String,
+    from: Vec<From>,
     filter: Option<Ex>,
+    group: Vec<Ex>,
+    having: Option<Ex>,
     order: Vec<(Ex, bool)>,
     offset: usize,
     limit: Option<usize>,
 }
+
+/// Words that end a table reference (no alias).
+const CLAUSES: [&str; 11] = [
+    "WHERE", "ORDER", "OFFSET", "FETCH", "GROUP", "HAVING", "LEFT", "INNER", "JOIN", "ON", "OUTER",
+];
 
 struct P<'a> {
     t: Vec<Tok>,
@@ -152,16 +184,7 @@ impl P<'_> {
     }
 
     fn sym(&mut self, s: &str) -> bool {
-        if self.peek()
-            == Some(&Tok::Sym(match s {
-                "(" => "(",
-                ")" => ")",
-                "," => ",",
-                "*" => "*",
-                "." => ".",
-                _ => return false,
-            }))
-        {
+        if matches!(self.peek(), Some(Tok::Sym(x)) if *x == s) {
             self.i += 1;
             true
         } else {
@@ -195,13 +218,13 @@ impl P<'_> {
         }
     }
 
-    /// `col` or `table.col`; the qualifier is dropped (one table only).
-    fn column(&mut self) -> Result<String, EvalError> {
+    /// `col` or `table.col`.
+    fn column(&mut self) -> Result<Ex, EvalError> {
         let n = self.name()?;
         if self.sym(".") {
-            return self.name();
+            return Ok(Ex::Col(Some(n), self.name()?));
         }
-        Ok(n)
+        Ok(Ex::Col(None, n))
     }
 
     fn number(&mut self) -> Result<usize, EvalError> {
@@ -229,38 +252,95 @@ impl P<'_> {
         Ok(v)
     }
 
+    /// `[AS] name`, unless the next word is one of `stop`.
+    fn alias(&mut self, stop: &[&str]) -> Result<Option<String>, EvalError> {
+        if !self.kw("AS") {
+            match self.peek() {
+                Some(Tok::Word(w)) if !stop.iter().any(|k| w.eq_ignore_ascii_case(k)) => {}
+                Some(Tok::Quoted(_)) => {}
+                _ => return Ok(None),
+            }
+        }
+        self.name().map(Some)
+    }
+
+    /// `name [[AS] alias]`.
+    fn table(&mut self, left: bool, on: Option<Ex>) -> Result<From, EvalError> {
+        let name = self.name()?;
+        let alias = self.alias(&CLAUSES)?.unwrap_or_else(|| name.clone());
+        Ok(From {
+            name,
+            alias,
+            left,
+            on,
+        })
+    }
+
     fn query(&mut self) -> Result<Query, EvalError> {
         self.expect_kw("SELECT")?;
         let distinct = self.kw("DISTINCT");
         let mut items = vec![];
         loop {
+            let star = matches!(
+                (self.peek(), self.t.get(self.i + 1), self.t.get(self.i + 2)),
+                (
+                    Some(Tok::Word(_) | Tok::Quoted(_)),
+                    Some(Tok::Sym(".")),
+                    Some(Tok::Sym("*"))
+                )
+            );
             if self.sym("*") {
-                items.push(Item::All);
-            } else if matches!(self.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case("COUNT"))
-                && self.t.get(self.i + 1) == Some(&Tok::Sym("("))
-            {
+                items.push(Item::All(None));
+            } else if star {
+                let t = self.name()?;
                 self.i += 2;
-                self.expect("*")?;
-                self.expect(")")?;
-                items.push(Item::Count);
+                items.push(Item::All(Some(t)));
             } else {
-                items.push(Item::Col(self.column()?));
+                let e = self.or()?;
+                let alias = self.alias(&["FROM"])?;
+                items.push(Item::Ex(e, alias));
             }
             if !self.sym(",") {
                 break;
             }
         }
         self.expect_kw("FROM")?;
-        let table = self.name()?;
-        // optional alias
-        if let Some(Tok::Word(w)) = self.peek()
-            && !["WHERE", "ORDER", "OFFSET", "FETCH"]
-                .iter()
-                .any(|k| w.eq_ignore_ascii_case(k))
-        {
-            self.i += 1;
+        let mut from = vec![self.table(false, None)?];
+        loop {
+            if self.sym(",") {
+                from.push(self.table(false, None)?);
+                continue;
+            }
+            let left = self.kw("LEFT");
+            if left {
+                self.kw("OUTER");
+                self.expect_kw("JOIN")?;
+            } else if self.kw("INNER") {
+                self.expect_kw("JOIN")?;
+            } else if !self.kw("JOIN") {
+                break;
+            }
+            let mut t = self.table(left, None)?;
+            self.expect_kw("ON")?;
+            t.on = Some(self.or()?);
+            from.push(t);
         }
         let filter = if self.kw("WHERE") {
+            Some(self.or()?)
+        } else {
+            None
+        };
+        let mut group = vec![];
+        if self.kw("GROUP") {
+            self.expect_kw("BY")?;
+            loop {
+                group.push(self.column()?);
+                if !self.sym(",") {
+                    break;
+                }
+            }
+        }
+        let having = if self.kw("HAVING") {
             Some(self.or()?)
         } else {
             None
@@ -271,7 +351,7 @@ impl P<'_> {
             loop {
                 let key = match self.peek() {
                     Some(Tok::Num(_)) => Ex::Lit(Value::int(self.number()? as i64)),
-                    _ => Ex::Col(self.column()?),
+                    _ => self.operand()?,
                 };
                 let desc = self.kw("DESC");
                 if !desc {
@@ -305,8 +385,10 @@ impl P<'_> {
         Ok(Query {
             distinct,
             items,
-            table,
+            from,
             filter,
+            group,
+            having,
             order,
             offset,
             limit,
@@ -375,11 +457,38 @@ impl P<'_> {
         Ok(l)
     }
 
+    /// `COUNT(*)`, `COUNT([DISTINCT] e)`, `SUM`, `AVG`, `MIN`, `MAX`.
+    fn aggregate(&mut self) -> Result<Option<Ex>, EvalError> {
+        let f = match (self.peek(), self.t.get(self.i + 1)) {
+            (Some(Tok::Word(w)), Some(Tok::Sym("("))) => match w.to_ascii_uppercase().as_str() {
+                "COUNT" => Agg::Count,
+                "SUM" => Agg::Sum,
+                "AVG" => Agg::Avg,
+                "MIN" => Agg::Min,
+                "MAX" => Agg::Max,
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        self.i += 2;
+        if f == Agg::Count && self.sym("*") {
+            self.expect(")")?;
+            return Ok(Some(Ex::Agg(f, None, false)));
+        }
+        let distinct = self.kw("DISTINCT");
+        let e = self.or()?;
+        self.expect(")")?;
+        Ok(Some(Ex::Agg(f, Some(Box::new(e)), distinct)))
+    }
+
     fn operand(&mut self) -> Result<Ex, EvalError> {
         if self.sym("(") {
             let e = self.or()?;
             self.expect(")")?;
             return Ok(e);
+        }
+        if let Some(a) = self.aggregate()? {
+            return Ok(a);
         }
         let t = self
             .t
@@ -419,7 +528,7 @@ impl P<'_> {
                 self.i += 1;
                 Ok(Ex::Lit(self.param()?))
             }
-            Tok::Word(_) | Tok::Quoted(_) => Ok(Ex::Col(self.column()?)),
+            Tok::Word(_) | Tok::Quoted(_) => self.column(),
             Tok::Sym(s) => Err(err(format!("unexpected {s}"))),
         }
     }
@@ -488,72 +597,6 @@ fn like(s: &[char], p: &[char]) -> bool {
     dp[s.len()]
 }
 
-struct Table<'a> {
-    rows: &'a Rows,
-}
-
-impl Table<'_> {
-    fn col(&self, name: &str) -> Result<usize, EvalError> {
-        self.rows
-            .columns
-            .iter()
-            .position(|c| c.eq_ignore_ascii_case(name))
-            .ok_or_else(|| err(format!("column {name} does not exist")))
-    }
-
-    fn value(&self, e: &Ex, row: &[Value]) -> Result<Value, EvalError> {
-        Ok(match e {
-            Ex::Col(c) => row[self.col(c)?].clone(),
-            Ex::Lit(v) => v.clone(),
-            _ => Value::bool(self.test(e, row)?),
-        })
-    }
-
-    fn test(&self, e: &Ex, row: &[Value]) -> Result<bool, EvalError> {
-        let both = |a: &Ex, b: &Ex| -> Result<Option<Ordering>, EvalError> {
-            let (x, y) = (self.value(a, row)?, self.value(b, row)?);
-            Ok((!is_null(&x) && !is_null(&y)).then(|| sql_cmp(&x, &y)))
-        };
-        Ok(match e {
-            Ex::And(a, b) => self.test(a, row)? && self.test(b, row)?,
-            Ex::Or(a, b) => self.test(a, row)? || self.test(b, row)?,
-            Ex::Not(a) => !self.test(a, row)?,
-            Ex::Null(a, neg) => is_null(&self.value(a, row)?) != *neg,
-            Ex::Cmp(op, a, b) => both(a, b)?.is_some_and(|o| match *op {
-                "=" => o.is_eq(),
-                "<>" | "!=" => o.is_ne(),
-                "<" => o.is_lt(),
-                "<=" => o.is_le(),
-                ">" => o.is_gt(),
-                _ => o.is_ge(),
-            }),
-            Ex::Like(a, p, neg) => {
-                let (s, p) = (self.value(a, row)?, self.value(p, row)?);
-                !is_null(&s) && {
-                    let (s, p): (Vec<char>, Vec<char>) =
-                        (s.to_text().chars().collect(), p.to_text().chars().collect());
-                    like(&s, &p) != *neg
-                }
-            }
-            Ex::In(a, items, neg) => {
-                let v = self.value(a, row)?;
-                let mut found = false;
-                for i in items {
-                    let x = self.value(i, row)?;
-                    found |= !is_null(&v) && !is_null(&x) && sql_cmp(&v, &x).is_eq();
-                }
-                !is_null(&v) && found != *neg
-            }
-            Ex::Between(a, lo, hi, neg) => {
-                let inside = both(a, lo)?.is_some_and(Ordering::is_ge)
-                    && both(a, hi)?.is_some_and(Ordering::is_le);
-                inside != *neg
-            }
-            Ex::Col(_) | Ex::Lit(_) => self.value(e, row)?.truth(),
-        })
-    }
-}
-
 /// How ExecuteSQL writes a value: ISO dates and times, plain numbers.
 fn sql_text(v: &Value) -> String {
     let date = |d: i64| {
@@ -577,6 +620,176 @@ fn sql_text(v: &Value) -> String {
     }
 }
 
+/// Columns of the joined rows: (index of the table in FROM, name).
+struct Schema<'a> {
+    from: &'a [From],
+    cols: Vec<(usize, String)>,
+}
+
+impl Schema<'_> {
+    fn col(&self, qual: Option<&str>, name: &str) -> Result<usize, EvalError> {
+        let hits: Vec<usize> = (0..self.cols.len())
+            .filter(|&i| {
+                let (t, c) = &self.cols[i];
+                let t = &self.from[*t];
+                c.eq_ignore_ascii_case(name)
+                    && qual.is_none_or(|q| {
+                        t.alias.eq_ignore_ascii_case(q) || t.name.eq_ignore_ascii_case(q)
+                    })
+            })
+            .collect();
+        match hits[..] {
+            [i] => Ok(i),
+            [] => Err(err(format!("column {name} does not exist"))),
+            _ => Err(err(format!("column {name} is ambiguous"))),
+        }
+    }
+
+    /// `e` with its columns resolved.
+    fn bind(&self, e: &Ex) -> Result<Ex, EvalError> {
+        let b = |x: &Ex| self.bind(x).map(Box::new);
+        Ok(match e {
+            Ex::Col(q, n) => Ex::Idx(self.col(q.as_deref(), n)?),
+            Ex::Idx(_) | Ex::Lit(_) => e.clone(),
+            Ex::Agg(f, a, d) => Ex::Agg(*f, a.as_deref().map(b).transpose()?, *d),
+            Ex::Cmp(op, x, y) => Ex::Cmp(op, b(x)?, b(y)?),
+            Ex::Like(x, y, n) => Ex::Like(b(x)?, b(y)?, *n),
+            Ex::In(x, v, n) => Ex::In(
+                b(x)?,
+                v.iter().map(|i| self.bind(i)).collect::<Result<_, _>>()?,
+                *n,
+            ),
+            Ex::Between(x, l, h, n) => Ex::Between(b(x)?, b(l)?, b(h)?, *n),
+            Ex::Null(x, n) => Ex::Null(b(x)?, *n),
+            Ex::And(x, y) => Ex::And(b(x)?, b(y)?),
+            Ex::Or(x, y) => Ex::Or(b(x)?, b(y)?),
+            Ex::Not(x) => Ex::Not(b(x)?),
+        })
+    }
+}
+
+/// Whether `e` has an aggregate; `cols` gets the columns outside them.
+fn aggregates(e: &Ex, cols: &mut Vec<usize>) -> bool {
+    match e {
+        Ex::Agg(..) => true,
+        Ex::Idx(i) => {
+            cols.push(*i);
+            false
+        }
+        Ex::Col(..) | Ex::Lit(_) => false,
+        Ex::Cmp(_, x, y) | Ex::Like(x, y, _) | Ex::And(x, y) | Ex::Or(x, y) => {
+            aggregates(x, cols) | aggregates(y, cols)
+        }
+        Ex::In(x, v, _) => v
+            .iter()
+            .fold(aggregates(x, cols), |a, i| aggregates(i, cols) | a),
+        Ex::Between(x, l, h, _) => aggregates(x, cols) | aggregates(l, cols) | aggregates(h, cols),
+        Ex::Null(x, _) | Ex::Not(x) => aggregates(x, cols),
+    }
+}
+
+type Row = Vec<Value>;
+
+/// Value of `e` over a group of rows (one row outside GROUP BY); columns
+/// read the group's first row.
+fn value(e: &Ex, g: &[&Row]) -> Value {
+    match e {
+        Ex::Idx(i) => g
+            .first()
+            .and_then(|r| r.get(*i))
+            .cloned()
+            .unwrap_or_else(Value::empty),
+        Ex::Lit(v) => v.clone(),
+        Ex::Agg(f, a, distinct) => {
+            let Some(a) = a else {
+                return Value::int(g.len() as i64);
+            };
+            let mut vals: Vec<Value> = vec![];
+            for r in g {
+                let v = value(a, &[r]);
+                if !is_null(&v) && !(*distinct && vals.iter().any(|x| sql_cmp(x, &v).is_eq())) {
+                    vals.push(v);
+                }
+            }
+            let nums = || vals.iter().filter_map(Value::to_num);
+            let sum = || nums().fold(num::int(0), |a, n| num::add(&a, &n));
+            match f {
+                Agg::Count => Value::int(vals.len() as i64),
+                _ if vals.is_empty() => Value::empty(),
+                Agg::Sum => Value::Number(sum()),
+                Agg::Avg => num::div(&sum(), &num::int(nums().count() as i64), num::DEFAULT_SCALE)
+                    .map_or_else(Value::empty, Value::Number),
+                Agg::Min | Agg::Max => {
+                    let pick = if *f == Agg::Min {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    };
+                    vals.iter()
+                        .skip(1)
+                        .fold(&vals[0], |m, v| if sql_cmp(v, m) == pick { v } else { m })
+                        .clone()
+                }
+            }
+        }
+        Ex::Col(..) => Value::empty(),
+        _ => Value::bool(test(e, g)),
+    }
+}
+
+fn test(e: &Ex, g: &[&Row]) -> bool {
+    let both = |a: &Ex, b: &Ex| {
+        let (x, y) = (value(a, g), value(b, g));
+        (!is_null(&x) && !is_null(&y)).then(|| sql_cmp(&x, &y))
+    };
+    match e {
+        Ex::And(a, b) => test(a, g) && test(b, g),
+        Ex::Or(a, b) => test(a, g) || test(b, g),
+        Ex::Not(a) => !test(a, g),
+        Ex::Null(a, neg) => is_null(&value(a, g)) != *neg,
+        Ex::Cmp(op, a, b) => both(a, b).is_some_and(|o| match *op {
+            "=" => o.is_eq(),
+            "<>" | "!=" => o.is_ne(),
+            "<" => o.is_lt(),
+            "<=" => o.is_le(),
+            ">" => o.is_gt(),
+            _ => o.is_ge(),
+        }),
+        Ex::Like(a, p, neg) => {
+            let (s, p) = (value(a, g), value(p, g));
+            !is_null(&s) && {
+                let (s, p): (Vec<char>, Vec<char>) =
+                    (s.to_text().chars().collect(), p.to_text().chars().collect());
+                like(&s, &p) != *neg
+            }
+        }
+        Ex::In(a, items, neg) => {
+            let v = value(a, g);
+            let found = items.iter().any(|i| {
+                let x = value(i, g);
+                !is_null(&x) && sql_cmp(&v, &x).is_eq()
+            });
+            !is_null(&v) && found != *neg
+        }
+        Ex::Between(a, lo, hi, neg) => {
+            let inside = both(a, lo).is_some_and(Ordering::is_ge)
+                && both(a, hi).is_some_and(Ordering::is_le);
+            inside != *neg
+        }
+        Ex::Col(..) | Ex::Idx(_) | Ex::Lit(_) | Ex::Agg(..) => value(e, g).truth(),
+    }
+}
+
+/// SQL ordering with NULL first.
+fn null_first(x: &Value, y: &Value) -> Ordering {
+    match (is_null(x), is_null(y)) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => sql_cmp(x, y),
+    }
+}
+
 fn run(ev: &mut Evaluator, a: &[Value]) -> Result<String, EvalError> {
     let mut p = P {
         t: lex(&txt(a, 0))?,
@@ -585,49 +798,159 @@ fn run(ev: &mut Evaluator, a: &[Value]) -> Result<String, EvalError> {
         next_param: 0,
     };
     let q = p.query()?;
-    let mut rows = ev.ctx.rows(&q.table)?;
-    // Short rows from the host read as NULL.
-    let width = rows.columns.len();
-    rows.rows
-        .iter_mut()
-        .for_each(|r| r.resize(width, Value::empty()));
-    let t = Table { rows: &rows };
-    let mut hits: Vec<&Vec<Value>> = vec![];
-    for r in &rows.rows {
-        if q.filter.as_ref().map_or(Ok(true), |f| t.test(f, r))? {
-            hits.push(r);
-        }
+    let mut tables = vec![];
+    for f in &q.from {
+        let mut rows = ev.ctx.rows(&f.name)?;
+        // Short rows from the host read as NULL.
+        let width = rows.columns.len();
+        rows.rows
+            .iter_mut()
+            .for_each(|r| r.resize(width, Value::empty()));
+        tables.push(rows);
     }
-    // Resolve ORDER BY keys first so a bad column is an error even with no rows.
-    let mut keys = vec![];
-    for (k, desc) in &q.order {
-        let col = match k {
-            Ex::Lit(n) => {
-                let i = crate::eval::to_index(n)? as usize;
-                match q.items.get(i.wrapping_sub(1)) {
-                    Some(Item::Col(c)) => t.col(c)?,
-                    _ if matches!(q.items[..], [Item::All])
-                        && (1..=rows.columns.len()).contains(&i) =>
-                    {
-                        i - 1
+    let schema = Schema {
+        from: &q.from,
+        cols: tables
+            .iter()
+            .enumerate()
+            .flat_map(|(t, r)| r.columns.iter().map(move |c| (t, c.clone())))
+            .collect(),
+    };
+    // Resolve every column first: a bad one is an error even with no rows.
+    let bind_opt = |e: &Option<Ex>| e.as_ref().map(|e| schema.bind(e)).transpose();
+    let ons = q
+        .from
+        .iter()
+        .map(|f| bind_opt(&f.on))
+        .collect::<Result<Vec<_>, _>>()?;
+    let filter = bind_opt(&q.filter)?;
+    let having = bind_opt(&q.having)?;
+    let group = q
+        .group
+        .iter()
+        .map(|e| schema.bind(e))
+        .collect::<Result<Vec<_>, _>>()?;
+    // The output columns, `*` expanded, and their names (AS).
+    let mut outs: Vec<(Ex, Option<String>)> = vec![];
+    for i in &q.items {
+        match i {
+            Item::All(t) => {
+                let t = match t {
+                    Some(t) => Some(
+                        q.from
+                            .iter()
+                            .position(|f| {
+                                f.alias.eq_ignore_ascii_case(t) || f.name.eq_ignore_ascii_case(t)
+                            })
+                            .ok_or_else(|| err(format!("table {t} is not in FROM")))?,
+                    ),
+                    None => None,
+                };
+                for (c, (ct, _)) in schema.cols.iter().enumerate() {
+                    if t.is_none_or(|t| t == *ct) {
+                        outs.push((Ex::Idx(c), None));
                     }
-                    _ => return Err(err("invalid ORDER BY position")),
                 }
             }
-            Ex::Col(c) => t.col(c)?,
-            _ => unreachable!("ORDER BY keys are columns or positions"),
-        };
-        keys.push((col, *desc));
+            Item::Ex(e, alias) => outs.push((schema.bind(e)?, alias.clone())),
+        }
     }
-    hits.sort_by(|x, y| {
-        for &(c, desc) in &keys {
-            let o = match (is_null(&x[c]), is_null(&y[c])) {
-                (true, true) => Ordering::Equal,
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                _ => sql_cmp(&x[c], &y[c]),
-            };
-            let o = if desc { o.reverse() } else { o };
+    let mut order = vec![];
+    for (k, desc) in &q.order {
+        let alias = match k {
+            Ex::Col(None, n) => outs
+                .iter()
+                .find(|(_, a)| a.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(n))),
+            _ => None,
+        };
+        let key = match (k, alias) {
+            (_, Some((e, _))) => e.clone(),
+            (Ex::Lit(n), _) => {
+                let i = crate::eval::to_index(n)? as usize;
+                outs.get(i.wrapping_sub(1))
+                    .ok_or_else(|| err("invalid ORDER BY position"))?
+                    .0
+                    .clone()
+            }
+            _ => schema.bind(k)?,
+        };
+        order.push((key, *desc));
+    }
+    // Aggregates group the rows; other columns must be GROUP BY columns.
+    let mut loose = vec![];
+    let mut grouped = !group.is_empty();
+    for e in outs
+        .iter()
+        .map(|(e, _)| e)
+        .chain(&having)
+        .chain(order.iter().map(|(e, _)| e))
+    {
+        grouped |= aggregates(e, &mut loose);
+    }
+    if grouped
+        && loose
+            .iter()
+            .any(|c| !group.iter().any(|g| matches!(g, Ex::Idx(i) if i == c)))
+    {
+        return Err(err("a selected column is not in GROUP BY"));
+    }
+    // FROM and JOIN: the rows of each table joined to those before it.
+    let mut rows: Vec<Row> = vec![vec![]];
+    for ((t, f), on) in tables.iter().zip(&q.from).zip(&ons) {
+        let mut next = vec![];
+        for l in &rows {
+            let mut hit = false;
+            for r in &t.rows {
+                let mut row = l.clone();
+                row.extend(r.iter().cloned());
+                if on.as_ref().is_none_or(|on| test(on, &[&row])) {
+                    hit = true;
+                    next.push(row);
+                }
+            }
+            if f.left && !hit {
+                let mut row = l.clone();
+                row.resize(l.len() + t.columns.len(), Value::empty());
+                next.push(row);
+            }
+        }
+        rows = next;
+    }
+    let hits: Vec<&Row> = rows
+        .iter()
+        .filter(|r| filter.as_ref().is_none_or(|f| test(f, &[r])))
+        .collect();
+    let mut groups: Vec<Vec<&Row>> = if group.is_empty() {
+        if grouped {
+            vec![hits]
+        } else {
+            hits.into_iter().map(|r| vec![r]).collect()
+        }
+    } else {
+        let mut at: std::collections::HashMap<Vec<String>, usize> = Default::default();
+        let mut gs: Vec<Vec<&Row>> = vec![];
+        for r in hits {
+            let key: Vec<String> = group.iter().map(|g| sql_text(&value(g, &[r]))).collect();
+            let i = *at.entry(key).or_insert_with(|| {
+                gs.push(vec![]);
+                gs.len() - 1
+            });
+            gs[i].push(r);
+        }
+        gs
+    };
+    if let Some(h) = &having {
+        groups.retain(|g| test(h, g));
+    }
+    let keys: Vec<Vec<Value>> = groups
+        .iter()
+        .map(|g| order.iter().map(|(k, _)| value(k, g)).collect())
+        .collect();
+    let mut idx: Vec<usize> = (0..groups.len()).collect();
+    idx.sort_by(|&x, &y| {
+        for (n, (_, desc)) in order.iter().enumerate() {
+            let o = null_first(&keys[x][n], &keys[y][n]);
+            let o = if *desc { o.reverse() } else { o };
             if o.is_ne() {
                 return o;
             }
@@ -642,31 +965,11 @@ fn run(ev: &mut Evaluator, a: &[Value]) -> Result<String, EvalError> {
         s if s.is_empty() => "\r".to_string(),
         s => s,
     };
-    if q.items.iter().any(|i| matches!(i, Item::Count)) {
-        if q.items.len() > 1 {
-            return Err(err(
-                "COUNT(*) cannot be mixed with columns without GROUP BY",
-            ));
-        }
-        return Ok(hits
-            .len()
-            .saturating_sub(q.offset)
-            .min(q.limit.unwrap_or(usize::MAX))
-            .to_string());
-    }
-    let mut cols = vec![];
-    for i in &q.items {
-        match i {
-            Item::All => cols.extend(0..rows.columns.len()),
-            Item::Col(c) => cols.push(t.col(c)?),
-            Item::Count => unreachable!(),
-        }
-    }
     let mut out: Vec<String> = vec![];
-    for r in hits {
-        let line = cols
+    for i in idx {
+        let line = outs
             .iter()
-            .map(|&c| sql_text(&r[c]))
+            .map(|(e, _)| sql_text(&value(e, &groups[i])))
             .collect::<Vec<_>>()
             .join(&fs);
         if !q.distinct || !out.contains(&line) {

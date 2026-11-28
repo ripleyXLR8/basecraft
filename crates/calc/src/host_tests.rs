@@ -264,6 +264,15 @@ fn ctx() -> MemoryContext {
             ],
         },
     );
+    c.tables.insert(
+        "orders".into(),
+        Rows {
+            columns: ["Customer", "Amount"].map(String::from).to_vec(),
+            rows: [("Ann", 10), ("Ann", 5), ("bob", 7), ("Zed", 3)]
+                .map(|(c, n)| vec![Value::text(c), Value::int(n)])
+                .to_vec(),
+        },
+    );
     c.summaries.insert("total|total".into(), Value::int(100));
     c.summaries.insert("total|city".into(), Value::int(60));
     c.self_value = Some(Value::int(5));
@@ -554,6 +563,60 @@ fn execute_sql() {
             "? column Nope does not exist",
         ),
     ]);
+}
+
+#[test]
+fn sql_joins_and_groups() {
+    let q = |sql: &str| format!("ExecuteSQL ( \"{sql}\" ; \"\" ; \"\" )");
+    let cases = [
+        (
+            "SELECT c.Name, o.Amount FROM Customers c JOIN Orders o ON c.Name = o.Customer ORDER BY o.Amount",
+            "Ann,5\rbob,7\rAnn,10",
+        ),
+        (
+            "SELECT c.Name, o.Amount FROM Customers c LEFT OUTER JOIN Orders o ON c.Name = o.Customer ORDER BY c.Name, 2",
+            "Ann,5\rAnn,10\rCy,\rbob,7",
+        ),
+        (
+            "SELECT Customers.Name FROM Customers, Orders WHERE Name = Customer AND Amount > 6",
+            "Ann\rbob",
+        ),
+        (
+            "SELECT o.* FROM Customers c INNER JOIN Orders o ON o.Customer = c.Name WHERE c.City = 'Lyon'",
+            "bob,7",
+        ),
+        (
+            "SELECT Customer, COUNT(*), SUM(Amount) FROM Orders GROUP BY Customer ORDER BY SUM(Amount) DESC",
+            "Ann,2,15\rbob,1,7\rZed,1,3",
+        ),
+        (
+            "SELECT Customer FROM Orders GROUP BY Customer HAVING COUNT(*) > 1",
+            "Ann",
+        ),
+        (
+            "SELECT Customer, SUM(Amount) AS total FROM Orders GROUP BY Customer ORDER BY total",
+            "Zed,3\rbob,7\rAnn,15",
+        ),
+        (
+            "SELECT AVG(Amount), MIN(Amount), MAX(Amount), COUNT(DISTINCT Customer) FROM Orders",
+            "6.25,3,10,3",
+        ),
+        (
+            "SELECT SUM(Amount), COUNT(Amount) FROM Orders WHERE Amount > 100",
+            ",0",
+        ),
+        (
+            "SELECT c.City, SUM(o.Amount) FROM Customers c JOIN Orders o ON o.Customer = c.Name GROUP BY c.City ORDER BY 2",
+            "Lyon,7\rParis,15",
+        ),
+        // FileMaker's "?" for SQL errors.
+        ("SELECT Customer, COUNT(*) FROM Orders", "?"),
+        ("SELECT Name FROM Customers JOIN Orders", "?"),
+        ("SELECT x.* FROM Orders", "?"),
+    ];
+    let cases: Vec<(String, &str)> = cases.iter().map(|(s, w)| (q(s), *w)).collect();
+    let cases: Vec<(&str, &str)> = cases.iter().map(|(s, w)| (s.as_str(), *w)).collect();
+    check(&cases);
 }
 
 #[test]

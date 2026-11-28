@@ -106,3 +106,20 @@ from files we authored ourselves.
   keys) from `fmdump <file> raw`. `step_errors_m5.xml` runs those steps with `Get ( LastError )`
   after each and stores the results in `Tasks::Description` of a new record, read back through
   UI Automation (`AutomationId` `Field: Tasks::Description`): no dialog is left open.
+
+## FileMaker Server VM (headless checks)
+
+A local VirtualBox VM `fms-basecraft` (Ubuntu 24.04, FileMaker Server 26
+trial) gives a headless oracle that does not need FileMaker Pro's window:
+
+```sh
+tools/oracle/fms_check.sh file.fmp12                       # consistency check, exit 0 = no problems
+tools/oracle/fms_check.sh file.fmp12 Admin "" out.xml      # also FileMaker's Save as XML export
+```
+
+The script copies the file into the VM over SSH (`127.0.0.1:2222`, key
+`~/.ssh/basecraft_vm`) and runs FMDeveloperTool `--checkConsistency` and
+`--saveAsXML`. It catches damaged files (error 805) that FileMaker Pro
+would only report when opening them. Several agents can use it at the same
+time, unlike FileMaker Pro. Ports forwarded to the host: 2222 SSH, 8443
+HTTPS (Admin Console, Data API, OData), 5003 FileMaker, 16000 admin.

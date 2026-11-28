@@ -7,7 +7,7 @@
 use crate::{Chunk, Error, File, SECTOR};
 
 const HEADER_LEN: usize = 20;
-const PAYLOAD: usize = SECTOR - HEADER_LEN;
+pub(crate) const PAYLOAD: usize = SECTOR - HEADER_LEN;
 
 /// A value to encode with [`encode`], for content built from scratch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +206,12 @@ fn path_delta(from: &[Vec<u8>], to: &[Vec<u8>], out: &mut Vec<u8>) -> usize {
 /// pops still fit after it: FileMaker Server's consistency check reports a
 /// full sector missing them as a bad block (error 805).
 pub fn pack(entries: &[Entry]) -> Vec<(Vec<u8>, &Entry)> {
+    pack_in(entries, PAYLOAD)
+}
+
+/// [`pack`] into payloads of at most `cap` bytes (32 fewer for an
+/// encrypted file's pages, FORMAT.md §17).
+fn pack_in(entries: &[Entry], cap: usize) -> Vec<(Vec<u8>, &Entry)> {
     let mut pages: Vec<(Vec<u8>, &Entry)> = Vec::new();
     let mut prev: &[Vec<u8>] = &[];
     for (i, e) in entries.iter().enumerate() {
@@ -221,12 +227,12 @@ pub fn pack(entries: &[Entry]) -> Vec<(Vec<u8>, &Entry)> {
         });
         let fits = pages
             .last()
-            .is_some_and(|(buf, _)| buf.len() + d.len() + e.item.len() + after <= PAYLOAD);
+            .is_some_and(|(buf, _)| buf.len() + d.len() + e.item.len() + after <= cap);
         if !fits {
             // Like FileMaker, keep the pops towards the next entry (room
             // was kept for them).
             if let Some((buf, _)) = pages.last_mut()
-                && buf.len() + pops <= PAYLOAD
+                && buf.len() + pops <= cap
             {
                 buf.extend_from_slice(&d[..pops]);
             }
@@ -432,14 +438,14 @@ pub fn decode_index(payload: &[u8]) -> Result<Vec<Sep>, Error> {
     Ok(out)
 }
 
-/// Splits separators into index sectors of at most PAYLOAD bytes.
-fn pack_index(seps: &[Sep]) -> Vec<std::ops::Range<usize>> {
+/// Splits separators into index sectors of at most `cap` bytes.
+fn pack_index(seps: &[Sep], cap: usize) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut start = 0;
     // ponytail: re-encodes the open sector per entry (quadratic in entries
     // per sector, ~500 at most); track the size incrementally if it shows.
     for end in 1..=seps.len() {
-        if end - start > 1 && encode_index(&seps[start..end]).len() > PAYLOAD {
+        if end - start > 1 && encode_index(&seps[start..end]).len() > cap {
             out.push(start..end - 1);
             start = end - 1;
         }
@@ -467,13 +473,19 @@ fn mark_clean(page0: &mut [u8]) {
 }
 
 pub fn build(header: &[u8], entries: &[Entry]) -> Vec<u8> {
-    let leaves = pack(entries);
+    build_in(header, entries, PAYLOAD)
+}
+
+/// [`build`] with payloads of at most `cap` bytes; the free-byte counts
+/// stay relative to a full plain payload.
+pub(crate) fn build_in(header: &[u8], entries: &[Entry], cap: usize) -> Vec<u8> {
+    let leaves = pack_in(entries, cap);
     // Separator of each node at the current level: its first key.
     let mut firsts: Vec<Sep> = leaves.iter().map(|(_, e)| sep(e, 0)).collect();
     // Index levels bottom-up, as ranges over the level below.
     let mut levels: Vec<Vec<std::ops::Range<usize>>> = Vec::new();
     loop {
-        let ranges = pack_index(&firsts);
+        let ranges = pack_index(&firsts, cap);
         firsts = ranges.iter().map(|r| firsts[r.start].clone()).collect();
         levels.push(ranges);
         if firsts.len() == 1 {

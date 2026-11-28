@@ -110,9 +110,9 @@ pub struct Sector<'a> {
 
 pub struct File {
     bytes: Vec<u8>,
-    /// Decrypted from an encrypted (HBAMe) file: BaseCraft does not write
-    /// it back, which would store it unencrypted.
-    encrypted: bool,
+    /// Decrypted from an encrypted (HBAMe) file: how to encrypt it again
+    /// when it is saved ([`File::to_disk`]).
+    encryption: Option<ear::Encryption>,
 }
 
 fn be32(b: &[u8]) -> u32 {
@@ -139,13 +139,41 @@ impl File {
             return Self::from_bytes(bytes);
         }
         let mut f = Self::from_bytes(ear::decrypt(&bytes, password)?)?;
-        f.encrypted = true;
+        f.encryption = Some(ear::Encryption::of(&bytes, password));
         Ok(f)
     }
 
-    /// Decrypted from an encrypted file (read-only in BaseCraft).
+    /// Decrypted from an encrypted file.
     pub fn is_encrypted(&self) -> bool {
-        self.encrypted
+        self.encryption.is_some()
+    }
+
+    /// How the file was encrypted, if it was.
+    pub fn encryption(&self) -> Option<&ear::Encryption> {
+        self.encryption.as_ref()
+    }
+
+    /// Sets (or, with `None`, removes) the encryption [`File::to_disk`]
+    /// applies.
+    pub fn set_encryption(&mut self, enc: Option<ear::Encryption>) {
+        self.encryption = enc;
+    }
+
+    /// A new plain image of this file (an edit or a save), keeping its
+    /// encryption.
+    pub fn replaced(&self, bytes: Vec<u8>) -> Result<Self, Error> {
+        let mut f = Self::from_bytes(bytes)?;
+        f.encryption = self.encryption.clone();
+        Ok(f)
+    }
+
+    /// The bytes to write for a plain image saved from this file:
+    /// encrypted again when this file was ([`ear::encrypt`]), else as is.
+    pub fn to_disk(&self, plain: Vec<u8>) -> Result<Vec<u8>, Error> {
+        match &self.encryption {
+            Some(e) => ear::encrypt(&plain, e),
+            None => Ok(plain),
+        }
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
@@ -159,7 +187,7 @@ impl File {
         }
         let f = File {
             bytes,
-            encrypted: false,
+            encryption: None,
         };
         // Sector 1's "next" field holds the number of body sectors.
         if !f.bytes.len().is_multiple_of(SECTOR)

@@ -202,10 +202,7 @@ impl App {
         let Some(d) = self.doc.as_mut() else {
             return Ok(());
         };
-        let before = (
-            d.db.clone(),
-            fmp12::File::from_bytes(d.file.bytes().to_vec()),
-        );
+        let before = (d.db.clone(), d.file.replaced(d.file.bytes().to_vec()));
         let result = (|| -> Result<(), String> {
             for id in &dlg.deleted {
                 d.db.delete_custom_function(&mut d.file, *id)

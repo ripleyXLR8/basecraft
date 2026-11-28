@@ -453,11 +453,6 @@ impl App {
             return;
         }
         let Some(d) = self.doc.as_mut() else { return };
-        // Writing it would store the file decrypted: read-only for now.
-        if d.file.is_encrypted() {
-            self.error = Some(security_ui::t("Encrypted files are read-only in BaseCraft.").into());
-            return;
-        }
         // In Layout mode, saving the file saves the layout first; an open
         // Script Workspace saves its scripts.
         if let Some(ds) = self.designer.as_mut() {
@@ -477,7 +472,9 @@ impl App {
                 return;
             }
         };
-        match fmp12::File::from_bytes(bytes.clone()) {
+        // An encrypted file is written encrypted again (FORMAT.md §17).
+        let disk = d.file.to_disk(bytes.clone());
+        match d.file.replaced(bytes) {
             Ok(f) => {
                 // Scripts as written (steps get their parameter nodes).
                 if let (Some(e), Ok(list)) = (self.engine.as_mut(), fmp12::scripts::scripts(&f)) {
@@ -502,6 +499,13 @@ impl App {
             }
         }
 
+        let bytes = match disk {
+            Ok(b) => b,
+            Err(e) => {
+                self.error = Some(e.to_string());
+                return;
+            }
+        };
         let file_name = format!("{}.fmp12", d.name);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1225,6 +1229,24 @@ impl App {
                 if ui.button(tr("Save a Copy As…")).clicked() {
                     ui.close();
                     self.save(&ui.ctx().clone(), true);
+                }
+                // FileMaker's Developer Utilities "Remove encryption": a
+                // decrypted copy; the open file stays encrypted.
+                if self.doc.as_ref().is_some_and(|d| d.file.is_encrypted())
+                    && ui
+                        .button(security_ui::t("Save a Copy Without Encryption…"))
+                        .clicked()
+                {
+                    ui.close();
+                    let enc = self.doc.as_mut().and_then(|d| {
+                        let e = d.file.encryption().cloned();
+                        d.file.set_encryption(None);
+                        e
+                    });
+                    self.save(&ui.ctx().clone(), true);
+                    if let Some(d) = self.doc.as_mut() {
+                        d.file.set_encryption(enc);
+                    }
                 }
                 let can = self.doc.as_ref().is_some_and(|d| d.db.can_print())
                     && matches!(self.mode(), Mode::Browse | Mode::Preview);

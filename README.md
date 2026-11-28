@@ -85,10 +85,14 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 
 ## Known limitations
 
-- **Encrypted files** (encryption at rest) open **read-only** with their encryption
-  password (the app asks for it; `basecraft-cli` reads `BASECRAFT_ENCRYPTION_PASSWORD`
-  or, with `--encryption-password`, stdin). BaseCraft does not write encrypted files
-  yet, so it refuses to save them (FORMAT.md §17).
+- **Encrypted files** (encryption at rest) open with their encryption password (the
+  app asks for it; `basecraft-cli` reads `BASECRAFT_ENCRYPTION_PASSWORD` or, with
+  `--encryption-password`, stdin) and are saved encrypted again with the same
+  password; File › Save a Copy Without Encryption writes a decrypted copy. Encrypting
+  a plain file from the app, and AES-128 files (which FileMaker's tools do not make),
+  are not supported (FORMAT.md §17).
+- **Container fields with secure external storage** are read (the files are
+  decrypted), but new files put in such a field are stored embedded (FORMAT.md §13).
 - **Accounts and privilege sets** are read, enforced and written (File › Manage ›
   Security, `accounts`/`privileges` commands); external-server and OAuth accounts
   are listed but cannot log in, and "Run script with full access privileges" is

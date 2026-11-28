@@ -128,7 +128,7 @@ computer's local time (Windows' `ActiveTimeBias`, `date +%z` elsewhere, the Java
 Revert Transaction's custom message, else the failing script, step and line of a
 transaction that fails or reverts; Claris's other cases (ODBC, SSL, cURL, plug-ins, locked
 records) do not arise in BaseCraft. RecordAccess and LayoutAccess come from the privilege
-set; EncryptionState is 0 (encrypted files are not opened).
+set; EncryptionState is 0 (also for files opened with encryption at rest).
 
 RecordOpenState and RecordOpenCount see a record a script opened, and the app's record
 being edited when a script starts (an OnRecordCommit script sees it open: 1 new, 2

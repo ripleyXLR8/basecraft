@@ -38,8 +38,8 @@
 //!
 //! A file with encryption at rest opens with its encryption password from
 //! `BASECRAFT_ENCRYPTION_PASSWORD`, or, with `--encryption-password`, typed
-//! on stdin after a prompt (the password is never printed). Such a file is
-//! read-only: BaseCraft does not write encrypted files yet.
+//! on stdin after a prompt (the password is never printed). Saving it
+//! writes it encrypted again with the same password.
 //!
 //! `--remote https://host/Database --account A --password-env VAR` runs
 //! `info`, `records`, `find`, `new`, `set`, `delete` and `run-script` on a
@@ -159,21 +159,19 @@ impl Doc {
     }
 
     fn save(&mut self, out: &str) -> Res<Json> {
-        // Writing it back would store the file decrypted.
-        if self.file.is_encrypted() {
-            return Err(format!(
-                "{}: encrypted files are read-only in BaseCraft",
-                self.path
-            ));
-        }
         let bytes = self.db.save(&self.file).map_err(|e| e.to_string())?;
-        std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+        // An encrypted file is written encrypted again (FORMAT.md §17).
+        let disk = self
+            .file
+            .to_disk(bytes.clone())
+            .map_err(|e| e.to_string())?;
+        std::fs::write(out, &disk).map_err(|e| format!("{out}: {e}"))?;
         if let Some(dir) = std::path::Path::new(out).parent() {
             self.db
                 .write_external_containers(dir)
                 .map_err(|e| format!("{out}: container files: {e}"))?;
         }
-        self.file = fmp12::File::from_bytes(bytes).map_err(|e| e.to_string())?;
+        self.file = self.file.replaced(bytes).map_err(|e| e.to_string())?;
         Ok(json!({ "saved": out }))
     }
 }

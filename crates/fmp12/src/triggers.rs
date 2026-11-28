@@ -115,6 +115,9 @@ pub struct Triggers {
     pub objects: BTreeMap<(u32, u64), Vec<Trigger>>,
     /// File triggers (OnFirstWindowOpen…).
     pub file: Vec<Trigger>,
+    /// File Options › Open › "Switch to layout": the layout the first
+    /// window opens on.
+    pub open_layout: Option<u32>,
 }
 
 impl Triggers {
@@ -217,6 +220,23 @@ pub fn file_triggers(b: &[u8]) -> Vec<Trigger> {
     out
 }
 
+/// The layout slot of the file options record (`[2]` key 24), after the
+/// OnFirstWindowOpen and OnLastWindowClose slots.
+///
+/// ponytail: the slot always names a layout; the u16 after it is taken as
+/// the "Switch to layout" switch (2 on, 1 off), from the starter templates
+/// (1, open on their first layout) and one user file (2, opens on the slot's
+/// layout). Confirm by toggling the option in FileMaker's File Options.
+pub fn open_layout(b: &[u8]) -> Option<u32> {
+    let mut i = 6;
+    for _ in 0..2 {
+        i += slot(b, i)?.1;
+    }
+    let (layout, n) = slot(b, i)?;
+    let on = b.get(i + n..i + n + 2)? == [0, 2];
+    if on { layout } else { None }
+}
+
 /// Every trigger of the file.
 pub fn triggers(file: &File) -> Result<Triggers, Error> {
     let mut out = Triggers::default();
@@ -229,6 +249,7 @@ pub fn triggers(file: &File) -> Result<Triggers, Error> {
             && let Chunk::Kv { key: 24, data } = c
         {
             out.file = file_triggers(data);
+            out.open_layout = open_layout(data);
             return;
         }
         let Some(i) = p.windows(2).rposition(|w| w == [48, 5]) else {
@@ -297,5 +318,15 @@ mod tests {
             .map(|i| u8::from_str_radix(&tpl[i..i + 2], 16).unwrap())
             .collect();
         assert!(file_triggers(&b).is_empty());
+        // The templates name layout 3 but open on their first layout.
+        assert_eq!(open_layout(&b), None);
+        // "Switch to layout" with layout 100 and no file triggers.
+        let user = "0000044304010000020164000200000001000002000000000000000000640001";
+        let b: Vec<u8> = (0..user.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&user[i..i + 2], 16).unwrap())
+            .collect();
+        assert!(file_triggers(&b).is_empty());
+        assert_eq!(open_layout(&b), Some(100));
     }
 }

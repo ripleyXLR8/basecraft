@@ -255,8 +255,17 @@ impl App {
                     incoming: self.incoming.clone(),
                     ..Default::default()
                 };
-                // The first window opens on the first layout: its layout
-                // triggers, then the file's OnFirstWindowOpen.
+                // The first window opens on File Options' "Switch to
+                // layout" (else the first layout): its layout triggers,
+                // then the file's OnFirstWindowOpen.
+                if let Some(d) = self.doc.as_ref()
+                    && let Some(i) = d
+                        .triggers
+                        .open_layout
+                        .and_then(|id| d.layouts.iter().position(|l| l.id == id))
+                {
+                    self.layout = i;
+                }
                 self.fire(event::LAYOUT_ENTER);
                 self.fire(event::MODE_ENTER);
                 self.fire(event::RECORD_LOAD);

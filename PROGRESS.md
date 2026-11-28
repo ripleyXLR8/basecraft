@@ -74,18 +74,26 @@ numbers and the list of missing functions.
 |------|-------------:|
 | Functions | 234 / 234 |
 | `Get()` flags answered without a host | 10 / 139 |
+| `Get()` flags answered by the data engine without a script or window | 15 more |
 
 The 234 reference lines include `Status` twice. The 139 `Get()` flags exclude the
 `Get ( flag )` header line. A host can answer any flag through `Context::get`. The 10
 built-in flags are CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimestamp
 (UTC, because the engine has no time-zone data), CurrentTimeUTCMilliseconds,
 CurrentTimeUTCMicroseconds, UUID, CalculationRepetitionNumber, SystemPlatform and
-ApplicationArchitecture.
+ApplicationArchitecture. The engine answers FoundCount, RecordNumber, TotalRecordCount,
+RecordID, SortState and LayoutCount from the found set it is given (every record,
+unsorted, without one), and outside a script LastError, ErrorCaptureState,
+RecordOpenState, RecordOpenCount, TransactionOpenState and WindowMode (0),
+AllowAbortState (1), ScriptName, ScriptParameter, ScriptResult, LastErrorDetail and
+LastErrorLocation (empty); a script answers them from its own state first.
 
-Oracle: **1,987 expressions** evaluated by FileMaker Pro 26.0.1 (Windows, English Tasks
+Oracle: **2,022 expressions** evaluated by FileMaker Pro 26.0.1 (Windows, English Tasks
 template, en_US formats) in [crates/calc/tests/oracle.tsv](crates/calc/tests/oracle.tsv),
 produced by `tools/oracle/calc_oracle.ps1`; `cargo test -p calc --test oracle` checks
-them all. 1,934 match; 53 are listed as known differences (see below).
+them all (`-- --nocapture` lists the rows that still differ). 1,997 match; 25 are listed
+as known differences (see below), 7 of them platform-dependent. Before this round:
+1,934 of 1,987, 53 known.
 
 | Feature | State |
 |---------|-------|
@@ -106,6 +114,9 @@ them all. 1,934 match; 53 are listed as known differences (see below).
 | Styled text (TextColor, TextStyleAdd…): plain text passes through, styles dropped; GetAsCSS/GetAsSVG of plain text (✅ oracle) | 🚧 |
 | Design functions (FieldNames, FieldType, RelationInfo, GetTableDDL, LayoutObjectNames…) on `Context::schema` | ✅ |
 | Record functions (GetNthRecord, Lookup, LookupNext, GetSummary, Self, Status, GetRecordIDsFromFoundSet) through `Context` | ✅ |
+| Errors FileMaker absorbs (`Evaluator::sticky`, `calc::evaluate_with_code`): a value comes back and EvaluationError still reports the error. Aggregates skip a failed argument (`Sum ( 1 ; 1/0 )` = 1, error 15), List shows it as `?`, IsEmpty of an error is 0, IsValid is 0, Evaluate of text that does not parse is `?`, an unknown TextEncode/TextDecode encoding gives `?` with error 4 | ✅ oracle |
+| Dates and times shown as read (`Value::Shown`): GetAsDate/GetAsTimestamp keep a `.` or `-` separator, GetAsTime shows AM/PM text and timestamps in the 12-hour form (`1 PM` without minutes typed); arithmetic and comparisons see the plain value, fields store it | ✅ oracle |
+| Parse errors of an empty last parameter (1202 past the maximum, accepted by Case and other functions without one), `x::` (106) | ✅ oracle |
 | ExecuteSQL / ExecuteSQLe: single-table SELECT, WHERE, ORDER BY, DISTINCT, COUNT(*), OFFSET/FETCH, `?` arguments, over `Context::rows` | 🚧 no joins, GROUP BY or system tables |
 | Japanese: kana width and script, KanjiNumeral, NumToJText, YearName, MonthNameJ, TrimAll types | ✅ oracle |
 | CryptGenerateSignature / CryptVerifySignature (RSA PKCS #1 v1.5, plain and DES-EDE3/AES-encrypted PEM keys) | ✅ matches OpenSSL |
@@ -117,10 +128,9 @@ them all. 1,934 match; 53 are listed as known differences (see below).
 
 Known differences (rows after `# known differences` in oracle.tsv):
 
-* Times keep no "12-hour" flag: FileMaker shows `GetAsTime ( "1:30 PM" )` as `1:30 PM`, we show `13:30:00`; dates from text keep their separator in FileMaker (`1.15.2024`).
-* Trigonometry differs in the last shown digit for about 1 argument in 5 (`Sin ( Pi / 6 )`); `Exp` of large arguments (FileMaker's `Exp ( 100 )` is off from the exact value; `Exp ( 1000 )` exceeds our 400 digits).
-* Guard digits beyond the 16 shown, visible only through `* 10^20` probes, differ for transcendental functions.
-* Styled text (no style runs), lone UTF-16 surrogates from `Char`, JSON duplicate keys, Shift_JIS/UTF-16 TextEncode, Windows-specific path conversion, and a few error codes that come with a value (`Count ( 1 ; 1/0 )`).
+* Platform-dependent (7): trigonometry runs on f64 and differs in the last shown digit for about 1 argument in 5 (`Sin ( Pi / 6 )`; no conversion of the decimal argument to a double, nearest, truncated or cut to 16–18 digits, matches every Sin, Cos and Tan row, so FileMaker's libm differs from Rust's); ConvertToFileMakerPath / ConvertFromFileMakerPath as FileMaker on Windows does them (`file:/C:/…`, error 5).
+* Guard digits beyond the 16 shown, visible only through `* 10^20` probes, differ for transcendental functions (FileMaker keeps about 20 significant digits with its own rounding: `Ln ( 2 )` ends …0940, `Degrees` divides by a 19-digit Pi); `Exp` of large arguments (FileMaker's `Exp ( 100 )` is off from the exact value; `Exp ( 1000 )` exceeds our 400 digits).
+* Styled text (no style runs: GetAsCSS/GetAsSVG of TextColor, TextStyleAdd), lone UTF-16 surrogates from `Char` (Rust strings cannot hold them), Shift_JIS TextEncode (no encoding tables without a new dependency), `JSONMakeArray ( "" ; ¶ ; JSONString )` (FileMaker reports error -1).
 
 ## M5 — Script engine (`crates/script`)
 
@@ -261,11 +271,33 @@ Every step now runs; none is left to `Host::other`.
 | Design functions (TableNames, ValueListItems…), ExecuteSQL, GetNthRecord answered from the database | ✅ |
 | Auto-enter on new records (creation/modification stamps, serials, auto-enter calculations), written in the file's date/time formats; verified in FileMaker | ✅ |
 | Summary fields (Total, Average, Count, Min, Max, StDev, Fraction of Total, List) over a found set or break groups (`engine::summary`) | ✅ |
-| Validation enforced on commit, in the app (dialog, "Accept anyway" when allowed) and in scripts (record stays open, `Get ( LastError )`: 502 number, 504 unique, 505 existing, 506 value list, 509 not empty, 511 maximum characters; Commit Records' "skip data entry validation" keeps "always" fields): not empty, unique, existing, strict number, member of value list, maximum characters; custom messages (a calculation) replace FileMaker's text | ✅ (error codes from FileMaker's documentation, not checked in FileMaker) |
-| Validation by range and by calculation | ⏳ |
+| Found sets in calculations (`engine::FoundSet`, `Scope`): summary fields over the window's found set in its sort order (`Database::value_in`), GetSummary over it (by the break field only when sorted by it, empty otherwise), GetNthRecord, GetRecordIDsFromFoundSet, `Get ( FoundCount / RecordNumber / SortState )`; a related summary field summarizes the related records. Scripts pass their window's found set and sort (`script::Window::sort`), the CLI's `eval` and `records` the one of `--find`/`--sort` | ✅ |
+| `Self` (`Scope::self_value`): validation calculations (the field's value), auto-enter calculations (the field's current value), layout objects through `Database::eval_with_self` | ✅ |
+| Auto-enter calculations evaluate again when a field they use changes (`set_values`): over the value with "Do not replace existing value" unticked, else only into an empty field | ✅ (one pass; a field is "used" when its name appears in the formula) |
+| Validation enforced on commit, in the app (dialog, "Accept anyway" when allowed) and in scripts (record stays open, `Get ( LastError )`; Commit Records' "skip data entry validation" and imports keep "always" fields, `Invalid::always`), first failing rule per field in the Field Options order: strict data type (502 numeric, 500 four-digit year date, 501 time of day), not empty (509), unique (504), existing (505), member of value list (506), in range (503, typed by the field: numbers, dates, times, text), validated by calculation (507, `Self` is the value, run on empty values too), maximum characters (511); custom messages (a calculation) replace FileMaker's text | ✅ (error codes from FileMaker's documentation, not checked in FileMaker) |
 | Storage formats of dates/times/numbers in records: text in the file's locale (`typed_in`) | ✅ |
 | Stored calculations re-evaluated for new and edited records on save | ✅ |
 | Schema changes in memory (`Database::add_table`, `add_field`, `set_field`, `add_occurrence`, `add_relationship`, `add_value_list`, `rename_*`, `set_*`, `delete_*`) with unsaved records kept; `save` writes records and moves the next serial value | ✅ |
+
+Engine API for the app (not wired in `crates/app` yet):
+
+* `engine::FoundSet { table, records, sort }`: the window's found set (record indexes in
+  display order) and the fields it is sorted by (empty when unsorted). The app keeps the
+  sort keys only as a bool per table today; it needs the field ids.
+* `Database::value_in(table, record, field, rep, Some(found))`: what a field shows in
+  that window (summary fields: running totals, subtotaled fractions; calculations with
+  GetSummary, `Get ( RecordNumber )`…). `value`/`value_rep` stay "every record, unsorted".
+* `Database::eval_with_self(tokens, table, to, record, &value, Some(found))`: a layout
+  object's calculation with `Self` = the object's value: the stored formula of a
+  conditional format (instead of evaluating "Value is…" from its operator), "hide object
+  when", tooltips.
+* `Database::eval_tokens_scoped(tokens, table, to, record, &Scope { found, self_value },
+  env)` and `eval_source_in(src, …, &scope)`: the general forms (Data Viewer: pass the
+  window's found set so `Get ( RecordNumber )` and GetSummary answer).
+* `script::Window::sort`: fill it with the sort field ids when building the script
+  window, as `found` is filled; Sort steps set it.
+* `engine::Rule` has four new variants (Date, Time, Range, Calculation; the app's
+  validation dialog got minimal texts) and `Invalid::always`.
 ## M8 — Import/export, Preview and PDF
 
 | Feature | State |

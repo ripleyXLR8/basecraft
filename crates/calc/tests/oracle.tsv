@@ -1996,11 +1996,22 @@ GetAsDate ( "1.15.2024" ) & ""	1.15.2024
 GetAsText ( GetAsDate ( "1.15.2024" ) )	1.15.2024
 GetAsTimestamp ( "1.15.2024 1:30" )	1.15.2024 1:30 AM
 # known differences: FileMaker's result is recorded, calc gives something else (see PROGRESS.md M2)
-# platform-dependent: SystemPlatform differs per OS; the libm sine differs in the last digit on Linux
+# platform-dependent: SystemPlatform differs per OS; trigonometry runs on f64 and its last
+# digit follows the libm and the decimal-to-double conversion (Rust's on Windows and Linux
+# differ from FileMaker's for these arguments); paths are converted as on Windows
 Get ( SystemPlatform )	-2
 Sin ( Pi / 4 )	.7071067811865476
 Sin ( 2 * Pi / 3 )	.8660254037844386
 Sin ( Pi / 6 )	.4999999999999999
+Cos ( Pi / 6 )	.8660254037844387
+Tan ( Pi / 6 )	.5773502691896257
+Sin ( 1/7 )	.1423717297922637
+Cos ( 3/7 )	.9095603516741666
+ConvertToFileMakerPath ( "/Users/x/a.txt" ; PosixPath )	file:/C:/Users/x/a.txt
+ConvertFromFileMakerPath ( "filewin:/C:/Users/x/a.txt" ; PosixPath )	?	5
+# not reproduced: guard digits of transcendental functions (seen only through 10^20
+# probes) and Exp of large arguments, a JSONMakeArray error of -1, Shift_JIS, styled
+# text, lone UTF-16 surrogates
 Exp ( 1 ) * 10^20	271828182845904523536
 Ln ( 2 ) * 10^20	69314718055994530940
 Exp ( 100 )	26881171418161354484126255515800135873611119.5005345509451436
@@ -2019,9 +2030,3 @@ GetAsCSS ( TextColor ( "abc" ; RGB ( 255 ; 0 ; 0 ) ) )	<span style="color: #FF00
 GetAsCSS ( TextStyleAdd ( "abc" ; Bold ) )	<span style="font-weight: bold;" >abc</span>
 GetAsSVG ( TextStyleAdd ( "abc" ; Bold ) )	<stylelist>\r<style#0>"font-weight: bold;", begin: 1, end: 3</style> \r</stylelist>\r<data>\r<span style="0">abc</span>\r</data>
 Code ( Char ( 55357 ) )	55357
-ConvertToFileMakerPath ( "/Users/x/a.txt" ; PosixPath )	file:/C:/Users/x/a.txt
-ConvertFromFileMakerPath ( "filewin:/C:/Users/x/a.txt" ; PosixPath )	?	5
-Cos ( Pi / 6 )	.8660254037844387
-Tan ( Pi / 6 )	.5773502691896257
-Sin ( 1/7 )	.1423717297922637
-Cos ( 3/7 )	.9095603516741666

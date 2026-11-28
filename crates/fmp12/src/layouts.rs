@@ -1010,7 +1010,8 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     .or_default()
                     .extend_from_slice(data);
             }
-            [4, 5, l, 5, obj, 138, i] => {
+            // (A chart's third series name `.[00 0A].[05]` reads as `[138, 5]`.)
+            [4, 5, l, 5, obj, 138, i] if *i >= 128 => {
                 raw.entry(*l)
                     .or_default()
                     .conds

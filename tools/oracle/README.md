@@ -88,7 +88,12 @@ from files we authored ourselves.
 * More `fmp12` examples: `entedit` (delete or add raw entries of a file, for
   bisecting what FileMaker needs), `namekeys` (name-index keys next to the
   names), `schemaops` / `schemademo` (schema edits), `mkblank` (makes
-  `assets/blank.fmp12` from a new file FileMaker created).
+  `assets/blank.fmp12` from a new file FileMaker created, or gives another
+  file BaseCraft's theme), `themedump` (a file's theme rules), `chartdump`
+  (charts and their settings records).
+* `BASECRAFT_BLANK_DEMO=<out.fmp12> cargo test -p basecraft blank_demo_file`: a new
+  file with a field, a text and a button drawn with the theme's default styles
+  (open it with `Test-FmLayout <out> -Layouts "Contacts:1"`).
 * `calc_oracle.ps1` + `calc_snippet.py`: calculation oracle. `Invoke-FmCalcs exprs.txt out.tsv`
   (or `Invoke-FmCalcBatches` for long files, 150 lines per script) pastes a script that
   `Evaluate`s each line and stores `index TAB result TAB EvaluationError` in

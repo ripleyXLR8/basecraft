@@ -117,3 +117,27 @@ fn chart_edits_are_saved() {
     let o = again[0].objects.iter().find(|o| o.id == 2).unwrap();
     assert_eq!(o.chart.as_deref(), Some(c));
 }
+
+/// A chart's series lists grow and shrink as FileMaker writes them: the
+/// two-series column chart cut to one series has the lists of the
+/// one-series column chart, and grown back it has its own again.
+#[test]
+fn series_lists_follow_the_series() {
+    let f = fmp12::File::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/charts.fmp12"
+    ))
+    .unwrap();
+    let c = charts(&f).unwrap();
+    let two = &c[&(1, 1)];
+    let one = &c[&(1, 12)];
+    assert_eq!((two.y.len(), one.y.len()), (2, 1));
+    let lists = 296..383;
+    let mut cut = two.clone();
+    cut.y.truncate(1);
+    let b = cut.encode_record();
+    assert_eq!(b.len(), one.record.len());
+    assert_eq!(b[lists.clone()], one.record[lists]);
+    cut.y.push(two.y[1].clone());
+    assert_eq!(cut.encode_record(), two.record);
+}

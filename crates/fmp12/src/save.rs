@@ -550,11 +550,15 @@ pub(crate) fn spelled(p: &[u32]) -> Vec<Vec<u8>> {
         .enumerate()
         .map(|(i, x)| match *x {
             x if !node || i < 5 || x < 0x80 => path_elem(x),
+            // A chart's calculation slot that shares its number with a
+            // one-byte sub-node ([`chart_slot`]): `00 i`.
+            x if x >= SLOT && i == 5 => vec![0, (x - SLOT - 0x80) as u8],
             // Sub-nodes of a layout object node, as FileMaker spells them:
             // `.[138]` conditions and `.[141]` hide condition in one byte,
             // indexed slots (conditions `128 + i`, a web viewer's `128`)
             // as `00 i`.
-            x @ (138 | 141) if i == 5 => vec![x as u8],
+            // A chart's settings record `.[139]` too (`8B`).
+            x @ (138 | 139 | 141) if i == 5 => vec![x as u8],
             // A text's style runs `.[1].[255]` (FileMaker Pro 26's files).
             255 if i == 6 && p[5] == 1 => vec![0xFF],
             x => {
@@ -668,6 +672,32 @@ fn object_blob(entries: &[Entry], l: u32) -> Vec<u8> {
 /// condition, placeholder, web address) or conditional formats (138).
 const NODE_CALCS: [u32; 6] = [2, 3, 6, 128, 138, 141];
 
+/// Chart calculation slots are spelled `00 i` (128 + i); slots 138, 139
+/// and 141 (a third series' name, its value, a fourth series' value) read
+/// as the same integers as the one-byte sub-nodes `8A` (conditional
+/// formats), `8B` (chart settings) and `8D` (hide condition). In integer
+/// paths of an object node they are `SLOT + k` ([`chart_slot`], [`opath`]).
+const SLOT: u32 = 0x1_0000;
+
+/// The integer path element of chart calculation slot `k`.
+fn chart_slot(k: u32) -> u32 {
+    if matches!(k, 138 | 139 | 141) {
+        SLOT + k
+    } else {
+        k
+    }
+}
+
+/// [`ipath`] where an object node's two-byte sub-node 138, 139 or 141 (a
+/// chart slot) reads as `SLOT + k`.
+fn opath(e: &Entry) -> Option<Vec<u32>> {
+    let mut p = ipath(e)?;
+    if p.len() > 5 && p[..2] == [4, 5] && p[3] == 5 && e.path[5].len() == 2 {
+        p[5] = chart_slot(p[5]);
+    }
+    Some(p)
+}
+
 #[derive(PartialEq)]
 enum NodeCalc<'a> {
     Calc(Option<&'a Vec<u8>>),
@@ -685,13 +715,12 @@ fn node_calc(o: &crate::layouts::LayoutObject, sub: u32) -> Option<NodeCalc<'_>>
         6 => NodeCalc::Calc(o.placeholder.as_ref()),
         128 if o.external.is_some_and(|e| e.0 == WEB_VIEWER) => NodeCalc::Calc(o.url.as_ref()),
         138 => NodeCalc::Conditions(&o.conditions),
-        // ponytail: chart slots 138 and 141 (a third series' name, a
-        // fourth's value) would clash with conditions and the hide
-        // condition; charts with more than two series are not seen.
-        k if (128..=200).contains(&k) && k != 141 && o.chart.is_some() => NodeCalc::Calc(
+        // Chart slots (`SLOT + k` for 138, 139, 141; 139 alone is the
+        // settings record).
+        k if (128..=200).contains(&(k % SLOT)) && k != 139 && o.chart.is_some() => NodeCalc::Calc(
             o.chart
                 .as_ref()
-                .and_then(|c| c.calcs().into_iter().find(|x| x.0 == k).map(|x| x.1)),
+                .and_then(|c| c.calcs().into_iter().find(|x| x.0 == k % SLOT).map(|x| x.1)),
         ),
         _ => return None,
     })
@@ -860,7 +889,7 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         // edited ones, created for new ones.
         let node = |id: u64| [4, 5, l, 5, id as u32];
         entries.retain(|e| {
-            let Some(p) = ipath(e) else { return true };
+            let Some(p) = opath(e) else { return true };
             if p.len() < 5 || p[..4] != [4, 5, l, 5] {
                 return true;
             }
@@ -918,9 +947,7 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             let mut out = Vec::new();
             if let Some(ch) = &n.chart {
                 for (k, t) in ch.calcs() {
-                    if k == 138 || k == 141 {
-                        continue;
-                    }
+                    let k = chart_slot(k);
                     if o.and_then(|o| node_calc(o, k)) != Some(NodeCalc::Calc(Some(t))) {
                         out.extend(calc_entries(n.id, &[k, 5], t));
                     }

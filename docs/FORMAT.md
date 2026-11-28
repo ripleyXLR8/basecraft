@@ -1202,7 +1202,8 @@ fixture `crates/fmp12/tests/fixtures/charts.fmp12`, 14 charts).
   131 X data, 133 + 2*i data of Y series *i*, 134 + 2*i its name. A bubble
   chart's size (XML `WSeriesList`) follows the last series: key 137 with
   two series. 🔸 one-series bubbles not seen.
-* Settings record `[4].[5].[L].[5].[obj].[139].[138]`: key 0 = length
+* Settings record `[4].[5].[L].[5].[obj].[139].[138]` (spelled `.[8B].[00 0A]`; the
+  calculation slots are `.[00 i]`, so slot 139, a fourth series' value, is `.[00 0B]`): key 0 = length
   (u32 BE), keys 1… = 1000-byte chunks of a record of big-endian u32 words
   (1,110 bytes for one series, 1,185 for two). `.[139]` holds `00 00`.
 
@@ -1219,13 +1220,25 @@ fixture `crates/fmp12/tests/fixtures/charts.fmp12`, 14 charts).
   After the source the record has variable-length parts (fonts: `00 0D 3F B7
   …` with size and RGBA colour, the series colours list `00 00 00 02 38 79
   A3 FF D8 92 41 FF`, gridline colours, axis number formats) that are not
-  decoded.
+  decoded, except the **per-series lists**: 172 bytes after the source,
+  three lists, each a u32 count (= number of Y series, a bubble's size not
+  counted) then one 25-byte item per series: u32 1, 3 zero bytes, a font
+  (4 zero bytes, `0D 3F B6`, 5 zero bytes, size, RGBA), a zero byte. The
+  first list's first item is 11 pt `#333333`, every other item 12 pt
+  black. These are the 75 bytes per series (all 14 fixture charts parse
+  this way).
 * Writing (`save_layouts`, `LayoutObject::chart`): the calculations are
   rewritten as web viewer addresses are (`.[K]` and `.[K].[5]` marked), the
   record with words 4, 8, 20, 56 and the source (byte 120 and its
-  length-prefixed reference) replaced, the rest kept; key 0 = new length.
-  FileMaker Server's consistency check passes on edited charts. The record
-  is 75 bytes longer per series: the series count is not changed.
+  length-prefixed reference) replaced, the per-series lists resized to the
+  number of series (a new item copies the list's last one; the first list's
+  second item copies the second list's first), the rest kept; key 0 = new
+  length. Series added and removed in Chart Setup: FileMaker Pro 26 draws a
+  chart grown from 2 to 5 series (legend with the new names, a hide
+  condition on the same object kept) and one cut to 1 series; FileMaker
+  Server's consistency check passes. Before, BaseCraft wrote an edited
+  record to `.[00 0B].[00 0A]`, where FileMaker Server found no fault but
+  FileMaker Pro ignored it (chart shown with default settings).
 * Rendering (`print::chart`, shared by Browse, Preview and PDF), measured
   on FileMaker's Browse mode: title 19 pt on top, legend (swatch + series
   name) under it, value labels on both sides of the plot (top and bottom
@@ -1265,9 +1278,12 @@ Text and shape styles go into the object's local style (§12) on the
 `.self` element, as FileMaker's Inspector does.
 
 Sub-nodes of an object node are spelled as FileMaker writes them, and
-every level of a sub-node gets its node marker: `.[138]` and `.[141]` as
-one byte (`8A`, `8D`), indexed slots (`128 + i`: conditions, a web
-viewer's `.[128]`) as `00 i`. With the two-byte spelling `80 0D`
+every level of a sub-node gets its node marker: `.[138]`, `.[139]` (a
+chart's settings) and `.[141]` as one byte (`8A`, `8B`, `8D`), indexed
+slots (`128 + i`: conditions, a web viewer's `.[128]`, a chart's
+calculations) as `00 i`. A chart with three or more series has slots
+`00 0A`, `00 0B`, `00 0D` next to `8A`, `8B`, `8D`: they read as the same
+integers, so BaseCraft's writer tells them apart by their spelling. With the two-byte spelling `80 0D`
 FileMaker reads no calculation; without the marker of `.[128]` its
 consistency check reports a damaged block (FMDeveloperTool, error 805).
 

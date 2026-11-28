@@ -15,7 +15,8 @@
 //!   length, keys 1… = 1000-byte chunks. The first 120 bytes have a fixed
 //!   layout ([`Chart`] fields); then the data source, after which the
 //!   record has variable-length parts (fonts, colours, axis formats) not
-//!   decoded here.
+//!   decoded here, but for three lists with one item per series
+//!   ([`resize_series`]).
 
 use std::collections::BTreeMap;
 
@@ -175,12 +176,19 @@ impl Chart {
         out
     }
 
-    /// The settings record with the decoded words and the data source
-    /// replaced; the rest (fonts, colours, axis formats) as read.
-    /// ponytail: per-series parts of the record are not decoded, so the
-    /// number of series should not change (FileMaker's record for two
-    /// series is 75 bytes longer than for one).
+    /// The settings record with the decoded words, the data source and the
+    /// per-series lists ([`resize_series`]) replaced; the rest (fonts,
+    /// colours, axis formats) as read.
     pub fn encode_record(&self) -> Vec<u8> {
+        let mut b = self.encode_head();
+        if !self.y.is_empty() && b.len() > 121 {
+            let start = 121 + 1 + b[121] as usize + SERIES_LISTS;
+            resize_series(&mut b, start, self.y.len());
+        }
+        b
+    }
+
+    fn encode_head(&self) -> Vec<u8> {
         let mut b = self.record.clone();
         if b.len() < 125 {
             return b;
@@ -208,6 +216,56 @@ impl Chart {
         b.splice(121..end, tail);
         b
     }
+}
+
+/// Bytes from the end of the data source to the per-series lists.
+const SERIES_LISTS: usize = 172;
+/// One item of a per-series list: u32 (1), 3 zero bytes, a font (4 zero
+/// bytes, `0D 3F B6`, 5 zero bytes, size, RGBA), a zero byte.
+const SERIES_ITEM: usize = 25;
+
+/// The settings record holds three lists with one item per Y series (u32
+/// count, then [`SERIES_ITEM`]-byte items: series fonts, 75 bytes per
+/// series in all), at `start`. Sets each list to `n` items: extra ones are
+/// dropped, new ones copy the list's last item (the first list's second
+/// item copies the second list's, as FileMaker's records have it). The
+/// record is left alone when the lists are not where expected.
+fn resize_series(b: &mut Vec<u8>, start: usize, n: usize) {
+    // Lists as read: (count offset, items).
+    let mut lists: Vec<(usize, Vec<Vec<u8>>)> = Vec::new();
+    let mut at = start;
+    for _ in 0..3 {
+        let c = word(b, at) as usize;
+        let end = at + 4 + c * SERIES_ITEM;
+        if c == 0 || c > 64 || end > b.len() {
+            return;
+        }
+        let items = b[at + 4..end]
+            .chunks(SERIES_ITEM)
+            .map(<[u8]>::to_vec)
+            .collect();
+        lists.push((at, items));
+        at = end;
+    }
+    let template: Vec<Vec<u8>> = (0..3)
+        .map(|i| {
+            let own = &lists[i].1;
+            let from = if i == 0 && own.len() < 2 {
+                &lists[1].1
+            } else {
+                own
+            };
+            from.last().cloned().unwrap_or_default()
+        })
+        .collect();
+    let mut out = b[..start].to_vec();
+    for (i, (_, mut items)) in lists.into_iter().enumerate() {
+        items.resize(n, template[i].clone());
+        out.extend((n as u32).to_be_bytes());
+        out.extend(items.concat());
+    }
+    out.extend_from_slice(&b[at..]);
+    *b = out;
 }
 
 fn word(b: &[u8], at: usize) -> u32 {

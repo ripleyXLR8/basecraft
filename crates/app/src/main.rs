@@ -73,6 +73,45 @@ struct Doc {
     path: Option<std::path::PathBuf>,
     /// Script triggers of layouts, objects and the file.
     triggers: fmp12::triggers::Triggers,
+    /// Related records already found for drawing ([`Doc::related`]).
+    related_cache: RelatedCache,
+}
+
+/// Related records by (from occurrence, record, to occurrence), valid for
+/// one [`data_fingerprint`]: a portal of thousands of rows is matched and
+/// sorted once, not on every frame. ponytail: keys calculated from
+/// variables or the clock are not tracked; such a portal refreshes on the
+/// next data change.
+#[derive(Default)]
+struct RelatedCache(std::cell::RefCell<(u64, RelatedSets)>);
+
+/// (from occurrence, record, to occurrence) → related records.
+type RelatedSets = BTreeMap<(u32, usize, u32), Vec<usize>>;
+
+impl Doc {
+    /// [`Database::related`] for drawing, cached until the data changes.
+    fn related(&self, from: u32, record: usize, to: u32) -> Vec<usize> {
+        let key = (from, record, to);
+        if let Some(v) = self.related_cache.0.borrow().1.get(&key) {
+            return v.clone();
+        }
+        let v = self.db.related(from, record, to);
+        let mut c = self.related_cache.0.borrow_mut();
+        if c.1.is_empty() {
+            c.0 = data_fingerprint(&self.db);
+        }
+        c.1.insert(key, v.clone());
+        v
+    }
+
+    /// Empties the cache when the data changed since it was filled (no
+    /// cost while nothing is cached).
+    fn refresh_related(&self) {
+        let mut c = self.related_cache.0.borrow_mut();
+        if !c.1.is_empty() && c.0 != data_fingerprint(&self.db) {
+            c.1.clear();
+        }
+    }
 }
 
 /// A script run waiting for the user (custom dialog or pause).
@@ -354,6 +393,7 @@ impl App {
                         file,
                         path: None,
                         triggers,
+                        related_cache: Default::default(),
                     }),
                     incoming: self.incoming.clone(),
                     others: std::mem::take(&mut self.others),
@@ -1360,6 +1400,7 @@ impl App {
             .map(|e| e.globals.clone())
             .unwrap_or_default();
         let Some(doc) = self.doc.as_mut() else { return };
+        doc.refresh_related();
         let Some(layout) = doc.layouts.get(self.layout).cloned() else {
             return;
         };
@@ -1667,7 +1708,7 @@ impl App {
                             continue;
                         };
                         let related = match (mode, rec) {
-                            (Mode::Browse, Some(rr)) => doc.db.related(layout_to, rr, pto),
+                            (Mode::Browse, Some(rr)) => doc.related(layout_to, rr, pto),
                             _ => Vec::new(),
                         };
                         let nrows = nrows.max(1) as usize;
@@ -1877,7 +1918,7 @@ fn merge_fields(
             let r = if to == layout_to {
                 rec?
             } else {
-                *doc.db.related(layout_to, rec?, to).first()?
+                *doc.related(layout_to, rec?, to).first()?
             };
             let _ = t;
             Some(doc.db.value(tbl.id, r, f).to_text())
@@ -1910,7 +1951,7 @@ fn owner_of(
     if to == layout_to || same && !doc.db.is_related(layout_to, to) {
         return Some((t, rec));
     }
-    let first = rec.and_then(|r| doc.db.related(layout_to, r, to).first().copied());
+    let first = rec.and_then(|r| doc.related(layout_to, r, to).first().copied());
     Some((ft, first))
 }
 
@@ -1920,6 +1961,7 @@ fn data_fingerprint(db: &Database) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for t in &db.tables {
         t.id.hash(&mut h);
+        t.globals.hash(&mut h);
         for r in &t.records {
             r.id.hash(&mut h);
             for (k, v) in &r.values {

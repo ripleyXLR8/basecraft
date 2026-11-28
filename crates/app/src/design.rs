@@ -3739,6 +3739,7 @@ mod tests {
             file,
             path: None,
             triggers: Default::default(),
+            related_cache: Default::default(),
         })
     }
 

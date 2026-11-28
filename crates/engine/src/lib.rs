@@ -1703,18 +1703,45 @@ impl Database {
             return Vec::new();
         };
         let forward = rel.left == a;
+        let fields = |p: &fmp12::graph::Predicate| {
+            if forward {
+                (p.left_field, p.right_field)
+            } else {
+                (p.right_field, p.left_field)
+            }
+        };
+        // This side's values once per record, not once per candidate.
+        let sources: Vec<Vec<Value>> = records
+            .iter()
+            .map(|&r| {
+                rel.predicates
+                    .iter()
+                    .map(|p| self.value(ta.id, r, fields(p).0))
+                    .collect()
+            })
+            .filter(|vals: &Vec<Value>| {
+                // An empty key matches nothing (except through ×).
+                rel.predicates.iter().zip(vals).all(|(p, v)| {
+                    p.op == fmp12::graph::JoinOp::Cartesian || !v.to_text().is_empty()
+                })
+            })
+            .collect();
+        if sources.is_empty() {
+            return Vec::new();
+        }
         (0..tb.records.len())
             .filter(|&j| {
-                records.iter().any(|&r| {
-                    rel.predicates.iter().all(|p| {
-                        let (fa, fb) = if forward {
-                            (p.left_field, p.right_field)
-                        } else {
-                            (p.right_field, p.left_field)
-                        };
-                        let (va, vb) = (self.value(ta.id, r, fa), self.value(tb.id, j, fb));
+                // The other side's values once per candidate.
+                let mut theirs: Vec<Option<Value>> = vec![None; rel.predicates.len()];
+                sources.iter().any(|vals| {
+                    rel.predicates.iter().enumerate().all(|(k, p)| {
+                        let vb = theirs[k].get_or_insert_with(|| self.value(tb.id, j, fields(p).1));
                         // The predicate reads left op right.
-                        let (l, r) = if forward { (&va, &vb) } else { (&vb, &va) };
+                        let (l, r) = if forward {
+                            (&vals[k], &*vb)
+                        } else {
+                            (&*vb, &vals[k])
+                        };
                         joins(p.op, l, r)
                     })
                 })

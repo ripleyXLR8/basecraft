@@ -3502,6 +3502,8 @@ dependencies = [
  "engine",
  "fmp12",
  "print",
+ "remote",
+ "serde_json",
 ]
 
 [[package]]

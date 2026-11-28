@@ -24,6 +24,7 @@ use std::collections::HashMap;
 mod accounts;
 pub mod datafiles;
 pub mod files;
+mod net;
 mod steps;
 pub mod text;
 mod triggers;
@@ -724,6 +725,9 @@ pub struct Engine {
     revert_on_error: bool,
     /// Revert Transaction's custom error message (`Get ( LastErrorDetail )`).
     error_detail: String,
+    /// `Get ( LastErrorDetail )` a step sets for itself (Insert from URL,
+    /// Execute FileMaker Data API); taken when the step ends.
+    step_detail: String,
     /// Open data files, the PDF being built, persistent data.
     pub more: datafiles::State,
 }
@@ -899,6 +903,7 @@ impl Engine {
             transaction: None,
             revert_on_error: true,
             error_detail: String::new(),
+            step_detail: String::new(),
             more: Default::default(),
         }
     }
@@ -1089,8 +1094,9 @@ impl Engine {
         };
         if s.id != id::COMMENT {
             self.last_error = err;
+            let detail = std::mem::take(&mut self.step_detail);
             if !matches!(flow, Flow::Reverted(..)) {
-                self.error_detail.clear();
+                self.error_detail = detail;
             }
         }
         if err != 0 {
@@ -2305,6 +2311,7 @@ impl Engine {
             // Export Field Contents goes through the host UI (`exec_more`).
             (_, INSERT_PICTURE | INSERT_FILE) => self.container_step(host, s)?,
             (_, x) if datafiles::handles(x) => return self.exec_files(host, frame, s),
+            (_, x) if net::handles(x) => return self.exec_net(host, frame, s),
             _ => {
                 return match self.exec_more(host, frame, s) {
                     Some(r) => r,

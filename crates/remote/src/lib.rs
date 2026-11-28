@@ -11,6 +11,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+pub mod http;
 pub mod source;
 
 use std::collections::BTreeMap;

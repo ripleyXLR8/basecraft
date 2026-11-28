@@ -11,6 +11,13 @@ calc = { version = "0.1.0", path = "../calc" }
 engine = { version = "0.1.0", path = "../engine" }
 fmp12 = { version = "0.1.0", path = "../fmp12" }
 print = { version = "0.1.0", path = "../print" }
+# Execute FileMaker Data API reads and writes JSON (in the tree via calc).
+serde_json = "1.0.154"
+
+# Insert from URL: the Data API client's HTTP stack (ureq, rustls). No
+# sockets in the web build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+remote = { version = "0.1.0", path = "../remote" }
 
 [lints]
 workspace = true

@@ -15,11 +15,11 @@ test until this page and the test are updated together.
 |----------|-----------|------:|------------:|--------:|--------:|------|
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
 | `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 86 | 13 | 40 | `cargo test -p script get_coverage -- --nocapture` |
-| Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 23 | 0 (+71 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
+| Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 27 | 0 (+67 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
 | Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 5 | 2 | 0 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
-| Error codes | [error_codes.txt](reference/error_codes.txt) | 300 | 59 raised | — | 241 never raised | `cargo test -p basecraft error_code_coverage -- --nocapture` |
+| Error codes | [error_codes.txt](reference/error_codes.txt) | 300 | 65 raised | — | 235 never raised | `cargo test -p basecraft error_code_coverage -- --nocapture` |
 
 Not inventoried: script step options (each step's parameters are covered step by step in
 FORMAT.md §8 and PROGRESS.md M5), and File Options / Preferences (FileMaker 26 draws those
@@ -64,9 +64,10 @@ decompiled.
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
 6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
    and Flush Web Viewer Cookies have nothing to act on.
-7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Insert from URL (no HTTP
-   client), Save a Copy as XML, Save Records as JSONL, Execute FileMaker Data API,
-   Perform JavaScript in Web Viewer, Open Manage Database and the other design dialogs.
+7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Perform JavaScript in Web
+   Viewer, Open Manage Database and the other design dialogs. Insert from URL, Save a Copy
+   as XML, Save Records as JSONL and Execute FileMaker Data API run on the desktop build
+   (partial, below) and still return 3 in the web build.
 
 ## Calculation functions: partial (37)
 
@@ -100,8 +101,8 @@ ActiveRepetitionNumber, ActiveLayoutObjectName (empty / 0 with no active field, 
 fields and objects a script entered: the app's own focus is not passed to the engine);
 ModifiedFields (only a record a script opened); SystemLanguage (from `LANG` / `LC_ALL`,
 English otherwise); ActiveModifierKeys (no Caps Lock); CurrentDate, CurrentTime,
-CurrentTimestamp, CurrentHostTimestamp (UTC: no time-zone data); LastErrorDetail (always
-empty).
+CurrentTimestamp, CurrentHostTimestamp (UTC: no time-zone data); LastErrorDetail (set only
+by Revert Transaction, Insert from URL and Execute FileMaker Data API).
 
 Missing (41): PageNumber, PrinterName, ScreenDepth, RecordModificationCount, RecordAccess,
 HighContrastState, LayoutAccess, SystemAppearance, SystemIPAddress, SystemNICAddress,
@@ -116,7 +117,7 @@ AccountPasswordDaysRemaining, WindowUUID.
 
 ## Script steps
 
-Partial (23): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
+Partial (27): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
 35 Import Records, 36 Export Records
 (stored options not used, the dialog opens); 37 Save a Copy as (stored path not used);
 43 Print (to PDF only); 56 Insert Picture, 131 Insert File (stored path and options not
@@ -130,7 +131,28 @@ validation ignored); 207 Revert Transaction (condition, error code and message r
 parameters 0–2, not checked against a FileMaker-written step); 237 Flush Web Viewer
 Cookies (no web viewer).
 
-FileMaker's desktop error by design (71): listed in PROGRESS.md M5, "Step coverage".
+Desktop build only (the web build returns 3; `crates/script/src/net.rs` and `net/`): 160
+Insert from URL (http and https only, other protocols 1626; the cURL options `-X`, `-H`,
+`-d`, `--data-ascii`, `--data-raw`, `--data-binary`, `--data-urlencode` with `@$var`, `-I`,
+`-D $var`, `-u` (basic only), `-b`, `-A`, `-e`, `-L`, `--connect-timeout`, `-m`, `-k`, `-S`,
+`-o`, `--upload-file $var`, `--FM-return-container-variable`; the others, `--form` and
+`--cookie-jar` among them, are ignored as FileMaker ignores unsupported ones; errors as
+Claris documents them: 401 gives 1627, with `-S` 1631 and curl's message or "Response
+code: nnn", no content 10, a bad URL 1630; "With dialog" shows no dialog; "Automatically
+encode URL" is always on); 203 Execute FileMaker Data API (read with query, omit, related
+criteria, sort, offset, limit, `layout.response`, portals; metaData; create, update,
+duplicate, delete; not done: `portalData` writes, `prohibitmode`, the `modId` check: every
+record answers `"0"`; the request read as parameter 0); 225 Save Records as JSONL (both
+formats; the plain format's predefined system prompt is not documented, so no system
+message is written; prompts read as parameters 1–3 and the completion field as the inline
+field, not checked against a FileMaker-written step); 3 Save a Copy as XML (`FMSaveAsXML`
+2.3.0.0 with base tables, occurrences, relationships, custom value lists, fields with
+calculation text, script catalog, layouts with parts and top-level objects, steps with id,
+name, state and options; left out: UUIDs, `DDR_INFO`, `Metadata`, themes, custom menus,
+accounts and privileges, auto-enter and validation, step parameters, objects inside
+portals, panels and groups, object styles; not yet loaded in FileMaker's tools).
+
+FileMaker's desktop error by design (67): listed in PROGRESS.md M5, "Step coverage".
 
 ## Script triggers: never fired (4)
 
@@ -173,15 +195,16 @@ source (a `u32` constant, `Err(n)`, `EvalError::new(n`, a validation rule's code
 heuristic: a `u32` constant that happens to equal a code counts too, and a code computed
 elsewhere would be missed.
 
-Raised (59): 0, 1, 3, 4, 5, 9, 10, 12, 14, 15, 17, 20, 100, 101, 102, 104, 105, 106, 112, 116,
+Raised (65): 0, 1, 3, 4, 5, 9, 10, 12, 14, 15, 17, 20, 100, 101, 102, 104, 105, 106, 112, 116,
 200, 201, 212, 217, 300, 400, 401, 414, 500, 501, 502, 503, 504, 505, 506, 507, 509, 511,
-800, 829, 833, 1200–1209, 1211, 1212, 1214, 1215, 1218, 1223, 1224, 1225.
+800, 829, 833, 1200–1209, 1211, 1212, 1214, 1215, 1218, 1223, 1224, 1225, 1626, 1627,
+1630, 1631, 1708, 1710.
 
-Never raised (241): -1, 2, 6, 7, 11, 13, 16, 18, 19, 21, 103, 107–111, 113–115, 117–119, 130,
+Never raised (235): -1, 2, 6, 7, 11, 13, 16, 18, 19, 21, 103, 107–111, 113–115, 117–119, 130,
 131, 202–211, 214–216, 218, 219, 301–308, 310, 402, 404–410, 412, 413, 415–418, 508, 510,
 512, 513, 600–608, 700, 706–708, 711, 714–727, 729–736, 738, 801–817, 819–827, 830–832,
 850–853, 870–872, 875–879, 882, 883, 885–887, 892, 900, 901, 903, 905, 906, 920–923,
 951–960, 1210, 1213, 1216, 1217, 1219–1222, 1300, 1301, 1400–1409, 1413–1415, 1450, 1451,
-1501–1507, 1541–1543, 1550–1559, 1626–1635, 1638, 1700–1715. Most belong to features
+1501–1507, 1541–1543, 1550–1559, 1628, 1629, 1632–1635, 1638, 1700–1707, 1709, 1711–1715. Most belong to features
 BaseCraft does not have (hosting, ODBC, plug-ins, email, web, AI, Data API); the ranges that
 matter most for local files are 103–119, 202–211, 301–310, 402–418 and 508–513.

@@ -61,7 +61,6 @@ pub mod sid {
     pub const INSTALL_ON_TIMER: u16 = 148;
     pub const QUICK_FIND: u16 = 150;
     pub const FIND_MATCHING: u16 = 155;
-    pub const INSERT_FROM_URL: u16 = 160;
     pub const SHOW_HIDE_MENUBAR: u16 = 166;
     pub const SET_ANIMATION: u16 = 168;
     pub const GET_FOLDER_PATH: u16 = 181;
@@ -95,10 +94,9 @@ pub mod sid {
 /// the dialogs of FileMaker's own design tools. They return
 /// [`error::UNAVAILABLE`] as FileMaker does on Windows (FORMAT.md §8).
 pub const UNSUPPORTED: &[u16] = &[
-    3, 32, 38, 57, 59, 64, 67, 88, 96, 105, 106, 107, 108, 109, 112, 113, 114, 115, 118, 129, 139,
+    32, 38, 57, 59, 64, 67, 88, 96, 105, 106, 107, 108, 109, 112, 113, 114, 115, 118, 129, 139,
     140, 142, 149, 151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201, 202,
-    203, 208, 210, 211, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 225, 226, 227, 239,
-    240, 241,
+    208, 210, 211, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 226, 227, 239, 240, 241,
 ];
 
 /// Option bits of these steps (record bytes 24–27, FORMAT.md §8).
@@ -310,8 +308,6 @@ impl Engine {
                 self.insert(host, f, &v, o & bit::SELECT != 0)?;
                 Ok(Flow::Next)
             })(),
-            // ponytail: no HTTP client in BaseCraft; Insert from URL is off.
-            INSERT_FROM_URL => Err(error::UNAVAILABLE),
             EXPORT_FIELD => (|| {
                 let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
                 let text = self.field_value(host, f).ok_or(error::RECORD_MISSING)?;

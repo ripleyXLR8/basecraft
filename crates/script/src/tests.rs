@@ -1205,5 +1205,7 @@ fn commit_enforces_validation() {
 }
 
 mod datafiles;
+#[cfg(not(target_arch = "wasm32"))]
+mod net;
 mod steps;
 mod triggers;

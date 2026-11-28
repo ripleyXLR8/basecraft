@@ -1662,10 +1662,15 @@ dependencies = [
 name = "fmp12"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "cbc",
  "hmac",
+ "icu_normalizer",
  "md-5",
+ "pbkdf2",
  "roxmltree",
  "sha1",
+ "sha2",
  "unicode-segmentation",
  "web-time",
 ]

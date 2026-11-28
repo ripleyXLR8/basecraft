@@ -85,7 +85,10 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 
 ## Known limitations
 
-- **Encrypted files** (encryption at rest) cannot be opened.
+- **Encrypted files** (encryption at rest) open **read-only** with their encryption
+  password (the app asks for it; `basecraft-cli` reads `BASECRAFT_ENCRYPTION_PASSWORD`
+  or, with `--encryption-password`, stdin). BaseCraft does not write encrypted files
+  yet, so it refuses to save them (FORMAT.md §17).
 - **Accounts and privilege sets** are read, enforced and written (File › Manage ›
   Security, `accounts`/`privileges` commands); external-server and OAuth accounts
   are listed but cannot log in, and "Run script with full access privileges" is

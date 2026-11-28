@@ -36,6 +36,11 @@
 //! `--account NAME --password PW` anywhere on the line (or the password in
 //! `BASECRAFT_PASSWORD`).
 //!
+//! A file with encryption at rest opens with its encryption password from
+//! `BASECRAFT_ENCRYPTION_PASSWORD`, or, with `--encryption-password`, typed
+//! on stdin after a prompt (the password is never printed). Such a file is
+//! read-only: BaseCraft does not write encrypted files yet.
+//!
 //! `--remote https://host/Database --account A --password-env VAR` runs
 //! `info`, `records`, `find`, `new`, `set`, `delete` and `run-script` on a
 //! file hosted by FileMaker Server, through its Data API (`hosted.rs`).
@@ -65,7 +70,14 @@ struct Doc {
 
 impl Doc {
     fn open(path: &str, login: Option<&Login>) -> Res<Doc> {
-        let file = fmp12::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let file = if fmp12::ear::is_encrypted(&bytes) {
+            let pw = encryption_password(path, fmp12::ear::hint(&bytes))?;
+            fmp12::File::from_encrypted_bytes(bytes, &pw)
+        } else {
+            fmp12::File::from_bytes(bytes)
+        }
+        .map_err(|e| format!("{path}: {e}"))?;
         let db = match login {
             Some(l) => Database::load_as(&file, &l.account, &l.password),
             None => Database::load(&file),
@@ -147,6 +159,13 @@ impl Doc {
     }
 
     fn save(&mut self, out: &str) -> Res<Json> {
+        // Writing it back would store the file decrypted.
+        if self.file.is_encrypted() {
+            return Err(format!(
+                "{}: encrypted files are read-only in BaseCraft",
+                self.path
+            ));
+        }
         let bytes = self.db.save(&self.file).map_err(|e| e.to_string())?;
         std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
         if let Some(dir) = std::path::Path::new(out).parent() {
@@ -157,6 +176,30 @@ impl Doc {
         self.file = fmp12::File::from_bytes(bytes).map_err(|e| e.to_string())?;
         Ok(json!({ "saved": out }))
     }
+}
+
+/// `--encryption-password`: prompt for it when the variable is not set.
+static ASK_ENCRYPTION_PASSWORD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The encryption password of an encrypted file: `BASECRAFT_ENCRYPTION_PASSWORD`,
+/// else (with `--encryption-password`) one line of stdin. Never printed.
+fn encryption_password(path: &str, hint: Option<String>) -> Res<String> {
+    if let Ok(pw) = std::env::var("BASECRAFT_ENCRYPTION_PASSWORD") {
+        return Ok(pw);
+    }
+    if !ASK_ENCRYPTION_PASSWORD.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(format!(
+            "{path}: this file is encrypted: set BASECRAFT_ENCRYPTION_PASSWORD or add --encryption-password"
+        ));
+    }
+    let hint = hint.map(|h| format!(" (hint: {h})")).unwrap_or_default();
+    eprint!("Encryption password for {path}{hint}: ");
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
 /// Account name and password to open a protected file with.
@@ -628,6 +671,10 @@ fn session(d: &mut Doc) -> Res<Json> {
 fn main_inner() -> Res<Json> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let login = take_login(&mut args)?;
+    if let Some(i) = args.iter().position(|a| a == "--encryption-password") {
+        args.remove(i);
+        ASK_ENCRYPTION_PASSWORD.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     // A file hosted by FileMaker Server (`hosted.rs`).
     if let Some(c) = hosted::conn(&mut args, login.as_ref())? {
         let (cmd, rest) = args.split_first().ok_or("usage: basecraft-cli <command> --remote https://host/Database --account A --password-env VAR …")?;

@@ -18,7 +18,7 @@ The file is a sequence of 4096-byte sectors. Sector 0 is the **header**:
 | Offset | Length | Meaning |
 |-------:|-------:|---------|
 | 0 | 15 | magic `00 01 00 00 00 02 00 01 00 05 00 02 00 02 C0` |
-| 15 | 5 | `HBAM7` (plain) or `HBAMe` (encryption at rest, not supported) |
+| 15 | 5 | `HBAM7` (plain) or `HBAMe` (encryption at rest, §17) |
 | 541 | 1+n | Pascal string naming the creator, e.g. `Pro 12.0` |
 | 0x800 | 1 | **clean-close flag**: `AC` = closed cleanly; FileMaker clears it while it writes the file and checks a file without it on open |
 | 0x802 | 8 | **file sequence number** (u64 BE): FileMaker sets it on close to the largest sector write sequence number (offset 16 below) |
@@ -2181,3 +2181,71 @@ Functions lists them (parameters, availability) and Save as XML shows
 their calculations; FileMaker's Evaluate of 15 expressions, the stored
 calculation field (`120/5/Hello/100/49/Admin/Hello`) and one depending
 on a field (`25/120`) give BaseCraft's results.
+
+## 17. Encryption at rest (`fmp12::ear`) ✅ read · ⏳ write
+
+A file protected with FileMaker's Encryption at Rest says `HBAMe` at
+offset 15. Established for interoperability (EU directive 2009/24, art. 6)
+by naming the cryptographic primitives FileMaker Pro 26 calls when it
+opens such a file, then confirmed only by decrypting files we encrypted
+ourselves: BaseCraft's `blank.fmp12` and a file `basecraft-cli` built,
+encrypted by FileMaker Server 26's `FMDeveloperTool --enableEncryption`
+with test passphrases (`test123`, `abc` with hint `hintxyz`, `TeSt Clé`,
+two shared ids). BaseCraft's output for them is **byte for byte** the
+file `FMDeveloperTool --removeEncryption` writes.
+
+**Header (sector 0)** stays plain. Besides the magic, it holds:
+
+| Offset | Length | Meaning |
+|-------:|-------:|---------|
+| 48 | 1 | cipher: `2` = AES-256 (FileMaker also knows `1` = AES-128; never seen) |
+| 49 | 1 | key derivation: `1` = PBKDF2-HMAC-SHA1 |
+| 50 | 200 | password hint, UTF-16LE, NUL-terminated (empty when none) |
+| 250 | 16 | salt (random per encryption: the same file encrypted twice differs) |
+| 266 | 32 | password check value |
+| 298 | … | shared id, UTF-16LE, NUL-terminated |
+
+A plain header has zeros from 48 to 512; the rest of sector 0 (creator,
+clean-close flag, sequence number) is as in a plain file. The shared id
+(which lets FileMaker open related files with one password) and the
+hint take no part in the keys.
+
+**Password.** The passphrase is put in Unicode canonical decomposition
+(NFD: a precomposed `é` and `e` + U+0301 give the same key), keeps its
+case, and is hashed as UTF-16LE bytes, no terminator.
+
+**Check value** = PBKDF2-HMAC-SHA1(password, salt, 20 000 rounds, 32
+bytes). A wrong password is detected here before any page is read.
+
+**Page keys** = PBKDF2-HMAC-SHA1(password, the same salt, 18 000 rounds):
+the AES-256 key is output bytes 0–31 and the HMAC key bytes 37–68 (the
+keys sit 37 bytes apart in one output).
+
+**Body sectors.** Every sector after the header is one encrypted page of
+4096 bytes:
+
+| Offset | Length | Meaning |
+|-------:|-------:|---------|
+| 0 | 4064 | the sector, AES-256-CBC, no padding |
+| 4064 | 16 | CBC initialisation vector (random per page and per write) |
+| 4080 | 16 | first 16 bytes of HMAC-SHA256(HMAC key, bytes 0–4079) |
+
+The MAC covers the ciphertext and the IV, not the sector number, and is
+checked before decrypting (BaseCraft refuses the file on a mismatch:
+`Error::Sector`). The 4064 plaintext bytes are an ordinary sector (§1)
+whose payload is 32 bytes shorter: its free-byte count (offset 14) is
+32 less than in the same sector of the plain file. BaseCraft rebuilds the
+plain image by adding 32 to that count and 32 zero bytes, sets `HBAM7`
+and clears header bytes 48–512; the file count of sector 1 and the file
+size do not change.
+
+**In BaseCraft.** `File::open_encrypted` / `File::from_encrypted_bytes`
+decrypt in memory (a plain file opens through them too); `File::open`
+still answers `Error::Encrypted`, a wrong password `Error::EncryptionPassword`.
+The app asks for the encryption password (showing the hint) when it opens
+such a file; `basecraft-cli` reads it from `BASECRAFT_ENCRYPTION_PASSWORD`
+or, with `--encryption-password`, from stdin. The password is never
+stored or printed. Encrypted files are **read-only**: saving would write
+the file decrypted, so the app and the CLI refuse. Not done yet: writing
+an encrypted file (new salt and check value, fresh IV and MAC per page,
+payloads 32 bytes shorter), AES-128 files, and secure container storage (§13).

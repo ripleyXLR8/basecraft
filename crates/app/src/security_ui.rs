@@ -29,6 +29,15 @@ pub fn t(key: &'static str) -> &'static str {
         "Account Name:" => "Nom du compte :",
         "Password:" => "Mot de passe :",
         "Sign in to open the file" => "Connectez-vous pour ouvrir le fichier",
+        "This file is encrypted. Enter its encryption password." => {
+            "Ce fichier est chiffré. Saisissez son mot de passe de chiffrement."
+        }
+        "Encryption password:" => "Mot de passe de chiffrement :",
+        "Hint:" => "Indice :",
+        "The encryption password is incorrect." => "Le mot de passe de chiffrement est incorrect.",
+        "Encrypted files are read-only in BaseCraft." => {
+            "Les fichiers chiffrés sont en lecture seule dans BaseCraft."
+        }
         "Accounts" => "Comptes",
         "Privilege Sets" => "Jeux de privilèges",
         "New" => "Nouveau",
@@ -150,9 +159,21 @@ pub struct Manage {
     error: Option<String>,
 }
 
+/// An encrypted file waiting for its encryption password (never stored
+/// or logged; cleared once tried).
+pub struct EarPrompt {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub path: Option<std::path::PathBuf>,
+    pub hint: Option<String>,
+    pub password: String,
+    pub error: Option<String>,
+}
+
 #[derive(Default)]
 pub struct State {
     pub login: Option<Login>,
+    pub ear: Option<EarPrompt>,
     manage: Option<Manage>,
 }
 
@@ -207,6 +228,84 @@ impl App {
             change: None,
             error: None,
         });
+    }
+
+    /// Opens an encrypted file: keeps it for the encryption password dialog.
+    pub(crate) fn ask_encryption_password(&mut self, name: String, bytes: Vec<u8>) {
+        self.security.ear = Some(EarPrompt {
+            hint: fmp12::ear::hint(&bytes),
+            name,
+            bytes,
+            path: None,
+            password: String::new(),
+            error: None,
+        });
+    }
+
+    /// The encryption password dialog FileMaker shows for a file with
+    /// encryption at rest; the right password decrypts it in memory.
+    fn ear_ui(&mut self, ctx: &egui::Context) {
+        let Some(p) = self.security.ear.as_mut() else {
+            return;
+        };
+        let (mut submit, mut cancel) = (false, false);
+        egui::Modal::new(egui::Id::NULL.with("ear")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading(format!("{} « {} »", t("Open"), p.name));
+            ui.label(t("This file is encrypted. Enter its encryption password."));
+            ui.horizontal(|ui| {
+                let lab = ui.label(t("Encryption password:"));
+                let r = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut p.password)
+                            .password(true)
+                            .id_salt("ear_password"),
+                    )
+                    .labelled_by(lab.id);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submit = true;
+                }
+            });
+            if let Some(h) = &p.hint {
+                ui.label(format!("{} {h}", t("Hint:")));
+            }
+            if let Some(e) = &p.error {
+                ui.colored_label(egui::Color32::RED, e);
+            }
+            ui.horizontal(|ui| {
+                cancel = ui.button(t("Cancel")).clicked();
+                submit |= ui.button(t("Open")).clicked();
+            });
+        });
+        if cancel {
+            self.security.ear = None;
+            return;
+        }
+        if !submit {
+            return;
+        }
+        let pw = std::mem::take(&mut p.password);
+        match fmp12::File::from_encrypted_bytes(p.bytes.clone(), &pw) {
+            Ok(file) => {
+                let Some(p) = self.security.ear.take() else {
+                    return;
+                };
+                self.open_file(p.name, file);
+                if let Some(d) = self.doc.as_mut() {
+                    d.path = p.path.clone();
+                }
+                if let Some(l) = self.security.login.as_mut() {
+                    l.path = p.path;
+                }
+            }
+            Err(fmp12::Error::EncryptionPassword) => {
+                p.error = Some(t("The encryption password is incorrect.").to_string());
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+                self.security.ear = None;
+            }
+        }
     }
 
     /// The login dialog ("Open <file>"): FileMaker's account name and
@@ -338,6 +437,7 @@ impl App {
     /// The login dialog, Manage Security, and the alert for an action the
     /// privileges refused (once per refusal).
     pub(crate) fn security_dialogs(&mut self, ctx: &egui::Context) {
+        self.ear_ui(ctx);
         self.login_ui(ctx);
         if let Some(d) = self.doc.as_mut()
             && d.db.last_denied().is_some()

@@ -12,6 +12,7 @@ pub mod chunk;
 pub mod collate;
 pub mod containers;
 pub mod custom_functions;
+pub mod ear;
 pub mod formats;
 pub mod graph;
 pub mod index;
@@ -41,7 +42,11 @@ pub const XOR: u8 = 0x5A;
 pub enum Error {
     Io(std::io::Error),
     NotFmp12,
+    /// The file uses encryption at rest: open it with
+    /// [`File::open_encrypted`] and its encryption password.
     Encrypted,
+    /// The encryption password does not open the file.
+    EncryptionPassword,
     BadSize,
     Truncated(usize),
     UnknownOpcode {
@@ -66,7 +71,10 @@ impl std::fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::NotFmp12 => f.write_str("not an .fmp12 file"),
-            Error::Encrypted => f.write_str("file uses encryption at rest (HBAMe)"),
+            Error::Encrypted => {
+                f.write_str("this file is encrypted: open it with its encryption password")
+            }
+            Error::EncryptionPassword => f.write_str("the encryption password is incorrect"),
             Error::BadSize => f.write_str("file size does not match sector count"),
             Error::Truncated(at) => write!(f, "chunk truncated at payload offset {at}"),
             Error::UnknownOpcode { op, at } => {
@@ -102,6 +110,9 @@ pub struct Sector<'a> {
 
 pub struct File {
     bytes: Vec<u8>,
+    /// Decrypted from an encrypted (HBAMe) file: BaseCraft does not write
+    /// it back, which would store it unencrypted.
+    encrypted: bool,
 }
 
 fn be32(b: &[u8]) -> u32 {
@@ -113,6 +124,30 @@ impl File {
         Self::from_bytes(std::fs::read(path)?)
     }
 
+    /// Opens a file protected by encryption at rest (FORMAT.md, "Encryption
+    /// at rest") with its encryption password; a plain file opens as usual.
+    pub fn open_encrypted(
+        path: impl AsRef<std::path::Path>,
+        password: &str,
+    ) -> Result<Self, Error> {
+        Self::from_encrypted_bytes(std::fs::read(path)?, password)
+    }
+
+    /// [`File::from_bytes`] for an encrypted image: decrypts it in memory.
+    pub fn from_encrypted_bytes(bytes: Vec<u8>, password: &str) -> Result<Self, Error> {
+        if !ear::is_encrypted(&bytes) {
+            return Self::from_bytes(bytes);
+        }
+        let mut f = Self::from_bytes(ear::decrypt(&bytes, password)?)?;
+        f.encrypted = true;
+        Ok(f)
+    }
+
+    /// Decrypted from an encrypted file (read-only in BaseCraft).
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
         if bytes.len() < 2 * SECTOR || bytes[..15] != MAGIC {
             return Err(Error::NotFmp12);
@@ -122,7 +157,10 @@ impl File {
             b"HBAMe" => return Err(Error::Encrypted),
             _ => return Err(Error::NotFmp12),
         }
-        let f = File { bytes };
+        let f = File {
+            bytes,
+            encrypted: false,
+        };
         // Sector 1's "next" field holds the number of body sectors.
         if !f.bytes.len().is_multiple_of(SECTOR)
             || (f.sector(1).next as usize + 1) * SECTOR != f.bytes.len()

@@ -1588,3 +1588,32 @@ fn control_styles_in_browse_and_find() {
         Some("Green")
     );
 }
+
+/// A file with encryption at rest asks for its encryption password (with
+/// its hint); a wrong one is refused, the right one opens it read-only.
+#[test]
+fn encryption_password_dialog() {
+    let bytes = include_bytes!("../../fmp12/tests/fixtures/ear/blank_abc.fmp12").to_vec();
+    let mut app = App::default();
+    app.open("Enc".into(), bytes);
+    assert!(app.doc.is_none() && app.security.ear.is_some());
+    let mut h = harness_for(app);
+    h.run_steps(2);
+    h.get_by_label(&format!("{} hintxyz", security_ui::t("Hint:")));
+    let field = security_ui::t("Encryption password:");
+    h.get_by_label(field).focus();
+    h.get_by_label(field).type_text("wrong");
+    h.run_steps(1);
+    h.get_by_label(security_ui::t("Open")).click();
+    h.run_steps(2);
+    assert!(h.state().doc.is_none());
+    h.get_by_label(security_ui::t("The encryption password is incorrect."));
+    h.get_by_label(field).focus();
+    h.get_by_label(field).type_text("abc");
+    h.run_steps(1);
+    h.get_by_label(security_ui::t("Open")).click();
+    h.run_steps(3);
+    let d = h.state().doc.as_ref().expect("opened");
+    assert!(d.file.is_encrypted());
+    assert!(h.state().security.ear.is_none());
+}

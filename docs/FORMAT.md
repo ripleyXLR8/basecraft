@@ -566,6 +566,17 @@ and evaluate (the dialog shows `21|two|yes|two|x¶y`).
   secret, and the same unkeyed MD5 reproduces every file we have. The
   accounts and privilege catalogs (`[23]`) carry their own MD5 digests,
   one per member (§15).
+* **A file's first script**: FileMaker writes node markers for
+  `[17].[1].[1]` (name index) and `[17].[1].[7]` (catalog members) when
+  the first script is created; a file with entries under them but no
+  marker is reported damaged by FileMaker Server's consistency check
+  (error 805, `tools/oracle/fms_check.sh`). `save_scripts` adds them
+  (test `first_script_of_a_blank_file_marks_its_nodes` on the blank asset).
+* Scripts of 128 steps or more (step node `[S].[5].[128]`…): how
+  FileMaker spells those path elements was not seen; written with the
+  `80 00` form, FileMaker Server's XML export shows no parameters for
+  steps 128 and above.
+  ⏳
 * Collation keys of the name index: 2-byte primary weights, case folded,
   then `00 00 00`; accented letters add secondary weights after `00 00`.
   Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`
@@ -678,13 +689,82 @@ did not know; those steps were left out below.
 | Get Folder Path | 0 | `0x100` allow folder creation | [128] key 1 the variable name; [131] dialog title, [132] default location |
 | Speak, Dial Phone, Set Web Viewer | (Set Web Viewer: 5 go to URL) | `0x80` no dialog | [128] text / number / object name, [129] URL |
 
-The path list ([128] key 130) is XOR-encoded like text: a u32 count, then
-per path a u8-prefixed kind (`file`) and a u16-prefixed path
-(`file:out.txt`, `script::stored_path`).
+The path list ([128] key 130, `script::files::decode_path_list`): a u32
+count, then per path a u8-prefixed kind (`file`; empty for a variable
+such as `$path`) and a u16-prefixed path (`out.txt`): only the two
+strings are XOR 0x5A, the counts are plain (FileMaker 26 writes
+`00000001 04 <file> 0005 <a.txt>` for `file:a.txt`). FileMaker writes
+key 130 with a one-byte key (`06 82 len`): spelled `0E 00 02` (the 2-byte
+form of key 134) the export shows an empty path list.
 
 Not decoded (FileMaker 26's import refused the XML names tried): Find
 Matching Records' replace / constrain / extend choice, Sort Records by
-Field's order, the data file steps, Go to List of Records.
+Field's order.
+
+### Data file, PDF and other steps
+
+Decoded by writing candidate parameters with BaseCraft (example
+`bare_steps`), reading them back in FileMaker Server's XML export
+(`tools/oracle/fms_check.sh`, headless) and running them in FileMaker Pro
+26 (`tools/oracle/datafiles`: a script that stores `Get ( LastError )` and
+the results in `Tasks::Description`, read through UI Automation); the XML
+element names were confirmed by pasting into FileMaker (its import log
+names unknown elements: `<position>` for Set Data File Position, `<Count>`
+for Read from Data File; `<UniversalPathList>`, `<Field>$var</Field>` for
+targets).
+
+| Step | Options | Bytes 22–23 | Parameters |
+|------|---------|-------------|------------|
+| Get File Exists (188), Get File Size (189), Open Data File (191) | `0x20` path list, `0x5` variable target (`0x1` field) | 0 | [128] key 130 path list; target: [160] key 1 variable (inline slots `01 00`, `01 20`, repetition 1) or the inline field |
+| Create Data File (190), Delete File (197) | `0x20`, `0x200` create folders | 0 | [128] key 130 |
+| Rename File (199) | `0x4020` | 0 | [128] key 130 the file; [128].[5] the new name |
+| Write to Data File (192) | `0x4000`, `0x200` append line feed, target as above (the data source) | 1 UTF-16, 2 UTF-8, 3 bytes (0: as 1) | [128].[5] file id; data source in [160] or the inline field |
+| Read from Data File (193) | `0x4000`, `0x8000` with a count, target | 1 UTF-16, 2 UTF-8, 3 bytes (0: as 3) | [128].[5] file id, [129].[5] count |
+| Get Data File Position (194) | `0x4000`, target | 0 | [128].[5] file id |
+| Set Data File Position (195) | `0xC000` | 0 | [128].[5] file id, [129].[5] position |
+| Close Data File (196) | `0x4000` | 0 | [128].[5] file id |
+| Go to List of Records (228) | `0x4000` (needed), `0x8` layout, `0x2` | 1 current layout, 5 layout (inline) | [135].[5] (parameter 7) the record ids |
+| Configure Persistent Data (238) | `0x4`, `0x4000`, `0x8000` | 0 | [128] key 1 name, [129].[5] value, [130].[5] instance id |
+| Create PDF (243) | `0x200_0000` restore | 0 | PDF options (not decoded) |
+| Open / Append / Close PDF (246, 244, 245) | `0x20`, `0x200` create folders (Close) | 0 | [128] key 130; root key 139 (u32) the source / destination: 0 a file, 1 a field or variable |
+| Print PDF (242) | `0x80` no dialog, `0x20` | 0 | [128] key 130; root key 132 (u32) the source |
+
+A parameter at position 1 counts only with option `0x8000`: without it
+FileMaker 26 shows the value in the step but runs as if it were empty
+(Set Data File Position goes to 0, Read reads the whole file).
+
+Behaviour of FileMaker 26 (Windows), reproduced by `script::datafiles`:
+
+* File ids are 1, 2, … in the session. Open Data File of an open file:
+  300; of a missing file: 100. Get File Exists of a missing file or a
+  folder: 0 (no error); Get File Size: 100. A path list in a variable
+  with several lines: Open takes the first file that exists.
+* Create Data File empties an existing file. Create folders worked with
+  an absolute path; with `file:sub/x.txt` FileMaker returned 100 (BaseCraft
+  creates the folders either way).
+* Write writes at the position and overwrites (the file does not
+  shrink); text is UTF-16 little-endian without a byte order mark unless
+  UTF-8 is chosen (bytes also write UTF-16 for text); the line feed is
+  one `0A` (two bytes in UTF-16); `¶` is written as `0D`.
+* Read with a count starts at the position: bytes for UTF-8 and bytes,
+  characters for UTF-16; past the end it returns what is left with error
+  10 (empty at the end). Without a count it returns the whole file
+  whatever the position and leaves the position at the end. Invalid UTF-8
+  reads as U+FFFD. Bytes give a container named after the data file.
+* Set Data File Position accepts positions past the end (error 0);
+  negative: 14, position unchanged. Close / Read / Write of a closed or
+  unknown id: 100. Rename and Delete of a missing file: 100.
+* PDF: Cancel PDF with nothing open 0; Close PDF with nothing open 5;
+  Append PDF with nothing open 829; Create PDF with one open 833; Append
+  of a missing file 100; Close PDF after Create PDF saves an empty PDF
+  (422 bytes); Print PDF of a missing file 100.
+* Go to List of Records: the records in the list's order, the first one
+  current; ids that match no record: 101 (the others are shown); none:
+  401 and an empty found set; a repeated id counts once.
+* Configure Persistent Data without a name: 5. Configure Local
+  Notification and Configure AI Account with no parameters: 5. Insert
+  Object: 4 (the step is marked obsolete in the Script Workspace); Insert
+  PDF and Insert Audio/Video with no field: 3.
 
 Error codes FileMaker 26 returned for these steps (a script of the steps,
 each followed by `Get ( LastError )`, run in a copy of Tasks on Windows;

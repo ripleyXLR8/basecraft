@@ -145,23 +145,18 @@ impl RawParams {
     }
 }
 
-/// A key/value entry. ponytail: keys 128–215 (134, Go to Layout's
-/// animation) are spelled as 2-byte path integers (`0B 00 06`) as in the
-/// templates, higher ones (216, 217) as one byte; only those were seen.
+/// A key/value entry. Keys 128–215 with a 1-, 2-, 4-, 6- or 8-byte value
+/// (134, Go to Layout's animation; 139 of the PDF steps) are spelled as
+/// 2-byte path integers (`0B 00 06`) as in the templates; other values
+/// (a path list in key 130) and keys from 216 up use one byte (`06 82
+/// len`), as FileMaker 26 writes them.
 fn kv_item(key: u32, data: Vec<u8>) -> Entry {
-    if !(128..216).contains(&key) || data.len() > 255 {
+    let n = data.len();
+    if !(128..216).contains(&key) || !matches!(n, 1 | 2 | 4 | 6 | 8) {
         return kv_entry(&[], key, data);
     }
-    let n = data.len();
-    let mut item = match n {
-        1 => vec![0x09],
-        2 | 4 | 6 | 8 => vec![0x09 + (n / 2) as u8],
-        _ => vec![0x0E],
-    };
+    let mut item = vec![if n == 1 { 0x09 } else { 0x09 + (n / 2) as u8 }];
     item.extend(path_elem(key).iter().map(|b| b & 0x7F));
-    if !matches!(n, 1 | 2 | 4 | 6 | 8) {
-        item.push(n as u8);
-    }
     item.extend(data);
     Entry {
         path: Vec::new(),
@@ -860,6 +855,16 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
             4,
             (ids.len() as u32).to_be_bytes().to_vec(),
         ));
+    }
+    // Every node has a marker: a file with no script yet has none for the
+    // name index and the catalog members (FileMaker's consistency check
+    // calls such a file damaged).
+    for node in [[17, 1, 1], [17, 1, 7]] {
+        let under = |e: &Entry| ipath(e).is_some_and(|p| p.starts_with(&node));
+        let marked = |e: &Entry| ipath(e).as_deref() == Some(&node[..]) && e.item == [0x80];
+        if add.iter().any(under) && !entries.iter().chain(&add).any(marked) {
+            add.push(marker(&node));
+        }
     }
     entries.extend(add);
     if renamed || ids != old_ids {

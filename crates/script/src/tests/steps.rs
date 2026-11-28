@@ -110,6 +110,9 @@ fn step_coverage() {
                 sid::RECOVER_FILE,
                 sid::SET_ALLOWED_ORIENTATIONS,
                 sid::REGION_MONITOR,
+                sid::LOCAL_NOTIFICATION,
+                sid::CONFIGURE_AI_ACCOUNT,
+                crate::datafiles::INSERT_OBJECT,
             ]
             .contains(&id)
         {
@@ -122,12 +125,10 @@ fn step_coverage() {
     println!("DESKTOP ERROR {}: {}", stub.len(), stub.join(", "));
     println!("NOT RUN {}: {}", host.len(), host.join(", "));
     assert_eq!(runs.len() + stub.len() + host.len(), 222);
-    // Left to the host (error 3 by default): the six account steps (the
-    // security module), Insert Object/PDF/Audio-Video, data files, PDF documents, Go
-    // to List of Records and Configure Persistent Data (PROGRESS.md M5).
+    // Every step runs; none is left to `Host::other` (PROGRESS.md M5).
     assert_eq!(
         (runs.len(), stub.len(), host.len()),
-        (130, 70, 22),
+        (151, 71, 0),
         "{host:?}"
     );
 }
@@ -343,11 +344,9 @@ fn field_steps() {
     assert_eq!(h.db.tables[0].records[1].values[&NAME], "Zed");
     // Export Field Contents: the text and the stored path.
     let mut s = rawf(sid::EXPORT_FIELD, NAME, &[], 0);
-    let path: Vec<u8> = [&[0u8, 0, 0, 1, 4][..], b"file", &[0, 7], b"out.txt"]
-        .concat()
-        .iter()
-        .map(|b| b ^ 0x5A)
-        .collect();
+    // As FileMaker 26 writes it: only the strings are XOR 0x5A.
+    let x = |s: &[u8]| s.iter().map(|b| b ^ 0x5A).collect::<Vec<u8>>();
+    let path: Vec<u8> = [&[0u8, 0, 0, 1, 4][..], &x(b"file"), &[0, 7], &x(b"out.txt")].concat();
     s.raw_params.kv.insert((vec![128], 130), path);
     let mut e = Engine::new(vec![script(1, vec![s])]);
     let mut run = e.start(&mut h, 1, None);
@@ -561,7 +560,7 @@ fn file_and_misc_steps() {
         (sid::INSERT_FROM_URL, 3),
         (sid::SET_ALLOWED_ORIENTATIONS, 4),
         (164, 3), // Perform Script on Server
-        (212, 3), // Configure AI Account
+        (212, 5), // Configure AI Account, no parameters
     ] {
         let (_, o) = go(&mut h, vec![rawp(id, &[], 0x80, 0)]);
         assert_eq!(o.last_error, code, "step {id}");

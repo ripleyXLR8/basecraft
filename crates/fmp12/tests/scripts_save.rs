@@ -369,3 +369,36 @@ fn script_list_changes_update_key8() {
         assert_eq!(back, want, "{}", p.display());
     }
 }
+
+/// The first script of a file with none (the blank asset): every node of
+/// the catalog gets its marker, as FileMaker 26 writes them; without the
+/// markers of `[17].[1].[1]` and `[17].[1].[7]` FileMaker Server's
+/// consistency check reports a damaged block (error 805).
+#[test]
+fn first_script_of_a_blank_file_marks_its_nodes() {
+    let blank = fmp12::File::from_bytes(include_bytes!("../assets/blank.fmp12").to_vec()).unwrap();
+    assert!(scripts(&blank).unwrap().is_empty());
+    let list = vec![Script {
+        id: 1,
+        name: "Nouveau script".into(),
+        options: 8,
+        steps: vec![Step::new(id::BEEP)],
+    }];
+    let out = fmp12::File::from_bytes(save_scripts(&blank, &list).unwrap()).unwrap();
+    let es = write::entries(&out).unwrap();
+    for node in [
+        vec![0x11u8],
+        vec![0x11, 0x01],
+        vec![0x11, 0x01, 0x01],
+        vec![0x11, 0x01, 0x07],
+        vec![0x11, 0x01, 0x07, 0x01],
+    ] {
+        let path: Vec<Vec<u8>> = node.iter().map(|b| vec![*b]).collect();
+        assert!(
+            es.iter()
+                .any(|e: &Entry| e.path == path && e.item == [0x80]),
+            "no marker for {node:02x?}"
+        );
+    }
+    assert_eq!(scripts(&out).unwrap()[0].name, "Nouveau script");
+}

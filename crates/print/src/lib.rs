@@ -13,6 +13,7 @@
 pub mod chart;
 pub mod format;
 pub mod look;
+pub mod merge;
 pub mod objects;
 pub mod pdf;
 

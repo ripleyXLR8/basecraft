@@ -363,18 +363,20 @@ impl App {
             });
         }
         let file_name = format!("{}.fmp12", d.name);
-        Some(
-            engine::export::Export {
-                db: &d.db,
-                to,
-                found: &found,
-                columns: &columns,
-                formatted: true,
-                file_name: &file_name,
-                group_by: &[],
-            }
-            .write(engine::export::Format::Xlsx),
-        )
+
+        engine::export::Export {
+            db: &d.db,
+            to,
+            found: &found,
+            columns: &columns,
+            formatted: true,
+            file_name: &file_name,
+            group_by: &[],
+            charset: Default::default(),
+            layout: None,
+        }
+        .write(engine::export::Format::Xlsx)
+        .ok()
     }
 
     /// Writes a script's output file: next to the open file when the step

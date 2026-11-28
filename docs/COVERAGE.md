@@ -297,3 +297,31 @@ other text in braces stays as typed. Browse and Find modes do not resolve them y
 `{{RecordNumber}}` in a portal row gives the record's number, not the row's. The pre-12
 symbols `##`, `//`, `::`, `@@` are not handled: Claris's current help documents only the
 `{{…}}` forms, and replacing `//` or `::` in any text would break URLs and field names.
+
+## Import and export
+
+Formats (Claris, "Supported import/export file formats"), as `engine::export` and
+`engine::import` handle them; none of the rules below has been compared byte for byte with
+a FileMaker export except the HTML table:
+
+| Format | Export | Import |
+|---|---|---|
+| Comma-separated, tab-separated, Merge | ✅ quotes, VT for returns, GS between repetitions and related values, tabs as spaces; output character set | ✅ character set (a byte order mark wins), custom delimiter |
+| Custom-separated | — (FileMaker: import only) | ✅ any one-character delimiter, quoted values as in CSV |
+| FMPXMLRESULT XML | ✅ one `DATA` per repetition (MAXREPEAT) and per related record | ✅ METADATA names, one value per `DATA`; FMPDSORESULT and XSLT ❌ |
+| HTML table | ✅ (repeating fields as a nested table) | — (export only) |
+| Excel | ✅ | ✅ |
+| dBASE DBF | ✅ DBF III, Claris's limits enforced (an error when two names collide once cut) | ✅ C/N/D/L fields; memo (`.dbt`) ❌ |
+| FileMaker Pro | ✅ a new file, one table, field types and repetitions; its layout has no field objects 🔸 | ✅ one source table at a time |
+| Folder of files | — | ✅ pictures and movies (Image, File Name, File Path, Image Thumbnail), text files (Text Content, File Name, File Path), enclosed folders, references only; desktop only |
+| ODBC | — | ❌ |
+
+Character sets: UTF-8, UTF-16 (little endian with a byte order mark on export), Windows ANSI
+(code page 1252), Macintosh (Mac OS Roman), ASCII (7-bit; FileMaker's "ASCII (DOS)" is
+probably an OEM code page 🔸). "Apply current layout's data formatting" uses the current
+layout's field objects' data formats (the first object showing the field); it is dimmed for
+DBF and FileMaker Pro. Gaps: Number fields export as stored (FileMaker documents exporting
+only their numeric characters), XML dates are imported as written, auto-enter on import is
+all-or-nothing, and the Import / Export Records script steps still open the dialogs (their
+stored options are not decoded yet: `engine::import::Options` and `engine::export::Options`
+are what a decoder fills).

@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use eframe::egui;
+use engine::charset::Charset;
 use engine::export::Format;
 use engine::replace::{Direction, FindReplace, Hit, ReplaceWith};
 use fmp12::schema::FieldKind;
@@ -173,6 +174,21 @@ struct Import {
     auto_enter: bool,
     /// Source record shown (0-based).
     sample: usize,
+    /// The source file, read again when the character set or delimiter changes.
+    bytes: Vec<u8>,
+    charset: Charset,
+    /// Field delimiter of a text source (None: the format's own).
+    delimiter: Option<char>,
+    /// "Split values into separate records" (repeating values).
+    split: bool,
+    /// A folder import: how container fields get the files.
+    files: Option<engine::import::Files>,
+}
+
+/// Folder of Files Import Options.
+struct FolderDialog {
+    folder: engine::import::Folder,
+    reference: bool,
 }
 
 struct Export {
@@ -188,6 +204,10 @@ struct Export {
     formatted: bool,
     /// Sort fields to group by.
     group: Vec<bool>,
+    /// Output file character set.
+    charset: Charset,
+    /// The current layout (its id), whose field formats apply.
+    layout: u32,
 }
 
 struct FindDialog {
@@ -224,6 +244,7 @@ pub struct Dialogs {
     find: Option<FindDialog>,
     replace: Option<ReplaceContents>,
     import: Option<Import>,
+    folder: Option<FolderDialog>,
     export: Option<Export>,
     omit: Option<String>,
     confirm: Option<Confirm>,
@@ -241,6 +262,8 @@ fn format_name(f: Format) -> &'static str {
         Format::Xml => t("XML"),
         Format::Merge => t("Merge"),
         Format::Json => "JSON",
+        Format::Dbf => "DBF",
+        Format::Fmp12 => "FileMaker Pro",
     }
 }
 
@@ -253,6 +276,8 @@ fn extension(f: Format) -> &'static str {
         Format::Xml => "xml",
         Format::Merge => "mer",
         Format::Json => "json",
+        Format::Dbf => "dbf",
+        Format::Fmp12 => "fmp12",
     }
 }
 
@@ -480,6 +505,14 @@ impl App {
                     ui.close();
                     self.pick_import_file(ui.ctx());
                 }
+                // No folders to read in the browser.
+                if !cfg!(target_arch = "wasm32") && ui.button(t("Folder…")).clicked() {
+                    ui.close();
+                    self.m8.folder = Some(FolderDialog {
+                        folder: Default::default(),
+                        reference: false,
+                    });
+                }
             });
         });
         if ui
@@ -556,6 +589,7 @@ impl App {
             return;
         };
         let to = (l.table_occurrence & 0xFFF) as u32;
+        let layout = l.id;
         let group = vec![false; self.last_sort.len()];
         self.m8.export = Some(Export {
             format: Format::Csv,
@@ -565,6 +599,8 @@ impl App {
             browse: 0,
             formatted: false,
             group,
+            charset: Charset::Utf8,
+            layout,
         });
     }
 
@@ -573,7 +609,9 @@ impl App {
         let Some(p) = rfd::FileDialog::new()
             .add_filter(
                 "BaseCraft",
-                &["csv", "tab", "txt", "tsv", "mer", "xlsx", "fmp12"],
+                &[
+                    "csv", "tab", "txt", "tsv", "mer", "xlsx", "xml", "dbf", "fmp12",
+                ],
             )
             .pick_file()
         else {
@@ -598,7 +636,9 @@ impl App {
             if let Some(h) = rfd::AsyncFileDialog::new()
                 .add_filter(
                     "BaseCraft",
-                    &["csv", "tab", "txt", "tsv", "mer", "xlsx", "fmp12"],
+                    &[
+                        "csv", "tab", "txt", "tsv", "mer", "xlsx", "xml", "dbf", "fmp12",
+                    ],
                 )
                 .pick_file()
                 .await
@@ -626,7 +666,9 @@ impl App {
                 }
             }
         } else {
-            let format = Format::from_name(&name).unwrap_or(Format::Csv);
+            let format = Format::from_name(&name)
+                .filter(|f| *f != Format::Fmp12)
+                .unwrap_or(Format::Csv);
             match engine::import::read_rows(format, &bytes) {
                 Ok(rows) => (format, Vec::new(), rows),
                 Err(e) => {
@@ -635,7 +677,23 @@ impl App {
                 }
             }
         };
-        let header = fmp || matches!(format, Format::Merge);
+        // Formats that retain field names.
+        let header = fmp || matches!(format, Format::Merge | Format::Xml | Format::Dbf);
+        self.open_mapping(name, format, tables, rows, header, bytes, None);
+    }
+
+    /// Opens the field mapping dialog for rows read from a source.
+    #[allow(clippy::too_many_arguments)]
+    fn open_mapping(
+        &mut self,
+        name: String,
+        format: Format,
+        tables: Vec<engine::import::SourceTable>,
+        rows: Vec<Vec<String>>,
+        header: bool,
+        bytes: Vec<u8>,
+        files: Option<engine::import::Files>,
+    ) {
         let mut imp = Import {
             name,
             format,
@@ -649,9 +707,85 @@ impl App {
             add_remaining: false,
             auto_enter: true,
             sample: 0,
+            bytes,
+            charset: Charset::Utf8,
+            delimiter: None,
+            split: false,
+            files,
         };
         self.arrange(&mut imp, !header);
         self.m8.import = Some(imp);
+    }
+
+    /// Folder of Files Import Options: the folder, enclosed folders, the
+    /// file type, references only; Continue reads the folder.
+    fn folder_ui(&mut self, ctx: &egui::Context) {
+        let Some(mut fd) = self.m8.folder.take() else {
+            return;
+        };
+        let mut done = None;
+        egui::Modal::new(egui::Id::NULL.with("m8_folder")).show(ctx, |ui| {
+            ui.strong(t("Folder of Files Import Options"));
+            ui.horizontal(|ui| {
+                ui.label(t("Folder Location"));
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.button(t("Specify…")).clicked()
+                    && let Some(p) = rfd::FileDialog::new().pick_folder()
+                {
+                    fd.folder.path = p;
+                }
+            });
+            ui.label(fd.folder.path.display().to_string());
+            ui.checkbox(&mut fd.folder.subfolders, t("Include all enclosed folders"));
+            ui.label(t("File Type"));
+            use engine::import::FolderKind;
+            ui.radio_value(
+                &mut fd.folder.kind,
+                FolderKind::Pictures,
+                t("Picture and movie files"),
+            );
+            ui.add_enabled(
+                fd.folder.kind == FolderKind::Pictures,
+                egui::Checkbox::new(&mut fd.reference, t("Import only a reference to each file")),
+            );
+            ui.radio_value(&mut fd.folder.kind, FolderKind::Text, t("Text files"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui.button(t("Cancel")).clicked() {
+                    done = Some(false);
+                }
+                let ok = fd.folder.path.is_dir();
+                if ui
+                    .add_enabled(ok, egui::Button::new(t("Continue…")))
+                    .clicked()
+                {
+                    done = Some(true);
+                }
+            });
+        });
+        match done {
+            None => self.m8.folder = Some(fd),
+            Some(false) => {}
+            Some(true) => match engine::import::read_folder(&fd.folder, Charset::Utf8) {
+                Ok(rows) => {
+                    let name = fd.folder.path.display().to_string();
+                    let files = if fd.reference {
+                        engine::import::Files::Reference
+                    } else {
+                        engine::import::Files::Copy
+                    };
+                    self.open_mapping(
+                        name,
+                        Format::Tab,
+                        Vec::new(),
+                        rows,
+                        true,
+                        Vec::new(),
+                        Some(files),
+                    );
+                }
+                Err(e) => self.error = Some(e),
+            },
+        }
     }
 
     /// Importable fields of the current table (normal fields), in creation order.
@@ -737,6 +871,10 @@ impl App {
             mapping: engine::import::Mapping::ByOrder(names),
             mode,
             auto_enter: imp.auto_enter,
+            charset: imp.charset,
+            delimiter: imp.delimiter,
+            split_repetitions: imp.split,
+            container_files: imp.files,
         };
         let found = self.found(tb).clone();
         let Some(d) = self.doc.as_mut() else { return };
@@ -809,9 +947,18 @@ impl App {
             formatted: ex.formatted,
             file_name: &file_name,
             group_by: &group,
+            charset: ex.charset,
+            layout: Some(ex.layout),
         }
         .write(ex.format);
-        Some((format!("{}.{}", d.name, extension(ex.format)), bytes))
+        match bytes {
+            Ok(b) => Some((format!("{}.{}", d.name, extension(ex.format)), b)),
+            Err(e) => {
+                self.messages
+                    .push((self::t("Export Records…").to_string(), e));
+                None
+            }
+        }
     }
 
     /// Draws the open dialogs and handles their shortcuts. Called once per frame.
@@ -825,6 +972,7 @@ impl App {
         self.find_replace_ui(ctx);
         self.replace_contents_ui(ctx);
         self.import_ui(ctx);
+        self.folder_ui(ctx);
         self.export_ui(ctx);
     }
 
@@ -1400,6 +1548,16 @@ impl App {
                 &mut imp.auto_enter,
                 t("Perform auto-enter options while importing"),
             );
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut imp.split, false, t("Keep values in the original record"));
+                ui.radio_value(&mut imp.split, true, t("Split values into separate records"));
+            });
+            // Character set and delimiter of text sources (read again on change).
+            match source_options(ui, &mut imp) {
+                Some(Ok(())) => arrange = Some(!imp.header),
+                Some(Err(e)) => self.error = Some(e),
+                None => {}
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 if ui.button(t("Cancel")).clicked() {
                     done = Some(false);
@@ -1591,12 +1749,31 @@ impl App {
                             Format::Html,
                             Format::Xml,
                             Format::Xlsx,
+                            Format::Dbf,
+                            Format::Fmp12,
                         ] {
                             ui.selectable_value(&mut ex.format, f, format_name(f));
                         }
                     });
             });
-            ui.checkbox(&mut ex.formatted, t("Apply current layout's data formatting"));
+            // FileMaker dims the formatting option for DBF (and FileMaker Pro).
+            use Format::{Csv, Dbf, Fmp12, Merge, Tab};
+            let can_format = !matches!(ex.format, Dbf | Fmp12);
+            let label = t("Apply current layout's data formatting");
+            ui.add_enabled(can_format, egui::Checkbox::new(&mut ex.formatted, label));
+            let has_charset = matches!(ex.format, Csv | Tab | Merge | Dbf);
+            ui.add_enabled_ui(has_charset, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t("Output file character set:"));
+                    egui::ComboBox::from_id_salt("exp_cs")
+                        .selected_text(ex.charset.label())
+                        .show_ui(ui, |ui| {
+                            for c in Charset::ALL {
+                                ui.selectable_value(&mut ex.charset, c, c.label());
+                            }
+                        });
+                });
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 if ui.button(t("Cancel")).clicked() {
                     done = Some(false);
@@ -1617,6 +1794,76 @@ impl App {
     }
 }
 
+/// Character set and field delimiter choices of a text source; the rows
+/// are read again when one changes (`Some`).
+fn source_options(ui: &mut egui::Ui, imp: &mut Import) -> Option<Result<(), String>> {
+    use Format::{Csv, Dbf, Merge, Tab, Xml};
+    if imp.bytes.is_empty() || !matches!(imp.format, Csv | Tab | Merge | Xml | Dbf) {
+        return None;
+    }
+    let before = (imp.charset, imp.delimiter);
+    ui.horizontal(|ui| {
+        ui.label(t("Character set:"));
+        egui::ComboBox::from_id_salt("imp_cs")
+            .selected_text(imp.charset.label())
+            .show_ui(ui, |ui| {
+                for c in Charset::ALL {
+                    ui.selectable_value(&mut imp.charset, c, c.label());
+                }
+            });
+        if !matches!(imp.format, Csv | Tab) {
+            return;
+        }
+        ui.label(t("Field delimiter:"));
+        let presets = [
+            ('\t', t("Tab")),
+            (',', ","),
+            (';', ";"),
+            ('|', "|"),
+            (' ', t("Space")),
+        ];
+        let current = imp
+            .delimiter
+            .unwrap_or(if imp.format == Tab { '\t' } else { ',' });
+        let shown = presets
+            .iter()
+            .find(|p| p.0 == current)
+            .map_or(t("Other"), |p| p.1);
+        egui::ComboBox::from_id_salt("imp_delim")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for (c, label) in presets {
+                    ui.selectable_value(&mut imp.delimiter, Some(c), label);
+                }
+            });
+        ui.label(t("Other"));
+        let mut other: String = imp
+            .delimiter
+            .filter(|c| !presets.iter().any(|p| p.0 == *c))
+            .map(String::from)
+            .unwrap_or_default();
+        let edit = egui::TextEdit::singleline(&mut other)
+            .desired_width(24.0)
+            .char_limit(1);
+        if ui.add(edit).changed()
+            && let Some(c) = other.chars().next()
+        {
+            imp.delimiter = Some(c);
+        }
+    });
+    if before == (imp.charset, imp.delimiter) {
+        return None;
+    }
+    Some(
+        engine::import::read_rows_in(imp.format, &imp.bytes, imp.charset, imp.delimiter).map(
+            |rows| {
+                imp.rows = rows;
+                imp.sample = 0;
+            },
+        ),
+    )
+}
+
 #[cfg(test)]
 impl App {
     /// What Export would write for the open Export dialog (tests: the
@@ -1635,6 +1882,7 @@ impl App {
         m.find.is_some()
             || m.replace.is_some()
             || m.import.is_some()
+            || m.folder.is_some()
             || m.export.is_some()
             || m.omit.is_some()
             || m.confirm.is_some()

@@ -125,6 +125,7 @@ fn converted(
         mapping: engine::import::Mapping::ByOrder(names),
         mode: engine::import::Mode::Add,
         auto_enter: true,
+        ..Default::default()
     };
     engine::import::import(&mut db, table, &[], rows, &opts)?;
     Ok((stem, db, file, ids))

@@ -540,6 +540,7 @@ fn import_from_fmp12_file() {
         mapping: engine::import::Mapping::ByName,
         mode: engine::import::Mode::Add,
         auto_enter: true,
+        ..Default::default()
     };
     let rep = engine::import::import(&mut dst, t, &[], rows.clone(), &o).unwrap();
     assert_eq!(rep.added.len(), 2);

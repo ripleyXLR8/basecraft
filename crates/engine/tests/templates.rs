@@ -268,8 +268,11 @@ fn export_import_round_trip_and_summaries() {
             formatted: false,
             file_name: "Assets.fmp12",
             group_by: &[],
+            charset: Default::default(),
+            layout: None,
         }
-        .write(format);
+        .write(format)
+        .unwrap();
         let mut copy = db.clone();
         copy.tables[ti].records.clear();
         let header = matches!(format, Format::Merge | Format::Xlsx);
@@ -283,6 +286,7 @@ fn export_import_round_trip_and_summaries() {
             },
             mode: Mode::Add,
             auto_enter: true,
+            ..Default::default()
         };
         let r = import(&mut copy, tid, &[], read_rows(format, &bytes).unwrap(), &o).unwrap();
         assert_eq!(r.added.len(), 3, "{format:?}");
@@ -305,8 +309,11 @@ fn export_import_round_trip_and_summaries() {
         formatted: true,
         file_name: "Assets.fmp12",
         group_by: &[],
+        charset: Default::default(),
+        layout: None,
     }
-    .write(Format::Xml);
+    .write(Format::Xml)
+    .unwrap();
     let xml = String::from_utf8(xml).unwrap();
     assert!(xml.contains("NAME=\"Total\" TYPE=\"NUMBER\""));
     assert!(xml.contains("<DATA>1500.5</DATA>"));

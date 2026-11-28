@@ -13,6 +13,8 @@ fmp12 = { version = "0.1.0", path = "../fmp12" }
 # reading sheets. Both are pure Rust, small, and already in the lock file.
 miniz_oxide = "0.8.9"
 roxmltree = "0.21.2"
+# Folder import thumbnails; already in the tree through eframe and print.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp"] }
 
 [lints]
 workspace = true

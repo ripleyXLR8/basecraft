@@ -1,0 +1,10 @@
+# FileMaker Pro 26 field control styles: display<TAB>name.
+# Names: the control style names in DBEngine.dll's string table. Ids:
+# field object field 8.5 (FORMAT.md §10); "-" = id not decoded yet.
+0	Edit Box
+1	Drop-down List
+2	Pop-up Menu
+3	Checkbox Set
+4	Radio Button Set
+6	Drop-down Calendar
+-	Concealed Edit Box

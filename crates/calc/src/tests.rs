@@ -769,12 +769,46 @@ fn registry_coverage() {
         .iter()
         .filter(|f| crate::functions::builtin_get(f).is_some())
         .count();
+    // Partial (docs/COVERAGE.md): registered, but left to a host that no
+    // BaseCraft host answers yet ("not available", error 3, or empty), or
+    // short of FileMaker's behaviour.
+    let mut partial: Vec<&str> = crate::functions::host::HOST_FUNCTIONS.to_vec();
+    partial.extend(PARTIAL_FUNCTIONS);
+    for p in &partial {
+        assert!(
+            crate::functions::lookup(p).is_some(),
+            "{p} is listed as partial but not registered"
+        );
+    }
     println!("functions: {implemented} / {} implemented", reference.len());
+    println!("partial {}: {partial:?}", partial.len());
     println!("missing: {missing:?}");
     println!("Get() flags built in: {builtin} / {}", flags.len());
     assert_eq!(reference.len(), 234);
+    assert_eq!((implemented, partial.len()), (234, 37));
     assert_eq!(flags.len(), 139); // plus the "Get ( flag )" header line
 }
+
+/// Registered functions short of FileMaker (docs/COVERAGE.md): styled
+/// text keeps no styles, CryptEncrypt has its own byte layout, ExecuteSQL
+/// has no joins or GROUP BY.
+const PARTIAL_FUNCTIONS: [&str; 15] = [
+    "TextColor",
+    "TextColorRemove",
+    "TextFont",
+    "TextFontRemove",
+    "TextFormatRemove",
+    "TextSize",
+    "TextSizeRemove",
+    "TextStyleAdd",
+    "TextStyleRemove",
+    "CryptEncrypt",
+    "CryptDecrypt",
+    "CryptEncryptBase64",
+    "CryptDecryptBase64",
+    "ExecuteSQL",
+    "ExecuteSQLe",
+];
 
 /// The custom functions pasted into FileMaker Pro 26 to check these
 /// results (FORMAT.md §16).

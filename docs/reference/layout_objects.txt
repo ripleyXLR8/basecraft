@@ -1,0 +1,24 @@
+# FileMaker Pro 26 layout object kinds: kind<TAB>name.
+# Names: the object type names in DBEngine.dll's string table (Objects
+# panel / accessibility names). Kinds: object field 1 (XML `kind`), decoded
+# in FORMAT.md §10; kind 13 is an external object, told apart by its type
+# id in field 11.1 (WEBV web viewer, CHRT chart).
+1	Field
+2	Text
+3	Graphic
+4	Line
+5	Rectangle
+6	Rounded Rectangle
+7	Oval
+8	Group
+9	Portal
+10	Button
+11	Tab Control
+12	Tab Panel
+13	Web Viewer
+13	Chart
+14	Popover Button
+15	Popover
+16	Slide Control
+17	Slide Panel
+18	Button Bar

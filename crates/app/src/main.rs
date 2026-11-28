@@ -19,6 +19,8 @@ use fmp12::layouts::Layout;
 mod browse;
 mod chart;
 mod container;
+#[cfg(test)]
+mod coverage_tests;
 mod custom_functions;
 mod debugger;
 mod design;

@@ -37,6 +37,9 @@ macro_rules! host_fns {
         $(pub fn $f(ev: &mut Evaluator, a: &[Value]) -> R {
             host(ev, $name, a)
         })*
+        /// The functions left to [`crate::Context::host_function`].
+        #[cfg(test)]
+        pub(crate) const HOST_FUNCTIONS: &[&str] = &[$($name),*];
     };
 }
 

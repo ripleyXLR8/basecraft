@@ -47,7 +47,7 @@ fn new_style(object_type: u8) -> Vec<u8> {
 
 /// Field control styles: display value (object field 8.5), style type.
 /// Radio button sets (4, 65) were checked in FileMaker's XML.
-const CONTROLS: [(u64, u32, &str); 6] = [
+pub(crate) const CONTROLS: [(u64, u32, &str); 6] = [
     (0, 61, "Edit box"),
     (1, 62, "Drop-down list"),
     (2, 63, "Pop-up menu"),

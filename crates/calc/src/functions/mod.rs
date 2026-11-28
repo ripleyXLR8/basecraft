@@ -5,7 +5,7 @@ mod crypt;
 mod datetime;
 mod design;
 mod encode;
-mod host;
+pub(crate) mod host;
 mod jp;
 mod json;
 mod number;

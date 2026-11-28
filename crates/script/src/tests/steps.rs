@@ -124,6 +124,18 @@ fn step_coverage() {
     println!("RUNS {}: {}", runs.len(), runs.join(", "));
     println!("DESKTOP ERROR {}: {}", stub.len(), stub.join(", "));
     println!("NOT RUN {}: {}", host.len(), host.join(", "));
+    let partial: Vec<String> = PARTIAL_STEPS
+        .iter()
+        .map(|(id, why)| {
+            let line = format!("{id} {}", fmp12::scripts::step_name(*id).unwrap_or("?"));
+            assert!(
+                runs.contains(&line),
+                "{line} is listed as partial but does not run"
+            );
+            format!("{line} ({why})")
+        })
+        .collect();
+    println!("PARTIAL {}: {}", partial.len(), partial.join(", "));
     assert_eq!(runs.len() + stub.len() + host.len(), 222);
     // Every step runs; none is left to `Host::other` (PROGRESS.md M5).
     assert_eq!(
@@ -132,6 +144,113 @@ fn step_coverage() {
         "{host:?}"
     );
 }
+
+/// `Get()` flags a script on a real file answers (docs/COVERAGE.md):
+/// each one of docs/reference/get_functions.txt is evaluated by Exit
+/// Script; "needs a host" (1225) means no BaseCraft layer answers it.
+#[test]
+fn get_coverage() {
+    let blank =
+        fmp12::File::from_bytes(include_bytes!("../../../fmp12/assets/blank.fmp12").to_vec())
+            .unwrap();
+    let db = Database::load(&blank).unwrap();
+    let layout = db.layouts.first().map_or(0, |l| l.id);
+    let win = Window::new(&db, layout);
+    let mut h = TestHost {
+        db,
+        win,
+        answers: VecDeque::new(),
+        dialogs: Vec::new(),
+        errors: Vec::new(),
+    };
+    let flags: Vec<&str> = calc::functions::GET_REFERENCE
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("Get ( ")?.strip_suffix(" )"))
+        .filter(|f| *f != "flag")
+        .collect();
+    let (mut answered, mut missing, mut uncompiled) = (Vec::new(), Vec::new(), Vec::new());
+    for f in &flags {
+        let names = text::Names {
+            db: &h.db,
+            scripts: &[],
+        };
+        // A flag the script compiler does not know cannot be answered.
+        let Ok(c) = names.compile(&format!("Get ( {f} )")) else {
+            missing.push(*f);
+            uncompiled.push(*f);
+            continue;
+        };
+        let exit = step(id::EXIT_SCRIPT, StepParams::ExitScript(Some(c)));
+        let (_, o) = go(&mut h, vec![exit]);
+        if o.last_error == calc::error::code::NOT_SUPPORTED {
+            missing.push(*f);
+        } else {
+            answered.push(*f);
+        }
+    }
+    for p in PARTIAL_GET {
+        assert!(flags.contains(&p), "{p} is not a Get flag");
+    }
+    answered.retain(|f| !PARTIAL_GET.contains(f));
+    missing.retain(|f| !PARTIAL_GET.contains(f));
+    println!("ANSWERED {}: {}", answered.len(), answered.join(", "));
+    println!("PARTIAL {}: {}", PARTIAL_GET.len(), PARTIAL_GET.join(", "));
+    println!("MISSING {}: {}", missing.len(), missing.join(", "));
+    println!(
+        "NOT COMPILED {}: {}",
+        uncompiled.len(),
+        uncompiled.join(", ")
+    );
+    assert_eq!(flags.len(), 139);
+    assert_eq!(
+        (answered.len(), PARTIAL_GET.len(), missing.len()),
+        (53, 8, 78)
+    );
+}
+
+/// Flags answered with a fixed or approximate value, or only in some
+/// states (docs/COVERAGE.md).
+const PARTIAL_GET: [&str; 8] = [
+    // Only while a field is active; otherwise error 1225, not empty.
+    "ActiveFieldName",
+    "ActiveFieldTableName",
+    "ActiveFieldContents",
+    // UTC: the engine has no time-zone data.
+    "CurrentDate",
+    "CurrentTime",
+    "CurrentTimestamp",
+    "CurrentHostTimestamp",
+    // Always empty.
+    "LastErrorDetail",
+];
+
+/// Steps that run but ignore stored options or do nothing where FileMaker
+/// acts (docs/COVERAGE.md), with the reason.
+const PARTIAL_STEPS: [(u16, &str); 23] = [
+    (18, "no spelling check"),
+    (19, "no spelling check"),
+    (20, "no spelling check"),
+    (28, "criteria on related fields are dropped"),
+    (35, "stored import options not used (dialog)"),
+    (36, "stored export options not used (dialog)"),
+    (37, "stored path not used"),
+    (56, "stored path and options not decoded (file picker)"),
+    (63, "mailto: only, no SMTP"),
+    (81, "does nothing"),
+    (84, "does nothing"),
+    (94, "does nothing"),
+    (120, "does nothing"),
+    (128, "a script's \"current field\" searches every field"),
+    (131, "stored path and options not decoded (file picker)"),
+    (132, "stored path not decoded (save dialog)"),
+    (138, "\"with dialog\" shows no dialog"),
+    (146, "web viewers are not drawn: only checks the name"),
+    (169, "popover not closed"),
+    (209, "no dictionaries"),
+    (223, "the setting is not kept"),
+    (237, "no web viewer"),
+    (43, "prints to PDF only"),
+];
 
 #[test]
 fn control_steps() {

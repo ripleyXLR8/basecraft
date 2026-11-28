@@ -19,6 +19,13 @@ Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 | M8 | Import/export, Preview/print/PDF, charts, security, Data Viewer | 🚧 |
 | M9 | Out of scope for now: Server hosting, WebDirect, ODBC, plug-ins, AI steps | — |
 
+Coverage audit against FileMaker Pro 26's own inventories ([docs/COVERAGE.md](docs/COVERAGE.md),
+counts asserted by tests), implemented / partial / missing:
+
+| Functions | `Get()` flags | Script steps | Triggers | Layout objects | Control styles | Error codes raised |
+|----------:|--------------:|-------------:|---------:|---------------:|---------------:|-------------------:|
+| 197 / 37 / 0 of 234 | 53 / 8 / 78 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 9 / 0 / 17 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 58 of 300 |
+
 ## M1 — Reading `.fmp12`
 
 | Feature | State |
@@ -73,12 +80,12 @@ numbers and the list of missing functions.
 | Item | Done / total |
 |------|-------------:|
 | Functions | 234 / 234 |
-| `Get()` flags answered without a host | 10 / 139 |
+| `Get()` flags answered without a host | 11 / 139 |
 | `Get()` flags answered by the data engine without a script or window | 15 more |
 
 The 234 reference lines include `Status` twice. The 139 `Get()` flags exclude the
-`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 10
-built-in flags are CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimestamp
+`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 11
+built-in flags are UserName, CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimestamp
 (UTC, because the engine has no time-zone data), CurrentTimeUTCMilliseconds,
 CurrentTimeUTCMicroseconds, UUID, CalculationRepetitionNumber, SystemPlatform and
 ApplicationArchitecture. The engine answers FoundCount, RecordNumber, TotalRecordCount,

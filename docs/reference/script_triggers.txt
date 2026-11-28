@@ -1,0 +1,31 @@
+# FileMaker Pro 26 script trigger events: id<TAB>name.
+# Names: the trigger names in DBEngine.dll's string table (26, plus
+# OnTimer and OnCallbackScript, which are not trigger events). Ids: XML
+# `ScriptTrigger id`, decoded by setting each trigger in FileMaker 26
+# (fmp12::triggers, FORMAT.md §8); 7 by elimination.
+1	OnObjectEnter
+2	OnObjectExit
+3	OnObjectModify
+4	OnObjectSave
+5	OnObjectKeystroke
+6	OnObjectValidate
+7	OnPanelSwitch
+8	OnObjectAVPlayerChange
+101	OnLayoutEnter
+102	OnLayoutKeystroke
+103	OnRecordLoad
+104	OnRecordCommit
+105	OnRecordRevert
+106	OnModeEnter
+107	OnModeExit
+109	OnLayoutExit
+110	OnViewChange
+111	OnLayoutSizeChange
+112	OnGestureTap
+113	OnExternalCommandReceived
+201	OnFirstWindowOpen
+202	OnLastWindowClose
+204	OnWindowOpen
+205	OnWindowClose
+206	OnFileAVPlayerChange
+209	OnWindowTransaction

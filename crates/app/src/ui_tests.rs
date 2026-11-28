@@ -17,7 +17,14 @@ fn harness(name: &str) -> Option<Harness<'static, App>> {
 }
 
 pub(crate) fn harness_for(app: App) -> Harness<'static, App> {
+    harness_dt(app, 0.25)
+}
+
+/// A harness whose steps last `step_dt` seconds (a double click needs
+/// two clicks within 0.3 s).
+fn harness_dt(app: App, step_dt: f32) -> Harness<'static, App> {
     Harness::builder()
+        .with_step_dt(step_dt)
         .with_size([1060.0, 900.0])
         .with_accessibility_check(false)
         // eframe's native fallback for the glyphs egui's fonts lack (arrows).
@@ -1271,4 +1278,103 @@ fn hidden_layouts_and_manage_security() {
     h.get_by_label(security_ui::t("Privilege Sets")).click();
     h.run_steps(2);
     h.get_by_label("Viewers");
+}
+
+/// The fixture `blank.fmp12` on disk.
+fn blank_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fmp12/assets/blank.fmp12")
+}
+
+fn launch_harness(recent: Vec<String>, favorites: Vec<String>) -> Harness<'static, App> {
+    prefs::set(prefs::Prefs {
+        french: Some(true),
+        recent,
+        favorites,
+        ..Default::default()
+    });
+    let mut h = harness_dt(App::default(), 1.0 / 30.0);
+    h.run_steps(2);
+    h
+}
+
+/// With no file open the Launch Center shows: Favorites, Recent, Create;
+/// Create › Blank makes a new file.
+#[test]
+fn launch_center_create_blank() {
+    let mut h = launch_harness(Vec::new(), Vec::new());
+    for tab in ["Favorites", "Recent", "Create"] {
+        assert!(
+            h.query_all_by_label(launch::t(tab)).next().is_some(),
+            "{tab}"
+        );
+    }
+    // No recent files: Create first.
+    assert!(h.query_all_by_label(launch::t("Blank")).next().is_some());
+    shot(&mut h, "launch_create");
+    h.get_by_label(launch::t("Convert")).click();
+    h.run_steps(2);
+    assert!(h.state().launch.convert);
+    shot(&mut h, "launch_convert");
+    h.get_by_label(launch::t("Favorites")).click();
+    h.run_steps(2);
+    assert!(h.query_by_label(launch::t("Add App")).is_some());
+    shot(&mut h, "launch_favorites");
+    h.get_by_label(launch::t("Create")).click();
+    h.run_steps(2);
+    h.get_all_by_label(launch::t("Blank"))
+        .find(|n| n.rect().left() < 400.0)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    // The blue Create button (the tab has the same label).
+    h.get_all_by_label(launch::t("Create"))
+        .find(|n| n.rect().left() > 400.0)
+        .unwrap()
+        .click();
+    h.run_steps(3);
+    let d = h.state().doc.as_ref().expect("a new file");
+    assert_eq!(d.name, launch::t("Untitled"));
+    assert_eq!(d.db.tables.len(), 1);
+}
+
+/// Recent lists the recent files; a double click on one opens it.
+#[test]
+fn launch_center_recent_opens_on_double_click() {
+    let p = blank_path().to_string_lossy().into_owned();
+    let mut h = launch_harness(
+        vec![p.clone(), r"C:\Somewhere\Else\Missing.fmp12".into()],
+        vec![p],
+    );
+    assert!(h.query_by_label("Missing").is_some());
+    shot(&mut h, "launch_recent");
+    h.get_by_label("blank").click();
+    h.run_steps(2);
+    assert_eq!(h.state().launch.selected, Some(0));
+    assert!(h.state().doc.is_none(), "a single click only selects");
+    h.run_steps(10);
+    h.get_by_label("blank").click();
+    h.get_by_label("blank").click();
+    h.run_steps(3);
+    assert_eq!(h.state().error, None);
+    assert_eq!(
+        h.state().doc.as_ref().map(|d| d.name.as_str()),
+        Some("blank")
+    );
+}
+
+/// Create › Convert's conversion: a field per column, a record per row.
+#[test]
+fn convert_csv_makes_a_file() {
+    let mut app = App::default();
+    app.open_more(
+        "People.csv".into(),
+        b"Name,City\nAda,London\nAlan,Wilmslow\n".to_vec(),
+    );
+    let d = app.doc.as_ref().unwrap();
+    assert_eq!(d.name, "People");
+    let t = &d.db.tables[0];
+    let names: Vec<&str> = t.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["Name", "City"]);
+    assert_eq!(t.records.len(), 2);
+    assert_eq!(app.view, View::Table);
 }

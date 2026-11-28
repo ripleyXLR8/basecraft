@@ -24,6 +24,7 @@ mod debugger;
 mod design;
 mod editing;
 mod i18n;
+mod launch;
 mod look;
 #[cfg(test)]
 mod m4_tests;
@@ -168,6 +169,8 @@ struct App {
     views: views::State,
     /// Edit › Preferences… being edited (`prefs.rs`).
     prefs: Option<prefs::Prefs>,
+    /// Launch Center (`launch.rs`).
+    launch: launch::State,
 }
 
 impl App {
@@ -213,16 +216,39 @@ impl App {
     /// (FileMaker keeps several files open).
     fn open_more(&mut self, name: String, bytes: Vec<u8>) {
         if !self.busy() {
-            return self.open(name, bytes);
+            return self.open_any(name, bytes);
         }
         let mut a = App::default();
-        a.open(name, bytes);
+        a.open_any(name, bytes);
         self.others.push(a);
+    }
+
+    /// A `.fmp12` file, or a CSV, tab-separated or Excel file converted
+    /// into a new one.
+    fn open_any(&mut self, name: String, bytes: Vec<u8>) {
+        if launch::convertible(&name) {
+            self.convert(name, bytes);
+        } else {
+            self.open(name, bytes);
+        }
     }
 
     /// File › Open, File › Open Recent, the command line and dropped files.
     #[cfg(not(target_arch = "wasm32"))]
     fn open_path(&mut self, p: &std::path::Path) {
+        // Converted files get no path: saving must not overwrite the source.
+        if launch::convertible(&p.to_string_lossy()) {
+            match std::fs::read(p) {
+                Ok(b) => {
+                    let name = p
+                        .file_name()
+                        .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                    self.open_more(name, b);
+                }
+                Err(e) => self.error = Some(e.to_string()),
+            }
+            return;
+        }
         if self.busy() {
             if self.others.iter().chain([&*self]).any(|a| a.is_file(p)) {
                 return;
@@ -1051,6 +1077,12 @@ impl App {
                     self.open_dialog(&ui.ctx().clone());
                 }
                 self.recent_menu(ui);
+                let lc =
+                    egui::Button::new(launch::t("Launch Center")).shortcut_text("Ctrl+Shift+O");
+                if ui.add(lc).clicked() {
+                    ui.close();
+                    self.launch.open = self.doc.is_some();
+                }
                 self.remote_menu(ui);
                 // FileMaker saves by itself and has no Save (Ctrl+S sorts).
                 if ui
@@ -2303,6 +2335,7 @@ impl App {
             });
         }
         self.data_viewer_window(&ctx);
+        self.launch_window(&ctx);
         self.windows_frame(ui);
         self.others_frame(&ctx);
     }
@@ -2314,6 +2347,9 @@ impl App {
         if self.engine.is_some() && key(M::COMMAND | M::SHIFT, Key::S) {
             self.open_workspace();
             focus_tool_window(ctx, workspace::KEY);
+        }
+        if key(M::COMMAND | M::SHIFT, Key::O) {
+            self.launch.open = self.doc.is_some();
         }
         if key(M::COMMAND, Key::O) {
             self.open_dialog(ctx);
@@ -2377,20 +2413,22 @@ impl App {
             }
             return;
         }
+        if self.doc.is_none() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    if let Some(e) = &self.error {
+                        egui::Frame::NONE
+                            .inner_margin(4.0)
+                            .show(ui, |ui| ui.colored_label(Color32::RED, e));
+                    }
+                    self.launch_center(ui);
+                });
+            return;
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(e) = &self.error {
                 ui.colored_label(Color32::RED, e);
-            }
-            if self.doc.is_none() {
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        if ui.button(tr("Open…")).clicked() {
-                            self.open_dialog(&ctx);
-                        }
-                        ui.label(tr("or drop a .fmp12 file here"));
-                    });
-                });
-                return;
             }
             let was_dirty = self.dirty;
             self.dirty = false;

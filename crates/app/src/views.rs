@@ -33,7 +33,7 @@ pub fn tv(key: &'static str) -> &'static str {
 pub struct State {
     widths: BTreeMap<(u32, u32), f32>,
     hidden: BTreeSet<(u32, u32)>,
-    added: BTreeMap<u32, Vec<u32>>,
+    pub(crate) added: BTreeMap<u32, Vec<u32>>,
     totals: BTreeSet<(u32, u32)>,
     /// Column the found set is sorted by from its header, and the order.
     sorted_by: Option<(u32, Order)>,

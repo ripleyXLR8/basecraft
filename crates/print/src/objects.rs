@@ -16,11 +16,30 @@ pub struct Context {
     pub record: Option<usize>,
 }
 
-/// "Hide object when": the calculation is true for the record.
+/// "Hide object when": the calculation is true for the record (`Self`:
+/// the object's value).
 pub fn hidden(db: &Database, o: &LayoutObject, c: Context) -> bool {
-    o.hide
-        .as_ref()
-        .is_some_and(|h| db.eval_tokens(h, c.table, c.to, c.record).truth())
+    o.hide.as_ref().is_some_and(|h| {
+        db.eval_with_self(h, c.table, c.to, c.record, &self_value(db, o, c), None)
+            .truth()
+    })
+}
+
+/// `Self` of an object: its field's value for the record, else its text.
+/// ponytail: a related field (another table) reads as empty; callers that
+/// know the related record pass the value to [`conditional_style`].
+fn self_value(db: &Database, o: &LayoutObject, c: Context) -> Value {
+    match (o.field, c.record) {
+        (Some((to, f, rep)), Some(r)) => {
+            if db.table_of((to & 0xFFF) as u32).map(|t| t.id) == Some(c.table) {
+                db.value_rep(c.table, r, f as u32, rep.max(1) as u32)
+            } else {
+                Value::empty()
+            }
+        }
+        (Some(_), None) => Value::empty(),
+        _ => Value::text(o.text.clone().unwrap_or_default()),
+    }
 }
 
 /// A compared value of a condition: text in quotes, a number, else the text
@@ -63,10 +82,10 @@ fn today() -> Option<i64> {
 /// Whether condition `k` holds for the object's `value`.
 pub fn holds(db: &Database, k: &Condition, value: &Value, c: Context) -> bool {
     match k.op {
-        op::FORMULA => k
-            .calc
-            .as_ref()
-            .is_some_and(|t| db.eval_tokens(t, c.table, c.to, c.record).truth()),
+        op::FORMULA => k.calc.as_ref().is_some_and(|t| {
+            db.eval_with_self(t, c.table, c.to, c.record, value, None)
+                .truth()
+        }),
         _ => compares(k, value),
     }
 }

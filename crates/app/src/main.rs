@@ -173,6 +173,9 @@ struct App {
     prefs: Option<prefs::Prefs>,
     /// Launch Center (`launch.rs`).
     launch: launch::State,
+    /// The window as last drawn: content size, screen, modifier keys
+    /// (`Get ( WindowContentWidth )`, `Get ( ScreenWidth )`…).
+    seen: script::HostInfo,
 }
 
 impl App {
@@ -553,6 +556,19 @@ impl App {
         if window.sorted {
             window.sort = self.last_sort.iter().map(|(f, _)| *f).collect();
         }
+        window.host = script::HostInfo {
+            file_name: d.name.clone(),
+            file_path: d.path.as_ref().map_or_else(String::new, |p| {
+                format!("file:{}", calc::functions::fm_path(p))
+            }),
+            file_size: d
+                .path
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len()),
+            quick_find: self.bar.quick.clone(),
+            ..self.seen.clone()
+        };
         window.mode = match self.mode() {
             Mode::Find => script::Mode::Find,
             Mode::Browse | Mode::Layout => script::Mode::Browse,
@@ -2452,6 +2468,22 @@ impl App {
             return;
         }
         egui::CentralPanel::default().show(ui, |ui| {
+            let content = ui.max_rect().size();
+            let (screen, m) = ui.input(|i| (i.viewport().monitor_size, i.modifiers));
+            self.seen = script::HostInfo {
+                content: Some((content.x as f64, content.y as f64)),
+                screen: screen.map(|s| (s.x as f64, s.y as f64)),
+                scale: Some(ui.ctx().pixels_per_point() as f64),
+                // Shift 1, Ctrl 4, Alt/Option 8, Command 16 (egui does
+                // not report Caps Lock, 2).
+                modifier_keys: Some(
+                    m.shift as u32
+                        | (m.ctrl as u32) << 2
+                        | (m.alt as u32) << 3
+                        | (m.mac_cmd as u32) << 4,
+                ),
+                ..Default::default()
+            };
             if let Some(e) = &self.error {
                 ui.colored_label(Color32::RED, e);
             }

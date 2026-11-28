@@ -196,6 +196,7 @@ impl Engine {
                 };
                 let f = fields[next];
                 host.window().field = Some(f);
+                host.window().object.clear();
                 host.go_to_field(Some(f), false);
                 Ok(Flow::Next)
             }
@@ -239,6 +240,7 @@ impl Engine {
                 }
                 let w = host.window();
                 w.field = Some(f);
+                w.object.clear();
                 w.selection = (start - 1, end + 1 - start);
                 Ok(Flow::Next)
             })(),
@@ -1110,6 +1112,7 @@ impl Engine {
         let mut w = host.window().clone();
         w.name = name;
         w.field = None;
+        w.object.clear();
         w.portal_row = 0;
         w.hidden = false;
         apply_geometry(&mut w, geo);

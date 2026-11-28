@@ -1052,9 +1052,13 @@ impl Parser {
                     .peek()
                     .filter(|t| t.kind == Kind::Ident)
                     .and_then(|t| {
-                        GET_FLAGS
-                            .iter()
-                            .find(|(_, n)| n.eq_ignore_ascii_case(&t.text))
+                        // The old name of CurrentPrivilegeSetName (same token).
+                        let name = if t.text.eq_ignore_ascii_case("PrivilegeSetName") {
+                            "CurrentPrivilegeSetName"
+                        } else {
+                            &t.text
+                        };
+                        GET_FLAGS.iter().find(|(_, n)| n.eq_ignore_ascii_case(name))
                     })
                     .map(|(b, _)| *b);
                 let Some(flag) = flag else {

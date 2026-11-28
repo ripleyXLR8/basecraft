@@ -191,6 +191,7 @@ pub fn set(prefs: Prefs) {
 
 fn apply(p: &Prefs) {
     i18n::set_french(p.french);
+    calc::functions::set_application_language(if i18n::french() { "French" } else { "English" });
     let user = p.user.trim();
     calc::functions::set_user_name((!user.is_empty()).then(|| user.to_string()));
 }

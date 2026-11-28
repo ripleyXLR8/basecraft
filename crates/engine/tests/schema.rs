@@ -365,7 +365,9 @@ fn value_list_size_and_custom_message_validation() {
 
 /// "In range" (503) and "validated by calculation" (507, `Self` is the
 /// value), checked in the dialog's order (range before calculation before
-/// maximum characters); "always" reported for imports and skipped commits.
+/// maximum characters) on data entry; "always" reported for imports and
+/// skipped commits. The script commit part follows FileMaker 26
+/// (tools/oracle/validation_check.ps1).
 #[test]
 fn range_and_calculation_validation() {
     use engine::Rule;
@@ -380,9 +382,8 @@ fn range_and_calculation_validation() {
     let mut day = FieldSpec::new("Day", DataType::Date);
     day.validation.range = Some(("1/1/2020".into(), "31/12/2020".into()));
     let day = s.db.add_field(&mut s.file, s.invoices, &day).unwrap();
-    // A calculation that runs on empty values too.
     let mut note = FieldSpec::new("Note", DataType::Text);
-    note.validation.calculation = Some("not IsEmpty ( Self ) or Amount < 100".into());
+    note.validation.calculation = Some("Length ( Self ) > 2 or Amount < 100".into());
     let note = s.db.add_field(&mut s.file, s.invoices, &note).unwrap();
     let r = s.invoice("1", "5");
     let rules = |s: &Shop| -> Vec<(u32, Rule, u32)> {
@@ -408,11 +409,32 @@ fn range_and_calculation_validation() {
     assert_eq!(rules(&s), [(day, Rule::Range, 503)]);
     set(&mut s, day, "15/6/2020");
     assert!(rules(&s).is_empty());
+    // A calculation does not run on an empty value.
     let amount = s.f["Amount"];
     set(&mut s, amount, "500");
+    assert!(rules(&s).is_empty());
+    set(&mut s, note, "x");
     assert_eq!(rules(&s), [(note, Rule::Calculation, 507)]);
     set(&mut s, note, "big order");
+    set(&mut s, amount, "50");
     assert!(rules(&s).is_empty());
+    // A script's commit (FileMaker 26, Set Field then Commit Records):
+    // ranges and maximum characters are not checked, calculations are,
+    // and the first failing field by id is reported.
+    let script = |s: &Shop| -> Vec<u32> {
+        s.db.validate_script(s.invoices, r)
+            .iter()
+            .map(|e| e.rule.code())
+            .collect()
+    };
+    set(&mut s, qty, "12");
+    assert!(script(&s).is_empty());
+    set(&mut s, qty, "13");
+    assert_eq!(script(&s), [507]);
+    set(&mut s, day, "15/6/2021");
+    set(&mut s, note, "x");
+    set(&mut s, amount, "500");
+    assert_eq!(script(&s), [507, 507]);
 }
 
 /// Auto-enter calculations see `Self` and evaluate again when a field

@@ -1150,7 +1150,9 @@ fn commit_enforces_validation() {
         ],
     )]);
     let o = e.perform(&mut h, 1, None);
-    assert_eq!(o.result.to_text(), "509/506/511/0");
+    // A script's commit does not check value lists or maximum characters
+    // (FileMaker 26, tools/oracle/validation_check.ps1): only not empty.
+    assert_eq!(o.result.to_text(), "509/0/0/0");
     assert_eq!(
         h.db.validation_message(T, 4, CITY).as_deref(),
         Some("Pick a city")

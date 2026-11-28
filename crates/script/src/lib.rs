@@ -1269,7 +1269,7 @@ impl Engine {
         };
         if let Some(e) = host
             .db()
-            .validate(table, r)
+            .validate_script(table, r)
             .into_iter()
             .find(|e| !skip || e.always)
         {

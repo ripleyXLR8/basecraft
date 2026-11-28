@@ -74,6 +74,11 @@ from files we authored ourselves.
   `cargo run -p fmp12 --example scriptedit -- <Tasks en.fmp12> <out> "edit,delete,flow,calc,call,rename:Sort by Name:BC Renamed"`
   builds the file it was written for (`-Click 50,160`): scripts added,
   renamed and deleted, the new BC Calc run through a layout trigger.
+* `validation_check.ps1`: `Test-FmValidation <dir> -Fields … -Cases …` adds fields to a
+  copy of Tasks with `basecraft-cli schema add-field`, runs a pasted script
+  (`validation_snippet.py`: Set Field, Commit, `Get ( LastError )`, sorts, calculations)
+  and reads Tasks::Description; the header lists what FileMaker 26 answered (validation
+  codes after a script's commit, GetSummary sorted and unsorted).
 * `compile_snippet.py exprs out_prefix` + `compile_exprs.txt`: compiled-form
   oracle. Builds scripts of Set Variable steps; pasted with `Add-FmScriptSteps`
   into a file, FileMaker stores each calculation's key 5 and key 6, listed by

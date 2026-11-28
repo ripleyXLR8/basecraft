@@ -1355,6 +1355,19 @@ impl Database {
     /// Checks a record against its fields' validation options, as FileMaker
     /// does when the record is committed. Returns the failing fields.
     pub fn validate(&self, table: u32, record: usize) -> Vec<Invalid> {
+        self.validate_with(table, record, true)
+    }
+
+    /// [`Database::validate`] for a record a script changed (Set Field…,
+    /// then a commit): FileMaker 26 only checks not empty, unique, existing
+    /// and calculations then; value lists, ranges and maximum characters
+    /// are checked on data entry only (whatever "validate always" says).
+    /// The first failing field (by field id) is the error FileMaker reports.
+    pub fn validate_script(&self, table: u32, record: usize) -> Vec<Invalid> {
+        self.validate_with(table, record, false)
+    }
+
+    fn validate_with(&self, table: u32, record: usize, entry: bool) -> Vec<Invalid> {
         let Some(t) = self.table(table) else {
             return Vec::new();
         };
@@ -1366,7 +1379,7 @@ impl Database {
             let v = f.def.validation();
             let raw = t.records.get(record).and_then(|r| r.values.get(&f.id));
             let text = raw.map_or("", |s| s.as_str());
-            if let Some(rule) = self.failed_rule(t, f, record, text) {
+            if let Some(rule) = self.failed_rule(t, f, record, text, entry) {
                 out.push(Invalid {
                     field: f.id,
                     rule,
@@ -1381,9 +1394,17 @@ impl Database {
     /// The first validation rule `text` (the stored value of field `f` in
     /// `record`) fails, in the order of FileMaker's Field Options dialog:
     /// strict data type, not empty, unique, existing, value list, range,
-    /// calculation, maximum characters. Empty values only fail "not empty"
-    /// and a calculation.
-    fn failed_rule(&self, t: &Table, f: &Field, record: usize, text: &str) -> Option<Rule> {
+    /// calculation, maximum characters. Empty values only fail "not empty".
+    /// Without `entry`, only the rules a script's commit
+    /// checks ([`Database::validate_script`]).
+    fn failed_rule(
+        &self,
+        t: &Table,
+        f: &Field,
+        record: usize,
+        text: &str,
+        entry: bool,
+    ) -> Option<Rule> {
         let v = f.def.validation();
         let typed = typed_in(text, f.data_type, &self.locale);
         let set = !text.trim().is_empty();
@@ -1441,17 +1462,23 @@ impl Database {
             ),
         ];
         for (failed, rule) in checks {
+            if !entry && matches!(rule, Rule::ValueList | Rule::Range | Rule::MaxChars) {
+                continue;
+            }
             let failed = match rule {
-                // Only evaluated when the earlier rules pass.
-                Rule::Calculation => f.validation_calc.as_ref().is_some_and(|src| {
-                    let scope = Scope {
-                        found: None,
-                        self_value: Some(typed.clone()),
-                    };
-                    !self
-                        .eval_source_in(src, t.id, f.context, Some(record), &scope)
-                        .is_ok_and(|r| r.truth())
-                }),
+                // Only evaluated when the earlier rules pass, and not on an
+                // empty value (FileMaker 26).
+                Rule::Calculation => {
+                    set && f.validation_calc.as_ref().is_some_and(|src| {
+                        let scope = Scope {
+                            found: None,
+                            self_value: Some(typed.clone()),
+                        };
+                        !self
+                            .eval_source_in(src, t.id, f.context, Some(record), &scope)
+                            .is_ok_and(|r| r.truth())
+                    })
+                }
                 Rule::NotEmpty => failed,
                 _ => failed && set,
             };

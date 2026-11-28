@@ -1874,6 +1874,9 @@ fn draw_object(
     events: &mut Vec<(u64, u16)>,
 ) {
     lk.paint_shape(painter, r, o.kind);
+    if let Some(p) = o.picture.and_then(|id| doc.db.pictures.get(&id)) {
+        container::picture(ui.ctx(), painter, r, p.data());
+    }
     if o.kind != 1 {
         if let Some(txt) = &o.text {
             lk.paint_text(painter, r, txt);

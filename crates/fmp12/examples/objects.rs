@@ -29,6 +29,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 o.field,
                 o.text
             );
+            if let Some(p) = o.picture {
+                println!("    picture {p}");
+            }
+            if o.button_raw.is_some() || o.button.is_some() {
+                println!(
+                    "    button {:?} raw {:02x?}",
+                    o.button.as_ref().map(|s| (s.id, s.inline_id())),
+                    o.button_raw
+                );
+            }
         }
     }
     Ok(())

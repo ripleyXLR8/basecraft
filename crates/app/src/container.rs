@@ -90,6 +90,14 @@ pub fn draw(
     action
 }
 
+/// A graphic layout object's picture, scaled to the object's bounds.
+pub fn picture(ctx: &egui::Context, painter: &egui::Painter, r: Rect, data: &[u8]) {
+    if let Some(tex) = texture(ctx, data) {
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(tex.id(), r, uv, Color32::WHITE);
+    }
+}
+
 /// Picture data egui can show (PNG, JPEG), decoded once per content.
 fn texture(ctx: &egui::Context, data: &[u8]) -> Option<egui::TextureHandle> {
     let tag = fmp12::containers::image_tag(data)?;

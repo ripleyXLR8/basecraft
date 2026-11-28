@@ -115,6 +115,8 @@ pub struct Database {
     /// Base directories of external container storage: (id, path relative
     /// to the database's folder), [`fmp12::containers::base_directories`].
     pub base_directories: Vec<(u32, String)>,
+    /// Pictures of graphic layout objects, by store id (`[31].[5]`).
+    pub pictures: BTreeMap<u32, fmp12::containers::Stored>,
 }
 
 /// The file's custom functions, as listed and as the calculation engine
@@ -325,6 +327,7 @@ impl Database {
             occurrences,
             custom_functions,
             base_directories: fmp12::containers::base_directories(file)?,
+            pictures: fmp12::containers::layout_pictures(file)?,
             access: Access {
                 session,
                 denied: None,
@@ -2360,6 +2363,7 @@ pub(crate) mod tests {
             locale: Locale::default(),
             custom_functions: Default::default(),
             base_directories: vec![],
+            pictures: BTreeMap::new(),
         }
     }
 

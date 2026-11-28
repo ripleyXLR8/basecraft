@@ -730,7 +730,17 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
 /// `params` is the tree under `[4].[5].[L].[5].[obj].[17]`. A button that
 /// performs a script is a Perform Script step. `None` for "Do nothing".
 pub fn button_action(raw16: &[u8], params: RawParams) -> Option<Step> {
-    let m = Msg::parse(raw16)?.msg(3)?;
+    action_step(Msg::parse(raw16)?.msg(3)?, params)
+}
+
+/// The action of a button made before buttons were their own object kind
+/// (FileMaker 12 era: a group, object kind 8, or any object): object field
+/// 12, whose field 1 is the step message of field 16.3.
+pub fn legacy_button_action(raw12: &[u8], params: RawParams) -> Option<Step> {
+    action_step(Msg::parse(raw12)?.msg(1)?, params)
+}
+
+fn action_step(m: Msg, params: RawParams) -> Option<Step> {
     let id = m.uint(1)? as u16;
     if id == 0 {
         return None;
@@ -886,5 +896,21 @@ mod tests {
                 parameter: None
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod legacy_button_tests {
+    /// Object field 12 of a FileMaker 12-era button (a group): Perform
+    /// Script, script 133 (`02 80 05`).
+    #[test]
+    fn legacy_button_action_reads_field_12() {
+        let raw = [
+            0x0a, 0x16, 0x08, 0x01, 0x10, 0x04, 0x18, 0x40, 0x22, 0x0e, 0x03, 0x02, 0x80, 0x05, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let s = super::legacy_button_action(&raw, Default::default()).unwrap();
+        assert_eq!(s.id, super::id::PERFORM_SCRIPT);
+        assert_eq!(s.inline_id(), Some(133));
     }
 }

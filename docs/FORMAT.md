@@ -882,7 +882,14 @@ navigation. The break field of a sub-summary (field 6) is
   buttons of style type 79). Kinds 13–18 were made with FileMaker's Insert
   menu and read back.
   Kinds 3, 7 and 8 were checked by writing them and reading FileMaker's
-  XML type names. A field's control style is field 8.5 (0 edit box,
+  XML type names. A graphic object (kind 3) names its picture in field
+  10.1: an id in the file-wide picture store `[31].[5].[id]`, laid out
+  like a table's container store (§13; `FNAM`, `JPEG`/`PNGf`/`PDF `
+  streams, `SIZE`, plus an undecoded 8-byte `FORK`). Files from the
+  FileMaker 12 era make buttons out of any object, often a group (kind 8):
+  the action is then field 12, whose field 1 is the step message that
+  newer buttons keep in field 16.3 (checked on a 2016 file whose three
+  group buttons each run a Perform Script). A field's control style is field 8.5 (0 edit box,
   1 drop-down list, 2 pop-up menu, 3 checkbox set, 4 radio button set,
   6 drop-down calendar) and its style type follows it (61, 62, 63, 64,
   65, 66; 67 container); radio sets were checked in FileMaker.

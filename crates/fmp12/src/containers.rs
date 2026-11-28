@@ -27,7 +27,8 @@ use crate::{Chunk, Error, File, path_int};
 pub const REF_END: char = '\u{E000}';
 
 /// Streams FileMaker stores next to the data, not the data itself.
-const META: [&[u8; 4]; 5] = [b"FNAM", b"SIZE", b"DPI_", b"REMO", b"ENCR"];
+/// (`FORK`: 8 bytes next to pictures pasted on layouts, not decoded.)
+const META: [&[u8; 4]; 6] = [b"FNAM", b"SIZE", b"DPI_", b"REMO", b"ENCR", b"FORK"];
 
 /// How a container field stores its data outside the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,17 +344,28 @@ pub fn ref_text(id: u32) -> String {
 
 /// Every stored container of table `table`, by store id.
 pub fn read(file: &File, table: u32) -> Result<BTreeMap<u32, Stored>, Error> {
+    read_store(file, Some(table))
+}
+
+/// The pictures placed on layouts (graphic objects), stored once for the
+/// whole file in `[31].[5].[id]`, laid out like a table's store.
+pub fn layout_pictures(file: &File) -> Result<BTreeMap<u32, Stored>, Error> {
+    read_store(file, None)
+}
+
+fn read_store(file: &File, table: Option<u32>) -> Result<BTreeMap<u32, Stored>, Error> {
     let mut out: BTreeMap<u32, Stored> = BTreeMap::new();
     // Streams over 1000 bytes: [id].[tag] key 1… chunks.
     file.walk(|path, c| {
-        let [tp, store, five, id, rest @ ..] = path else {
+        let path = match (table, path) {
+            (None, p) => p,
+            (Some(t), [tp, rest @ ..]) if tp.len() <= 2 && path_int(tp) == Some(t) => rest,
+            _ => return,
+        };
+        let [store, five, id, rest @ ..] = path else {
             return;
         };
-        if tp.len() > 2
-            || path_int(tp) != Some(table)
-            || path_int(store) != Some(31)
-            || path_int(five) != Some(5)
-        {
+        if path_int(store) != Some(31) || path_int(five) != Some(5) {
             return;
         }
         let Some(id) = path_int(id) else { return };

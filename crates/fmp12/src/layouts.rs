@@ -72,6 +72,7 @@ pub const SLIDE_DIRECTLY_ABOVE: u64 = 0x8000;
 pub mod kind {
     pub const FIELD: u64 = 1;
     pub const TEXT: u64 = 2;
+    pub const GRAPHIC: u64 = 3;
     pub const PORTAL: u64 = 9;
     pub const BUTTON: u64 = 10;
     pub const TAB_CONTROL: u64 = 11;
@@ -322,6 +323,9 @@ pub struct LayoutObject {
     pub tab: Option<(u32, u32)>,
     /// Raw button message (field 16), see [`crate::scripts::button_action`].
     pub button_raw: Option<Vec<u8>>,
+    /// Graphic object (kind 3): its picture in the file's picture store
+    /// `[31].[5].[id]` ([`crate::containers::layout_pictures`]), field 10.1.
+    pub picture: Option<u32>,
     /// Button action: a single step (Perform Script for a script button).
     pub button: Option<crate::scripts::Step>,
     /// Tooltip calculation (node `.[3]`).
@@ -506,13 +510,27 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
             .msg(14)
             .and_then(|t| Some((t.uint(2)? as u32, t.uint(3)? as u32))),
         button_raw: m.bytes(16).map(<[u8]>::to_vec),
-        button: m.bytes(16).and_then(|b| {
-            let params = u32::try_from(id)
-                .ok()
-                .and_then(|i| r.actions.get(&i).cloned())
-                .unwrap_or_default();
-            crate::scripts::button_action(b, params)
-        }),
+        button: m
+            .bytes(16)
+            .and_then(|b| {
+                let params = u32::try_from(id)
+                    .ok()
+                    .and_then(|i| r.actions.get(&i).cloned())
+                    .unwrap_or_default();
+                crate::scripts::button_action(b, params)
+            })
+            .or_else(|| {
+                let params = u32::try_from(id)
+                    .ok()
+                    .and_then(|i| r.actions.get(&i).cloned())
+                    .unwrap_or_default();
+                crate::scripts::legacy_button_action(m.bytes(12)?, params)
+            }),
+        picture: m
+            .msg(10)
+            .filter(|_| m.uint(1) == Some(kind::GRAPHIC))
+            .and_then(|g| g.uint(1))
+            .map(|v| v as u32),
         external: m
             .msg(11)
             .map(|x| (x.uint(1).unwrap_or(0), x.uint(3).unwrap_or(0))),

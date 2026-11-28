@@ -226,3 +226,29 @@ fn targeted_steps_decode() {
         }
     ));
 }
+
+/// The file's picture store reads (the templates keep pictures there but
+/// place no graphic object), and any graphic object's picture is in it.
+#[test]
+fn graphic_objects_resolve_to_pictures() {
+    let Some(dir) = template_dir() else { return };
+    let mut seen = 0;
+    for f in template_files(&dir) {
+        let file = fmp12::File::open(&f).unwrap();
+        let pictures = fmp12::containers::layout_pictures(&file).unwrap();
+        seen += pictures.len();
+        for l in fmp12::layouts::layouts(&file).unwrap() {
+            for o in l.objects.iter().filter(|o| o.kind == 3) {
+                let id = o
+                    .picture
+                    .unwrap_or_else(|| panic!("{f:?} {} obj {}", l.name, o.id));
+                let p = &pictures[&id];
+                assert!(
+                    fmp12::containers::image_tag(p.data()).is_some(),
+                    "{f:?} picture {id}"
+                );
+            }
+        }
+    }
+    assert!(seen > 0);
+}

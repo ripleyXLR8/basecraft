@@ -434,6 +434,7 @@ impl Remote {
             access: Default::default(),
             custom_functions: Default::default(),
             base_directories: Vec::new(),
+            pictures: Default::default(),
         };
         let mut layouts = Vec::new();
         for name in names {

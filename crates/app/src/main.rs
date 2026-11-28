@@ -1175,6 +1175,15 @@ impl App {
                     ui.close();
                     self.save(&ui.ctx().clone(), true);
                 }
+                let can = self.doc.as_ref().is_some_and(|d| d.db.can_print())
+                    && matches!(self.mode(), Mode::Browse | Mode::Preview);
+                if ui
+                    .add_enabled(can, egui::Button::new(tr("Print…")))
+                    .clicked()
+                {
+                    ui.close();
+                    self.print(&ui.ctx().clone(), true);
+                }
                 ui.separator();
                 self.file_menu_items(ui);
                 ui.menu_button(security_ui::t("Manage"), |ui| {

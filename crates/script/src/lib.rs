@@ -402,6 +402,16 @@ pub enum UiRequest {
         data: Vec<u8>,
         print: bool,
     },
+    /// Open Script Workspace, Open Settings, Open Find/Replace.
+    Dialog(AppDialog),
+}
+
+/// FileMaker dialogs a script step opens that BaseCraft has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppDialog {
+    ScriptWorkspace,
+    Preferences,
+    FindReplace,
 }
 
 /// A file or folder seen by [`Host::file_stat`].

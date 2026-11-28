@@ -48,6 +48,9 @@ pub struct State {
     pub after: Option<After>,
     /// Last URL handed to the OS (tests).
     pub opened: Option<String>,
+    /// Last print job: the PDF file and whether it went to the viewer
+    /// (with dialog) rather than the default printer (tests).
+    pub printed: Option<(std::path::PathBuf, bool)>,
     /// Data file steps: the file's folder, writes the user agreed to.
     pub disk: script::files::Disk,
 }
@@ -72,11 +75,24 @@ impl App {
             }
             UiRequest::Index { values } => self.pick_index(ctx, values),
             UiRequest::FolderPath { title, .. } => Some(pick_folder(title)),
-            UiRequest::Print { .. } => {
-                self.save_pdf(ctx, None, true);
+            UiRequest::Print { dialog } => {
+                self.print(ctx, *dialog);
                 Some(Answer::Continue)
             }
+            // ponytail: no Print Setup dialog (BaseCraft prints on US
+            // Letter, portrait); the step goes on as with no dialog.
             UiRequest::PrintSetup => Some(Answer::Continue),
+            UiRequest::Dialog(d) => {
+                match d {
+                    script::AppDialog::ScriptWorkspace => {
+                        self.open_workspace();
+                        crate::focus_tool_window(ctx, crate::workspace::KEY);
+                    }
+                    script::AppDialog::Preferences => self.prefs = Some(crate::prefs::get()),
+                    script::AppDialog::FindReplace => self.open_find_replace(),
+                }
+                Some(Answer::Continue)
+            }
             UiRequest::SavePdf { path, dialog } => {
                 self.save_pdf(ctx, path.as_deref(), *dialog);
                 Some(Answer::Continue)
@@ -244,13 +260,11 @@ impl App {
     }
 
     /// The found set on the current layout as PDF (Print, Save Records as PDF).
-    fn save_pdf(&mut self, ctx: &egui::Context, path: Option<&str>, dialog: bool) {
-        let Some(t) = self.table() else { return };
+    fn pdf_bytes(&mut self) -> Option<Vec<u8>> {
+        let t = self.table()?;
         let found = self.found(t).clone();
-        let Some(d) = self.doc.as_ref() else { return };
-        let Some(l) = d.layouts.get(self.layout) else {
-            return;
-        };
+        let d = self.doc.as_ref()?;
+        let l = d.layouts.get(self.layout)?;
         match print::pdf(
             &d.db,
             l.id,
@@ -258,8 +272,55 @@ impl App {
             &self.last_sort,
             &print::Paper::letter(),
         ) {
-            Ok((b, _)) => self.write_output(ctx, path, dialog, "pdf", b),
-            Err(e) => self.error = Some(e),
+            Ok((b, _)) => Some(b),
+            Err(e) => {
+                self.error = Some(e);
+                None
+            }
+        }
+    }
+
+    fn save_pdf(&mut self, ctx: &egui::Context, path: Option<&str>, dialog: bool) {
+        if let Some(b) = self.pdf_bytes() {
+            self.write_output(ctx, path, dialog, "pdf", b);
+        }
+    }
+
+    /// Print (the step and File > Print...): the found set as PDF, handed
+    /// to the OS. With dialog, the PDF opens in the system viewer, whose
+    /// Print dialog takes over; without, it goes to the default printer
+    /// (`print_file`). In the browser it is downloaded.
+    pub(crate) fn print(&mut self, ctx: &egui::Context, dialog: bool) {
+        if self.doc.as_ref().is_some_and(|d| !d.db.can_print()) {
+            self.error = Some(engine::DENIED_MESSAGE.into());
+            return;
+        }
+        let Some(bytes) = self.pdf_bytes() else {
+            return;
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = dialog;
+            self.write_output(ctx, None, true, "pdf", bytes);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = ctx;
+            // Our own name in the temporary folder: nothing of the user's
+            // goes on a command line.
+            // ponytail: the file stays for the viewer; the OS cleans the
+            // temporary folder.
+            let n = PRINT_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("basecraft-print-{}-{n}.pdf", std::process::id()));
+            if let Err(e) = std::fs::write(&path, &bytes) {
+                self.error = Some(e.to_string());
+                return;
+            }
+            if let Err(e) = print_file(&path, dialog) {
+                self.error = Some(e);
+            }
+            self.steps_ui.printed = Some((path, dialog));
         }
     }
 
@@ -376,6 +437,61 @@ fn pick_folder(title: &str) -> Answer {
 #[cfg(target_arch = "wasm32")]
 fn pick_folder(_title: &str) -> Answer {
     Answer::Cancel
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static PRINT_JOBS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Hands a PDF to the OS, with no shell parsing a user's text (the path
+/// is BaseCraft's own temporary file, passed as one argument or, to
+/// PowerShell, in an environment variable):
+///
+/// * with dialog: the system viewer (`rundll32 url.dll,FileProtocolHandler`
+///   on Windows, `open` on macOS, `xdg-open` elsewhere), whose Print
+///   dialog the user prints from;
+/// * without: the default printer, by the PDF handler's "print" verb on
+///   Windows (`powershell Start-Process -Verb Print`), by CUPS `lp`
+///   elsewhere; when that fails the PDF opens in the viewer instead.
+///
+/// Tests never reach the OS.
+#[cfg(not(target_arch = "wasm32"))]
+fn print_file(path: &std::path::Path, dialog: bool) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let _ = (path, dialog);
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        use std::process::Command;
+        if !dialog {
+            #[cfg(target_os = "windows")]
+            let r = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Process -FilePath $env:BASECRAFT_PRINT -Verb Print",
+                ])
+                .env("BASECRAFT_PRINT", path)
+                .status();
+            #[cfg(not(target_os = "windows"))]
+            let r = Command::new("lp").arg(path).status();
+            if r.is_ok_and(|s| s.success()) {
+                return Ok(());
+            }
+        }
+        let s = path.to_string_lossy();
+        #[cfg(target_os = "windows")]
+        let r = Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &s])
+            .spawn();
+        #[cfg(target_os = "macos")]
+        let r = Command::new("open").arg(&*s).spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let r = Command::new("xdg-open").arg(&*s).spawn();
+        r.map(|_| ()).map_err(|e| e.to_string())
+    }
 }
 
 /// Hands a URL to the OS (no shell: the URL is one argument).

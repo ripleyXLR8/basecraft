@@ -246,8 +246,6 @@ pub fn field_text(
         theme: None,
         found,
         sort: &sort,
-        page: 0,
-        pages: 0,
     };
     let group = found.get(band.group.clone()).unwrap_or_default();
     let body = layout
@@ -265,8 +263,6 @@ struct Ctx<'a> {
     found: &'a [usize],
     /// Sort fields of the found set, in order.
     sort: &'a [u32],
-    page: usize,
-    pages: usize,
 }
 
 impl Ctx<'_> {
@@ -358,11 +354,15 @@ impl Ctx<'_> {
             .next()
     }
 
-    /// `<<Field>>`, `<<TO::Field>>`, `{{PageNumber}}` and `{{PageCount}}` in layout text.
+    /// `<<Field>>`, `<<TO::Field>>` and the `{{Symbol}}`s ([`symbols`]) in layout text.
     fn merge(&self, text: &str, record: Option<usize>, group: &[usize], body: bool) -> String {
-        let text = text
-            .replace("{{PageNumber}}", &self.page.to_string())
-            .replace("{{PageCount}}", &self.pages.to_string());
+        let to = layout_to(self.layout);
+        let found = engine::FoundSet {
+            table: self.db.table_of(to).map_or(0, |t| t.id),
+            records: self.found,
+            sort: self.sort,
+        };
+        let text = symbols(self.db, text, to, record, Some(found));
         let mut out = String::new();
         let mut rest = text.as_str();
         while let Some(a) = rest.find("<<") {
@@ -379,6 +379,49 @@ impl Ctx<'_> {
         out.push_str(rest);
         out
     }
+}
+
+/// The symbols of layout text (Claris, "Inserting the date, page number,
+/// or other variable onto a layout"): `{{Name}}` shows `Get ( Name )`
+/// (`{{PageNumber}}`, `{{PageCount}}`, `{{CurrentDate}}`, `{{CurrentTime}}`,
+/// `{{UserName}}`, `{{RecordNumber}}`, `{{AccountName}}`…), the name in
+/// any case and with nothing else between the braces. Anything else stays
+/// as typed. Page flags come from [`calc::functions::set_page`].
+/// ponytail: `{{RecordNumber}}` in a portal row is the record's number,
+/// not the row's.
+pub fn symbols(
+    db: &Database,
+    text: &str,
+    to: u32,
+    record: Option<usize>,
+    found: Option<engine::FoundSet>,
+) -> String {
+    let table = db.table_of(to).map_or(0, |t| t.id);
+    let scope = engine::Scope {
+        found,
+        self_value: None,
+    };
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(a) = rest.find("{{") {
+        out.push_str(&rest[..a]);
+        rest = &rest[a..];
+        let Some(b) = rest[2..].find("}}") else {
+            break;
+        };
+        let (symbol, after) = rest.split_at(b + 4);
+        let name = &symbol[2..b + 2];
+        let value = (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()))
+            .then(|| db.eval_source_in(&format!("Get ( {name} )"), table, to, record, &scope))
+            .and_then(Result::ok);
+        match value {
+            Some(v) => out.push_str(&engine::stored_text(&v, &db.locale)),
+            None => out.push_str(symbol),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// (x, y, width, height) on the page.
@@ -587,14 +630,12 @@ pub fn pdf_with_charts(
         .ok_or_else(|| format!("no layout {layout_id}"))?;
     let pages = paginate(db, layout, found, sort, paper);
     let sort_fields: Vec<u32> = sort.iter().map(|(f, _)| *f).collect();
-    let mut ctx = Ctx {
+    let ctx = Ctx {
         db,
         layout,
         theme: db.themes.iter().find(|t| t.number == layout.theme),
         found,
         sort: &sort_fields,
-        page: 0,
-        pages: pages.len(),
     };
     let looks: Vec<Look> = layout
         .objects
@@ -604,7 +645,7 @@ pub fn pdf_with_charts(
     let mut out = Pdf::new();
     let [mt, _, _, ml] = paper.margins;
     for (n, page) in pages.iter().enumerate() {
-        ctx.page = n + 1;
+        calc::functions::set_page(n + 1, Some(pages.len()));
         out.page(paper.width, paper.height);
         for band in &page.bands {
             let p = &layout.parts[band.part];
@@ -639,6 +680,7 @@ pub fn pdf_with_charts(
             }
         }
     }
+    calc::functions::set_page(0, None);
     Ok((out.finish(), pages.len()))
 }
 

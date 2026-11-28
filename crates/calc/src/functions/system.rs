@@ -22,6 +22,20 @@ pub fn set_application_language(language: &'static str) {
     APP_LANGUAGE.with(|l| l.set(language));
 }
 
+thread_local! {
+    /// Page being previewed or printed and the print job's page count.
+    static PAGE: std::cell::Cell<(usize, Option<usize>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+/// `Get ( PageNumber )` and `Get ( PageCount )` while the host previews
+/// (`count`: `None`) or prints / saves as PDF page `number` (1-based) of
+/// `count`; `(0, None)` when done. Claris: PageNumber is 0 when nothing is
+/// printed or previewed; PageCount is the page count "in the current print
+/// job while it's printing", nothing otherwise.
+pub fn set_page(number: usize, count: Option<usize>) {
+    PAGE.with(|p| p.set((number, count)));
+}
+
 pub(super) fn system_get(flag: &str) -> Option<Value> {
     let path = |p: Option<PathBuf>| Value::text(p.map(|p| fm_folder(&p)).unwrap_or_default());
     Some(match flag {
@@ -56,6 +70,10 @@ pub(super) fn system_get(flag: &str) -> Option<Value> {
                 .and_then(|e| e.parent().map(Path::to_path_buf)),
         ),
         "SystemDrive" => Value::text(system_drive()),
+        "PageNumber" => Value::int(PAGE.with(|p| p.get().0) as i64),
+        "PageCount" => PAGE
+            .with(|p| p.get().1)
+            .map_or_else(Value::empty, |n| Value::int(n as i64)),
         _ => return None,
     })
 }

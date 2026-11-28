@@ -134,7 +134,7 @@ fn step_coverage() {
     // Every step runs; none is left to `Host::other` (PROGRESS.md M5).
     assert_eq!(
         (runs.len(), stub.len(), host.len()),
-        (155, 67, 0),
+        (158, 64, 0),
         "{host:?}"
     );
 }
@@ -209,7 +209,7 @@ fn get_coverage() {
     assert_eq!(flags.len(), 139);
     assert_eq!(
         (answered.len(), PARTIAL_GET.len(), missing.len()),
-        (95, 8, 36)
+        (97, 8, 34)
     );
 }
 
@@ -234,7 +234,7 @@ const PARTIAL_GET: [&str; 8] = [
 
 /// Steps that run but ignore stored options or do nothing where FileMaker
 /// acts (docs/COVERAGE.md), with the reason.
-const PARTIAL_STEPS: [(u16, &str); 27] = [
+const PARTIAL_STEPS: [(u16, &str); 28] = [
     (18, "no spelling check"),
     (19, "no spelling check"),
     (20, "no spelling check"),
@@ -260,7 +260,11 @@ const PARTIAL_STEPS: [(u16, &str); 27] = [
         "condition, error code, message read as parameters 0-2: not checked",
     ),
     (237, "no web viewer"),
-    (43, "prints to PDF only"),
+    (42, "no Print Setup dialog: US Letter, portrait"),
+    (
+        43,
+        "no print dialog or stored options: system viewer, or default printer",
+    ),
     (
         3,
         "schema, layouts, scripts only: no UUIDs, DDR_INFO, step parameters",
@@ -1035,4 +1039,54 @@ fn transaction_revert_on_error() {
     assert_eq!(o.result.to_text(), "005|");
     assert_eq!(h.db.tables[0].records.len(), 5);
     assert_eq!(h.db.tables[0].records[0].values[&NAME], "Xavier");
+}
+
+/// Open Script Workspace, Open Settings and Open Find/Replace open the
+/// app's dialogs (the Script Workspace stops the script); FileMaker's
+/// design dialogs BaseCraft lacks return 3, or 9 without full access.
+#[test]
+fn dialog_steps() {
+    let mut h = TestHost::new(PEOPLE);
+    let first = |h: &mut TestHost, s: Step| {
+        let mut e = Engine::new(vec![script(1, vec![s])]);
+        let mut run = e.start(h, 1, None);
+        run.resume(&mut e, h, Answer::Start)
+    };
+    let dialog = |d| Status::Suspended(Suspend::Ui(UiRequest::Dialog(d)));
+    let st = first(&mut h, rawp(sid::OPEN_SCRIPT_WORKSPACE, &[], 0, 0));
+    assert_eq!(st, dialog(AppDialog::ScriptWorkspace));
+    let (_, o) = go(
+        &mut h,
+        vec![rawp(sid::OPEN_SCRIPT_WORKSPACE, &[], 0, 0), var("$x", "1")],
+    );
+    assert!(o.halted);
+    let err = |h: &mut TestHost, id: u16| {
+        let steps = vec![rawp(id, &[], 0, 0), exit_c(h, "Get ( LastError )")];
+        go(h, steps).1.result.to_text()
+    };
+    for (id, d) in [
+        (sid::OPEN_SETTINGS, AppDialog::Preferences),
+        (sid::OPEN_FIND_REPLACE, AppDialog::FindReplace),
+    ] {
+        assert_eq!(first(&mut h, rawp(id, &[], 0, 0)), dialog(d));
+        assert_eq!(err(&mut h, id), "0");
+    }
+    assert_eq!(err(&mut h, 38), "3");
+    // [Read-Only Access] has no full access.
+    let f = fmp12::File::from_bytes(include_bytes!("../../../fmp12/assets/blank.fmp12").to_vec())
+        .unwrap();
+    let sec = fmp12::security::Security::load(&f).unwrap();
+    let admin = sec.login("Admin", "").unwrap();
+    let mut new = sec.clone();
+    new.add_account(fmp12::security::Account::new("ro", "test123", 3));
+    let f = fmp12::File::from_bytes(fmp12::security::save(&f, &admin, &new).unwrap()).unwrap();
+    h.db = Database::load_as(&f, "ro", "test123").unwrap();
+    assert!(!h.db.full_access());
+    h.win = Window::new(&h.db, h.db.layouts.first().map_or(0, |l| l.id));
+    for id in [38, 112, 151, sid::OPEN_SCRIPT_WORKSPACE] {
+        assert_eq!(err(&mut h, id), "9", "{id}");
+    }
+    // Open Help has no privilege rule: 3.
+    assert_eq!(err(&mut h, 32), "3");
+    assert_eq!(err(&mut h, sid::OPEN_SETTINGS), "0");
 }

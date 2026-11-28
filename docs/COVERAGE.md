@@ -14,8 +14,8 @@ test until this page and the test are updated together.
 | Category | Reference | Total | Implemented | Partial | Missing | Test |
 |----------|-----------|------:|------------:|--------:|--------:|------|
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
-| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 95 | 8 | 36 | `cargo test -p script get_coverage -- --nocapture` |
-| Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 27 | 0 (+67 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
+| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 97 | 8 | 34 | `cargo test -p script get_coverage -- --nocapture` |
+| Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 130 | 28 | 0 (+64 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
 | Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 5 | 2 | 0 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
@@ -55,8 +55,7 @@ decompiled.
    auto-enter / Skip validation options are ignored.
 3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
    editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
-4. **`Get()` flags a local solution still misses**: PageNumber and PageCount (page
-   headers in Preview and PDF), SystemLocaleElements / FileLocaleElements, CustomMenuSetName
+4. **`Get()` flags a local solution still misses**: SystemLocaleElements / FileLocaleElements, CustomMenuSetName
    (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
    where FileMaker answers). The active-field flags see only fields a script entered, and
    RecordModificationCount is kept in memory (a save keeps the file's previous count). The
@@ -66,7 +65,11 @@ decompiled.
 6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
    and Flush Web Viewer Cookies have nothing to act on.
 7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Perform JavaScript in Web
-   Viewer, Open Manage Database and the other design dialogs. Insert from URL, Save a Copy
+   Viewer, and the dialogs BaseCraft does not have: Open Manage Database, Manage Value
+   Lists, Manage Layouts, Manage Data Sources, Manage Containers, Manage Themes, File
+   Options, Sharing (error 9 without full access, else 3), Open Help, Edit Saved Finds,
+   Hosts, Upload to Host, Favorites, Starter Solution (3). Open Script Workspace, Open
+   Settings and Open Find/Replace open BaseCraft's own. Insert from URL, Save a Copy
    as XML, Save Records as JSONL and Execute FileMaker Data API run on the desktop build
    (partial, below) and still return 3 in the web build.
 8. **`Get ( RecordOpenState )` and `Get ( RecordOpenCount )`** answer 0 in scripts, also
@@ -115,21 +118,28 @@ record in the app or a script; kept in memory, not written on save; Replace Fiel
 Relookup and imports do not count). LastErrorDetail is set by Revert Transaction, a
 failed transaction, Insert from URL and Execute FileMaker Data API.
 
-Missing (36): PageNumber, PrinterName, ScreenDepth, HighContrastState, SystemAppearance,
+PageNumber is the page being previewed, printed or saved as PDF, 0 otherwise; PageCount
+is the page count while printing or saving as PDF, empty otherwise (Preview included, as
+Claris documents it: "the total page count in the current print job while it's
+printing"; not checked against FileMaker). Both reach calculations (a footer field
+`"Page " & Get ( PageNumber )`) and the `{{Symbol}}` text of layouts (below).
+
+Missing (34): PrinterName, ScreenDepth, HighContrastState, SystemAppearance,
 SystemIPAddress, SystemNICAddress, WindowDesktopHeight, WindowDesktopWidth, HostIPAddress,
 AllowFormattingBarState, CustomMenuSetName, UseSystemFormatsState, HostApplicationVersion,
 DocumentsPathListing, WindowStyle, PersistentID, TriggerGestureInfo, WindowOrientation,
-NetworkType, ConnectionAttributes, TouchKeyboardState, RegionMonitorEvents, PageCount,
+NetworkType, ConnectionAttributes, TouchKeyboardState, RegionMonitorEvents,
 OpenDataFileInfo, InstalledFMPluginsAsJSON, SessionIdentifier, SystemLocaleElements,
 FileLocaleElements, CacheFileName, CacheFilePath, SystemStorageAvailable,
 LastStepTokensUsed, GuidedAccessState, AccountPasswordDaysRemaining, WindowUUID.
 
 ## Script steps
 
-Partial (27): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
+Partial (28): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
 35 Import Records, 36 Export Records
 (stored options not used, the dialog opens); 37 Save a Copy as (stored path not used);
-43 Print (to PDF only); 56 Insert Picture, 131 Insert File (stored path and options not
+42 Print Setup (no dialog; pages are US Letter, portrait); 43 Print (no print dialog of
+its own and no stored print options, see "Printing" below); 56 Insert Picture, 131 Insert File (stored path and options not
 decoded, a file picker opens); 132 Export Field Contents (stored path not decoded);
 63 Send Mail (`mailto:` only, no SMTP); 81 Scroll Window, 84 Set Multi-User, 94 Set Use
 System Formats, 120 Arrange All Windows (do nothing); 128 Perform Find/Replace (a
@@ -223,3 +233,34 @@ Never raised (235): -1, 2, 6, 7, 11, 13, 16, 18, 19, 21, 103, 107–111, 113–1
 1501–1507, 1541–1543, 1550–1559, 1628, 1629, 1632–1635, 1638, 1700–1707, 1709, 1711–1715. Most belong to features
 BaseCraft does not have (hosting, ODBC, plug-ins, email, web, AI, Data API); the ranges that
 matter most for local files are 103–119, 202–211, 301–310, 402–418 and 508–513.
+
+## Printing
+
+Print (the step and File › Print…) renders the found set on the current layout to the
+same PDF as Save Records as PDF, writes it to BaseCraft's own temporary file
+(`basecraft-print-<pid>-<n>.pdf` in the system's temporary folder) and hands that file to
+the OS with `std::process::Command` and explicit arguments (no shell parses anything of
+the user's; the file name is BaseCraft's):
+
+| | With dialog (File › Print…, the step's default) | Without dialog ("Perform without dialog") |
+|---|---|---|
+| Windows | `rundll32 url.dll,FileProtocolHandler <file>`: the default PDF viewer opens, the user prints from its Print dialog | `powershell -NoProfile -NonInteractive -Command "Start-Process -FilePath $env:BASECRAFT_PRINT -Verb Print"`, the path in the environment variable: the PDF handler's "print" verb, default printer |
+| macOS | `open <file>` (Preview) | `lp <file>` (CUPS), default printer |
+| Linux, BSD | `xdg-open <file>` | `lp <file>` |
+| Browser | the PDF is downloaded | the same |
+
+When the print verb or `lp` fails (no handler registers "print", no CUPS), the PDF opens in
+the viewer instead. Gaps: no print dialog of BaseCraft's own (FileMaker's shows printer,
+copies, records being browsed / current record / blank record), no Print Setup dialog and
+no stored print options (printer, paper, orientation): pages are US Letter, portrait. An
+account without the "Allow printing" privilege gets FileMaker's privilege message, and the
+File › Print… item is off. Tests never reach the OS.
+
+Symbols in layout text (Preview and PDF): `{{Name}}` shows `Get ( Name )` for any `Get`
+flag, the name in any case with nothing else between the braces (Claris, "Inserting the
+date, page number, or other variable onto a layout"): `{{PageNumber}}`, `{{PageCount}}`,
+`{{CurrentDate}}`, `{{CurrentTime}}`, `{{UserName}}`, `{{RecordNumber}}`, `{{AccountName}}`…;
+other text in braces stays as typed. Browse and Find modes do not resolve them yet, and
+`{{RecordNumber}}` in a portal row gives the record's number, not the row's. The pre-12
+symbols `##`, `//`, `::`, `@@` are not handled: Claris's current help documents only the
+`{{…}}` forms, and replacing `//` or `::` in any text would break URLs and field names.

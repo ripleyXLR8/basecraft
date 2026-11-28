@@ -27,6 +27,14 @@ pub fn draw(
         .table_of((layout.table_occurrence & 0xFFF) as u32)
         .map_or(0, |t| t.id);
     let layout_to = (layout.table_occurrence & 0xFFF) as u32;
+    // Get ( PageNumber ) for this page; PageCount only while printing.
+    calc::functions::set_page(page.min(pages.len().saturating_sub(1)) + 1, None);
+    let sort_fields: Vec<u32> = sort.iter().map(|(f, _)| *f).collect();
+    let found_set = engine::FoundSet {
+        table,
+        records: found,
+        sort: &sort_fields,
+    };
     let theme = doc.db.themes.iter().find(|x| x.number == layout.theme);
     let looks: Vec<Look> = layout
         .objects
@@ -185,7 +193,8 @@ pub fn draw(
                     .to_text()
             } else if o.text.is_some() {
                 lk.paint_styled(&painter, r, o, |s| {
-                    merge_fields(doc, &Default::default(), s, table, layout_to, band.record)
+                    let s = print::symbols(&doc.db, s, layout_to, band.record, Some(found_set));
+                    merge_fields(doc, &Default::default(), &s, table, layout_to, band.record)
                 });
                 continue;
             } else {
@@ -197,5 +206,50 @@ pub fn draw(
             }
         }
     }
+    calc::functions::set_page(0, None);
     pages.len()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use eframe::egui;
+
+    /// Preview shows `{{PageNumber}}` (and `Get ( PageNumber )`) for the
+    /// page drawn; PageCount only while printing; both reset after.
+    #[test]
+    fn page_number_symbol_in_preview() {
+        let app = crate::ui_tests::shop_app();
+        let d = app.doc.as_ref().unwrap();
+        let mut l = d.layouts[app.layout].clone();
+        let top = l.parts.iter().find(|p| p.kind == 4).unwrap().top + 40.0;
+        l.objects.push(fmp12::layouts::LayoutObject {
+            id: 900,
+            kind: 2,
+            bounds: fmp12::layouts::Bounds {
+                top,
+                left: 10.0,
+                bottom: top + 20.0,
+                right: 200.0,
+            },
+            text: Some("Pg {{PageNumber}}/{{PageCount}}.".into()),
+            ..Default::default()
+        });
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            super::draw(ui, d, &l, &[0], &[], 0);
+        });
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        out.textures_delta.clear();
+        assert!(texts.iter().any(|t| t == "Pg 1/."), "{texts:?}");
+        let flag = d.db.eval_source("Get ( PageNumber )", 0, 0, None);
+        assert_eq!(flag.to_text(), "0");
+    }
 }

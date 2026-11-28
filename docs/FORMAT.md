@@ -966,6 +966,26 @@ layout and its catalog entry, fresh UUIDs) and `delete_layout`.
 Text and shape styles go into the object's local style (§12) on the
 `.self` element, as FileMaker's Inspector does.
 
+Sub-nodes of an object node are spelled as FileMaker writes them, and
+every level of a sub-node gets its node marker: `.[138]` and `.[141]` as
+one byte (`8A`, `8D`), indexed slots (`128 + i`: conditions, a web
+viewer's `.[128]`) as `00 i`. With the two-byte spelling `80 0D`
+FileMaker reads no calculation; without the marker of `.[128]` its
+consistency check reports a damaged block (FMDeveloperTool, error 805).
+
+The "Objects Demo" layout (`BASECRAFT_OBJECTS_DEMO=<out.fmp12> cargo test
+-p basecraft objects_demo_file`, from the Assets template) was checked in
+FileMaker Pro 26 with `layout_check.ps1` and FileMaker Server's
+consistency check (`fms_check.sh`, no problems): it opens without a
+warning and FileMaker shows the price as `($1,234.50)` in red, the date
+and the timestamp in their formats, the name red and bold by its value
+condition, the description (its hide condition false), the popover with
+its title when its button is clicked, the second slide after a click on
+its dot, the button bar with its active segment, and the web viewer
+loading its computed address; the XML export lists the conditions
+(`Self = "Laptop"`, `IsEmpty ( Assets::Price )`), the hide calculation,
+the placeholder, the tooltip, the formats and the tab order.
+
 Checked in FileMaker Pro 26 (`tools/oracle/layout_check.ps1`, the file
 built by `BASECRAFT_LAYOUT_DEMO=<out> cargo test -p basecraft
 layout_demo_file` from the Contacts template): it opens without a

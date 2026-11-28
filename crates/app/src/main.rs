@@ -522,6 +522,9 @@ impl App {
         window.found = found;
         window.current = *self.current.get(&t).unwrap_or(&0);
         window.sorted = self.sorted.get(&t).copied().unwrap_or(false);
+        if window.sorted {
+            window.sort = self.last_sort.iter().map(|(f, _)| *f).collect();
+        }
         window.mode = match self.mode() {
             Mode::Find => script::Mode::Find,
             Mode::Browse | Mode::Layout => script::Mode::Browse,

@@ -207,6 +207,11 @@ impl App {
             x += w;
         }
         // Rows.
+        let sort_keys: Vec<u32> = if sorted {
+            self.last_sort.iter().map(|(f, _)| *f).collect()
+        } else {
+            Vec::new()
+        };
         let widths: Vec<f32> = cols.iter().map(|f| width(&self.views, *f)).collect();
         let Some(d) = self.doc.as_mut() else { return };
         let mut clicked_row = None;
@@ -248,7 +253,13 @@ impl App {
                 x += w;
                 let (_, is_calc, _) = names.get(&f).cloned().unwrap_or_default();
                 if is_calc || !d.db.can_edit_field(t, rec, f) {
-                    let v = d.db.value(t, rec, f).to_text();
+                    // As the window sees it: summaries over the found set.
+                    let fs = engine::FoundSet {
+                        table: t,
+                        records: found,
+                        sort: &sort_keys,
+                    };
+                    let v = d.db.value_in(t, rec, f, 1, Some(fs)).to_text();
                     ui.put(cell, egui::Label::new(v).truncate());
                     continue;
                 }

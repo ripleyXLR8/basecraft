@@ -176,7 +176,7 @@ impl App {
         if !self.hosted() {
             return false;
         }
-        if self.commit() {
+        if self.commit_record() {
             #[cfg(not(target_arch = "wasm32"))]
             self.remote_sync();
         }

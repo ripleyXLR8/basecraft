@@ -19,7 +19,7 @@ test until this page and the test are updated together.
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
 | Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 5 | 2 | 0 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
-| Error codes | [error_codes.txt](reference/error_codes.txt) | 300 | 58 raised | — | 242 never raised | `cargo test -p basecraft error_code_coverage -- --nocapture` |
+| Error codes | [error_codes.txt](reference/error_codes.txt) | 300 | 59 raised | — | 241 never raised | `cargo test -p basecraft error_code_coverage -- --nocapture` |
 
 Not inventoried: script step options (each step's parameters are covered step by step in
 FORMAT.md §8 and PROGRESS.md M5), and File Options / Preferences (FileMaker 26 draws those
@@ -53,10 +53,8 @@ decompiled.
    `Get ( WindowContentWidth/Height )`, `Get ( DesktopPath/DocumentsPath/TemporaryPath )`**: common
    in auto-enter keys and scripts; they fail with error 1225 ("needs a host") where FileMaker
    answers. `Get ( PrivilegeSetName )` does not even compile in a script.
-2. **Script triggers fired by script steps**: triggers fire on user actions; of the steps,
-   only a layout change, New Window and a view change fire them (FileMaker also fires
-   OnModeEnter/Exit, OnRecordRevert, OnWindowClose… for Enter Find Mode, Revert Record,
-   Close Window…).
+2. **OnRecordCommit on user actions** is queued after the commit (FileMaker runs it
+   before and a False result keeps the record open); script steps run it before.
 3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
    editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
 4. **Revert Transaction**'s condition, error code and message are read from the step
@@ -147,8 +145,10 @@ OnRecordCommit, OnRecordRevert, OnModeEnter, OnModeExit, OnLayoutExit, OnViewCha
 OnLayoutSizeChange, OnFirstWindowOpen, OnLastWindowClose, OnWindowOpen, OnWindowClose,
 OnWindowTransaction. The "pre" ones (OnObjectValidate, OnObjectKeystroke,
 OnLayoutKeystroke, OnRecordRevert, OnModeExit, OnPanelSwitch, OnWindowClose,
-OnLastWindowClose) run their script at once, and a False result (Exit Script) cancels
-the event; the others are queued. Limits: PROGRESS.md, "More triggers".
+OnLastWindowClose, and OnObjectExit) run their script at once, and a False result (Exit
+Script) cancels the event; the others are queued. Script steps fire them too
+(`crates/script/src/triggers.rs`): pre triggers before the step (False: error 20), post
+triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".
 
 ## Layout objects and control styles
 
@@ -173,11 +173,11 @@ source (a `u32` constant, `Err(n)`, `EvalError::new(n`, a validation rule's code
 heuristic: a `u32` constant that happens to equal a code counts too, and a code computed
 elsewhere would be missed.
 
-Raised (58): 0, 1, 3, 4, 5, 9, 10, 12, 14, 15, 17, 100, 101, 102, 104, 105, 106, 112, 116,
+Raised (59): 0, 1, 3, 4, 5, 9, 10, 12, 14, 15, 17, 20, 100, 101, 102, 104, 105, 106, 112, 116,
 200, 201, 212, 217, 300, 400, 401, 414, 500, 501, 502, 503, 504, 505, 506, 507, 509, 511,
 800, 829, 833, 1200–1209, 1211, 1212, 1214, 1215, 1218, 1223, 1224, 1225.
 
-Never raised (242): -1, 2, 6, 7, 11, 13, 16, 18–21, 103, 107–111, 113–115, 117–119, 130,
+Never raised (241): -1, 2, 6, 7, 11, 13, 16, 18, 19, 21, 103, 107–111, 113–115, 117–119, 130,
 131, 202–211, 214–216, 218, 219, 301–308, 310, 402, 404–410, 412, 413, 415–418, 508, 510,
 512, 513, 600–608, 700, 706–708, 711, 714–727, 729–736, 738, 801–817, 819–827, 830–832,
 850–853, 870–872, 875–879, 882, 883, 885–887, 892, 900, 901, 903, 905, 906, 920–923,

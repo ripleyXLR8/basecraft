@@ -1206,3 +1206,4 @@ fn commit_enforces_validation() {
 
 mod datafiles;
 mod steps;
+mod triggers;

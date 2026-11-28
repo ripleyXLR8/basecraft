@@ -379,3 +379,90 @@ fn window_transaction_and_view_change() {
     h.run_steps(3);
     assert_eq!(global(&h, "$$view"), "1");
 }
+
+/// OnObjectExit returning False keeps the focus in the field (no other
+/// field is entered); True lets it go.
+#[test]
+fn object_exit_cancels() {
+    let mut app = shop_app();
+    script(&mut app, 90, "exited", "$$exited + 1", Some("$$allow"));
+    on_object(&mut app, 100, trigger(event::OBJECT_EXIT, 90));
+    app.engine
+        .as_mut()
+        .unwrap()
+        .globals
+        .insert(("$$allow".into(), 1), calc::Value::int(0));
+    let mut h = harness_for(app);
+    h.run_steps(3);
+    click_input(&mut h, 0);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    assert_eq!(global(&h, "$$exited"), "1");
+    assert_eq!(h.state().m8.focus, Some(100), "no other field entered");
+    assert!(in_field(&h), "the field keeps the focus");
+    h.state_mut()
+        .engine
+        .as_mut()
+        .unwrap()
+        .globals
+        .insert(("$$allow".into(), 1), calc::Value::int(1));
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    assert_eq!(global(&h, "$$exited"), "2");
+    assert_ne!(h.state().m8.focus, Some(100));
+}
+
+/// Script steps fire triggers inside the run: OnModeExit's False cancels
+/// Enter Find Mode (error 20 for the next step), OnViewChange runs after
+/// View As and before the next step; nothing is left queued.
+#[test]
+fn script_steps_fire_triggers() {
+    let mut app = shop_app();
+    script(&mut app, 90, "left", "$$left + 1", Some("0"));
+    script(&mut app, 91, "view", "$$view + 1", None);
+    on_layout(&mut app, trigger(event::MODE_EXIT, 90));
+    on_layout(&mut app, trigger(event::VIEW_CHANGE, 91));
+    let mut find = Step::new(id::ENTER_FIND_MODE);
+    find.params = StepParams::Find {
+        pause: false,
+        restore: false,
+        requests: vec![],
+    };
+    // View As [ Table ] (step 30).
+    let mut view = Step::new(30);
+    view.arg = 3;
+    let set = |app: &App, var: &str, src: &str| {
+        let mut s = Step::new(id::SET_VARIABLE);
+        s.params = StepParams::SetVariable {
+            name: var.into(),
+            value: Some(calc(app, src)),
+            repetition: None,
+        };
+        s
+    };
+    let steps = vec![
+        find,
+        set(&app, "$$err", "Get ( LastError )"),
+        view,
+        set(&app, "$$after", "$$view"),
+    ];
+    app.engine.as_mut().unwrap().scripts.push(Script {
+        id: 95,
+        name: "Main".into(),
+        options: 8,
+        steps,
+    });
+    app.trigger_queue.clear();
+    app.start_run(false, |e, h| e.start(h, 95, None));
+    assert_eq!(app.mode(), Mode::Browse);
+    let g = |app: &App, v: &str| app.engine.as_ref().unwrap().globals[&(v.into(), 1)].to_text();
+    assert_eq!(g(&app, "$$left"), "1");
+    assert_eq!(g(&app, "$$err"), "20");
+    assert_eq!(app.view, View::Table);
+    assert_eq!(
+        g(&app, "$$after"),
+        "1",
+        "OnViewChange ran before the next step"
+    );
+    assert!(app.trigger_queue.is_empty());
+}

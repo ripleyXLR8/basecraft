@@ -135,7 +135,8 @@ cargo run -p fmp12 --example fmscorpus -- in.fmp12 outdir p # edited copies (tab
 ```
 
 Keep batches to about 10 files and check that the VM still answers
-(`ssh … uptime`) between them: a 40-file batch once froze it.
+(`ssh … uptime`) between them. FMDeveloperTool can print its report on a
+damaged file and then never exit; the scripts stop each check after 120 s.
 
 The script copies the file into the VM over SSH (`127.0.0.1:2222`, key
 `~/.ssh/basecraft_vm`) and runs FMDeveloperTool `--checkConsistency` and

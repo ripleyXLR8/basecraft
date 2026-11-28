@@ -4410,6 +4410,70 @@ mod tests {
         std::fs::write(out, bytes).unwrap();
     }
 
+    /// A new file (BaseCraft's own theme) with a field, its label, a text
+    /// and a button drawn on its layout with the theme's default styles:
+    /// what FileMaker must draw with visible text. Written when
+    /// `BASECRAFT_BLANK_DEMO=<out.fmp12>` is set.
+    #[test]
+    fn blank_demo_file() {
+        let Some(out) = std::env::var_os("BASECRAFT_BLANK_DEMO") else {
+            return;
+        };
+        let bytes = fmp12::schema_edit::new_file("Contacts").unwrap();
+        let file = fmp12::File::from_bytes(bytes).unwrap();
+        let mut ed = fmp12::schema_edit::Editor::open(&file).unwrap();
+        let t = ed.table_id("Contacts").unwrap();
+        let spec = fmp12::schema_edit::FieldSpec::new("Name", fmp12::schema::DataType::Text);
+        let f = ed.add_field(t, &spec).unwrap();
+        let file = fmp12::File::from_bytes(ed.finish()).unwrap();
+        let db = engine::Database::load(&file).unwrap();
+        let layouts = db.layouts.clone();
+        let mut d = Doc {
+            name: "Blank".into(),
+            db,
+            layouts,
+            file,
+            path: None,
+            triggers: Default::default(),
+            related_cache: Default::default(),
+        };
+        let mut ds = Designer::new(&d, 0);
+        let to = (ds.layout.table_occurrence & 0xFFF) as u32;
+        let y = ds
+            .layout
+            .parts
+            .iter()
+            .find(|p| p.kind == part::BODY)
+            .unwrap()
+            .top;
+        let b = |t: f64, l: f64, bt: f64, r: f64| Bounds {
+            top: t,
+            left: l,
+            bottom: bt,
+            right: r,
+        };
+        ds.insert_field(&d, b(y + 10.0, 130.0, y + 34.0, 330.0), to, f, true);
+        ds.tool = Tool::Text;
+        ds.create(
+            egui::pos2(20.0, (y + 50.0) as f32),
+            egui::pos2(300.0, (y + 70.0) as f32),
+        );
+        ds.end_text_edit();
+        let id = *ds.sel.iter().next().unwrap();
+        ds.object_mut(id).unwrap().text = Some("Hello from BaseCraft".into());
+        let lid = ds.layout.id;
+        ds.set_button(
+            b(y + 90.0, 20.0, y + 120.0, 160.0),
+            None,
+            "Button",
+            false,
+            lid,
+        );
+        ds.apply(&mut d);
+        let bytes = fmp12::save::save_layouts(&d.file, &d.db.layouts).unwrap();
+        std::fs::write(out, bytes).unwrap();
+    }
+
     /// Layout mode shows stored merge references by name; editing such a
     /// text stores them by reference again and replaces the `.[1]` node.
     #[test]

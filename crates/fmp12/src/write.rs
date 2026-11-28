@@ -93,12 +93,22 @@ pub fn encode(item: &Item) -> Vec<u8> {
     b
 }
 
-fn push_code(e: &[u8], out: &mut Vec<u8>) {
+/// Push of element `d` of `path`. An 8-byte element is `20 FE` + 8 bytes,
+/// except a field index key (`[T].[1].[F].[0|1].[key]`, e.g. a number key
+/// of 12 digits), which FileMaker pushes as `38 08`: FileMaker Server's
+/// consistency check reports the `20 FE` form there as a bad block.
+fn push_code(path: &[Vec<u8>], d: usize, out: &mut Vec<u8>) {
+    let e = &path[d];
+    let index_key = d == 4
+        && path[0].len() == 2
+        && path[0][0] & 0x80 != 0
+        && path[1] == [1]
+        && matches!(path[3].as_slice(), [0] | [1]);
     match e.len() {
         1 => out.push(0x20),
         2 => out.push(0x28),
         3 => out.push(0x30),
-        8 => out.extend_from_slice(&[0x20, 0xFE]),
+        8 if !index_key => out.extend_from_slice(&[0x20, 0xFE]),
         n => out.extend_from_slice(&[0x38, n as u8]),
     }
     out.extend_from_slice(e);
@@ -182,8 +192,8 @@ fn path_delta(from: &[Vec<u8>], to: &[Vec<u8>], out: &mut Vec<u8>) -> usize {
     let common = from.iter().zip(to).take_while(|(a, b)| a == b).count();
     let pops = from.len() - common;
     out.extend(std::iter::repeat_n(0x40, pops));
-    for e in &to[common..] {
-        push_code(e, out);
+    for d in common..to.len() {
+        push_code(to, d, out);
     }
     pops
 }
@@ -339,14 +349,14 @@ pub fn encode_index(seps: &[Sep]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut depth = 0;
     for (i, s) in seps.iter().enumerate() {
-        for (d, e) in s.path.iter().enumerate().skip(depth) {
+        for d in depth..s.path.len() {
             // The element at depth d is popped by the first entry keeping < d + 1.
             // keep[n - 1] is None, so the search always stops by then.
             let j = (i..n)
                 .find(|&j| keep[j].is_none_or(|k| k <= d))
                 .unwrap_or(n - 1);
             let start = out.len();
-            push_code(e, &mut out);
+            push_code(&s.path, d, &mut out);
             if keep[j] != Some(d) {
                 out[start] |= 0xC0;
             }
@@ -553,6 +563,22 @@ pub fn rewrite(file: &File) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 8-byte elements: `20 FE` (a TO cache entry, as FileMaker writes it)
+    /// but `38 08` for a field index key (a 12-digit number's key).
+    #[test]
+    fn eight_byte_pushes() {
+        let key = vec![0x80, 0x0C, 0x23, 0x45, 0x67, 0x89, 0xA1, 0x23];
+        let p = |path: Vec<Vec<u8>>| {
+            let mut out = Vec::new();
+            path_delta(&[], &path, &mut out);
+            out
+        };
+        let ix = p(vec![vec![0x80, 1], vec![1], vec![7], vec![0], key.clone()]);
+        assert_eq!(ix[ix.len() - 10..ix.len() - 8], [0x38, 0x08]);
+        let to = p(vec![vec![0xD0, 0, 1], vec![7], vec![1], key]);
+        assert_eq!(to[to.len() - 10..to.len() - 8], [0x20, 0xFE]);
+    }
 
     /// Every full sector ends with the pops towards the next sector's first
     /// path (FileMaker Server's consistency check, error 805, otherwise):

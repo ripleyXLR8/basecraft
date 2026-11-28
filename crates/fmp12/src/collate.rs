@@ -479,6 +479,16 @@ pub fn name_key(name: &str) -> Option<Vec<u8>> {
     Some(p)
 }
 
+/// Primary weights of `s` (u16 BE per collation element: case and accent
+/// blind), or `None` when it holds a character whose weights are unknown.
+pub fn primary_key(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for c in s.chars() {
+        out.extend(weights(c)?.0.iter().flat_map(|w| w.to_be_bytes()));
+    }
+    Some(out)
+}
+
 /// Key of a field in the field catalog's second index `[T].[3].[1].[6]`:
 /// field type, data type × 4 (+1 when global), then the name key without
 /// its tertiary part.

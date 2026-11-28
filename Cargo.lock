@@ -1452,6 +1452,7 @@ dependencies = [
  "md-5",
  "roxmltree",
  "sha1",
+ "unicode-segmentation",
  "web-time",
 ]
 

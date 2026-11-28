@@ -21,6 +21,11 @@ fn local(name: &str) -> Option<File> {
 /// A tiny file built from scratch: table 130 "T" with text field 1 "Name"
 /// (value index) and number field 2 "N".
 fn synthetic() -> File {
+    synthetic_in(0)
+}
+
+/// [`synthetic`] with index language `lang` (option bytes 4–7).
+fn synthetic_in(lang: u32) -> File {
     use write::{Entry, Item, encode};
     let mut header = vec![0u8; fmp12::SECTOR];
     header[..15].copy_from_slice(&[0, 1, 0, 0, 0, 2, 0, 1, 0, 5, 0, 2, 0, 2, 0xC0]);
@@ -39,6 +44,7 @@ fn synthetic() -> File {
     };
     let mut opts = vec![0u8; 26];
     opts[..2].copy_from_slice(&[1, 1]);
+    opts[4..8].copy_from_slice(&lang.to_be_bytes());
     opts[8] = 0x80; // index Minimal
     let mut num = opts.clone();
     num[1] = 2;
@@ -104,8 +110,8 @@ fn save_add_edit_delete_roundtrip() {
     assert!(name.auto_index());
 }
 
-/// Record key 252 (modification count) is read, and kept by a save that
-/// edits the record.
+/// Record key 252 (modification count) is read, and a save that edits the
+/// record counts one commit more (or the count the caller kept).
 #[test]
 fn modification_counts() {
     use write::{Entry, Item, encode};
@@ -130,10 +136,24 @@ fn modification_counts() {
     );
     let mut second = first;
     second.insert(2, rec("edited"));
-    let f3 = File::from_bytes(save::save_records(&f2, &[(130, second)].into()).unwrap()).unwrap();
+    second.insert(1, rec("a2"));
+    second.insert(3, rec("new"));
+    let f3 = File::from_bytes(save::save_records(&f2, &[(130, second.clone())].into()).unwrap())
+        .unwrap();
+    // Edited: 3 → 4 and 0 → 1; the new record has none.
     assert_eq!(
         schema::modification_counts(&f3, 130).unwrap(),
-        [(2, 3)].into()
+        [(1, 1), (2, 4)].into()
+    );
+    // Counts kept by the caller (commits in the app) win when higher.
+    second.insert(2, rec("again"));
+    let given = [(130, [(2, 9), (3, 2)].into())].into();
+    let f4 =
+        File::from_bytes(save::save_records_counted(&f3, &[(130, second)].into(), &given).unwrap())
+            .unwrap();
+    assert_eq!(
+        schema::modification_counts(&f4, 130).unwrap(),
+        [(1, 1), (2, 9)].into()
     );
 }
 
@@ -191,4 +211,70 @@ fn reencodes_records_byte_for_byte() {
             assert_eq!(ours, theirs, "table {} record {r}", t.id);
         }
     }
+}
+
+/// An indexed text field (English) keeps an index written as FileMaker
+/// builds it (keys checked against FileMaker Pro 26 in `index::tests`),
+/// and stays marked indexed; postings follow edits.
+#[test]
+fn value_index_is_rebuilt() {
+    let f = synthetic_in(21);
+    let rec = |n: &str| std::collections::BTreeMap::from([(1, n.into())]);
+    let index = |f: &File| {
+        let mut keys = std::collections::BTreeMap::new();
+        let mut stats = None;
+        f.walk(|path, c| {
+            let head: Option<Vec<u32>> = path.iter().take(4).map(|p| fmp12::path_int(p)).collect();
+            match (head.as_deref(), path.len(), c) {
+                (Some([130, 1, 1, 0]), 5, c) if !matches!(c, fmp12::Chunk::Marker) => {
+                    let k: String = path[4].iter().map(|b| format!("{b:02x}")).collect();
+                    keys.insert(k, save::read_id_set(c));
+                }
+                (Some([130, 1, 1]), 3, fmp12::Chunk::Kv { key: 16, data }) => {
+                    stats = Some(data.to_vec())
+                }
+                _ => {}
+            }
+        })
+        .unwrap();
+        (keys, stats)
+    };
+    let first = schema::Records::from([
+        (1, rec("Café — crème")),
+        (2, rec("Line\rtwo")),
+        (3, rec("x")),
+        (4, rec("")),
+    ]);
+    let f1 =
+        File::from_bytes(save::save_records(&f, &[(130, first.clone())].into()).unwrap()).unwrap();
+    let (keys, stats) = index(&f1);
+    let want = std::collections::BTreeMap::from([
+        ("01".to_string(), [4].into()),
+        (
+            "01123d120f12a3126b020a022c020a123d13da126b135f126b".into(),
+            [1].into(),
+        ),
+        ("01133012ec136d126b".into(), [2].into()),
+        ("011433148d138e".into(), [2].into()),
+        ("011497".into(), [3].into()),
+    ]);
+    assert_eq!(keys, want);
+    // 5 entries, 5 keys.
+    assert_eq!(
+        stats.unwrap(),
+        [[0, 0, 0, 0, 0, 0, 0, 5], [0, 0, 0, 0, 0, 0, 0, 5]].concat()
+    );
+    let name = &schema::tables(&f1).unwrap()[0].fields[&1];
+    assert_eq!(name.indexing(), schema::Indexing::Minimal);
+    // Record 3 now shares record 1's key; record 2 is gone.
+    let mut second = first;
+    second.insert(3, rec("café — CRÈME"));
+    second.remove(&2);
+    let f2 = File::from_bytes(save::save_records(&f1, &[(130, second)].into()).unwrap()).unwrap();
+    let (keys, _) = index(&f2);
+    assert_eq!(keys.len(), 2);
+    assert_eq!(
+        keys["01123d120f12a3126b020a022c020a123d13da126b135f126b"],
+        [1, 3].into()
+    );
 }

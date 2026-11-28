@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Color32, Rect, Stroke, StrokeKind, Vec2};
-use fmp12::charts::{Chart, Kind, Source};
+use fmp12::charts::{Chart, Kind, Series, Source};
 use fmp12::formats::{Format, num, time};
 use fmp12::layouts::{self as ly, Bounds, Condition, Layout, LayoutObject, kind, op};
 use fmp12::theme::{self, NORMAL, SELF};
@@ -126,10 +126,16 @@ impl ChartEdit {
         c.x_title = opt(&self.x_title)?;
         c.y_title = opt(&self.y_title)?;
         c.x = opt(&self.x)?;
-        for ((v, n), s) in self.series.iter().zip(c.y.iter_mut()) {
-            s.value = req(v)?;
-            s.name = opt(n)?;
-        }
+        c.y = self
+            .series
+            .iter()
+            .map(|(v, n)| {
+                Ok(Series {
+                    value: req(v)?,
+                    name: opt(n)?,
+                })
+            })
+            .collect::<Result<_, String>>()?;
         if c.size.is_some() {
             c.size = Some(req(&self.size)?);
         }
@@ -702,87 +708,109 @@ impl Designer {
             .show(ctx, |ui| {
                 ui.set_min_width(420.0);
                 let bubble = e.chart.kind == Kind::Bubble;
-                egui::Grid::new("chart_setup").num_columns(2).show(ui, |ui| {
-                    ui.label(tr("Chart type"));
-                    let kind_name =
-                        |k: Kind| CHART_KINDS.iter().find(|x| x.0 == k).map_or("", |x| tr(x.1));
-                    egui::ComboBox::from_id_salt("chart_kind")
-                        .selected_text(kind_name(e.chart.kind))
-                        .show_ui(ui, |ui| {
-                            // A bubble chart's size series has no other use.
-                            for (k, n) in CHART_KINDS {
-                                if (k == Kind::Bubble) == bubble {
-                                    ui.selectable_value(&mut e.chart.kind, k, tr(n));
-                                }
-                            }
-                        });
-                    ui.end_row();
-                    for (label, s) in [
-                        ("Title", &mut e.title),
-                        ("X-axis title", &mut e.x_title),
-                        ("Y-axis title", &mut e.y_title),
-                        ("X-axis data", &mut e.x),
-                    ] {
-                        ui.label(tr(label));
-                        ui.add(egui::TextEdit::singleline(s).desired_width(300.0));
-                        ui.end_row();
-                    }
-                    for (i, (v, n)) in e.series.iter_mut().enumerate() {
-                        ui.label(format!("{} {}", tr("Series"), i + 1));
-                        ui.add(egui::TextEdit::singleline(v).desired_width(300.0));
-                        ui.end_row();
-                        ui.label(tr("Series name"));
-                        ui.add(egui::TextEdit::singleline(n).desired_width(300.0));
-                        ui.end_row();
-                    }
-                    if bubble {
-                        ui.label(tr("Bubble size"));
-                        ui.add(egui::TextEdit::singleline(&mut e.size).desired_width(300.0));
-                        ui.end_row();
-                    }
-                    ui.label(tr("Data source"));
-                    let mut src = match e.chart.source {
-                        Source::FoundSet => 0,
-                        Source::CurrentRecord => 1,
-                        Source::Related(_) => 2,
-                    };
-                    ui.vertical(|ui| {
-                        ui.radio_value(&mut src, 0, tr("Current Found Set"));
-                        ui.radio_value(&mut src, 1, tr("Current Record (delimited data)"));
-                        ui.add_enabled_ui(!related.is_empty(), |ui| {
-                            ui.radio_value(&mut src, 2, tr("Related Records"));
-                        });
-                        let mut to = match e.chart.source {
-                            Source::Related(t) => t,
-                            _ => related.first().map_or(0, |r| r.0),
+                egui::Grid::new("chart_setup")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label(tr("Chart type"));
+                        let kind_name = |k: Kind| {
+                            CHART_KINDS
+                                .iter()
+                                .find(|x| x.0 == k)
+                                .map_or("", |x| tr(x.1))
                         };
-                        if src == 2 {
-                            egui::ComboBox::from_id_salt("chart_to")
-                                .selected_text(
-                                    related.iter().find(|r| r.0 == to).map_or("", |r| r.1.as_str()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for (id, n) in &related {
-                                        ui.selectable_value(&mut to, *id, n);
+                        egui::ComboBox::from_id_salt("chart_kind")
+                            .selected_text(kind_name(e.chart.kind))
+                            .show_ui(ui, |ui| {
+                                // A bubble chart's size series has no other use.
+                                for (k, n) in CHART_KINDS {
+                                    if (k == Kind::Bubble) == bubble {
+                                        ui.selectable_value(&mut e.chart.kind, k, tr(n));
                                     }
-                                });
+                                }
+                            });
+                        ui.end_row();
+                        for (label, s) in [
+                            ("Title", &mut e.title),
+                            ("X-axis title", &mut e.x_title),
+                            ("Y-axis title", &mut e.y_title),
+                            ("X-axis data", &mut e.x),
+                        ] {
+                            ui.label(tr(label));
+                            ui.add(egui::TextEdit::singleline(s).desired_width(300.0));
+                            ui.end_row();
                         }
-                        e.chart.source = match src {
-                            0 => Source::FoundSet,
-                            1 => Source::CurrentRecord,
-                            _ => Source::Related(to),
+                        let mut remove = None;
+                        let many = e.series.len() > 1;
+                        for (i, (v, n)) in e.series.iter_mut().enumerate() {
+                            ui.label(format!("{} {}", tr("Series"), i + 1));
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(v).desired_width(300.0));
+                                // FileMaker keeps at least one series.
+                                if ui.add_enabled(many, egui::Button::new("−")).clicked() {
+                                    remove = Some(i);
+                                }
+                            });
+                            ui.end_row();
+                            ui.label(tr("Series name"));
+                            ui.add(egui::TextEdit::singleline(n).desired_width(300.0));
+                            ui.end_row();
+                        }
+                        if let Some(i) = remove {
+                            e.series.remove(i);
+                        }
+                        ui.label("");
+                        if ui.button(tr("Add Series")).clicked() {
+                            e.series.push((String::new(), String::new()));
+                        }
+                        ui.end_row();
+                        if bubble {
+                            ui.label(tr("Bubble size"));
+                            ui.add(egui::TextEdit::singleline(&mut e.size).desired_width(300.0));
+                            ui.end_row();
+                        }
+                        ui.label(tr("Data source"));
+                        let mut src = match e.chart.source {
+                            Source::FoundSet => 0,
+                            Source::CurrentRecord => 1,
+                            Source::Related(_) => 2,
                         };
+                        ui.vertical(|ui| {
+                            ui.radio_value(&mut src, 0, tr("Current Found Set"));
+                            ui.radio_value(&mut src, 1, tr("Current Record (delimited data)"));
+                            ui.add_enabled_ui(!related.is_empty(), |ui| {
+                                ui.radio_value(&mut src, 2, tr("Related Records"));
+                            });
+                            let mut to = match e.chart.source {
+                                Source::Related(t) => t,
+                                _ => related.first().map_or(0, |r| r.0),
+                            };
+                            if src == 2 {
+                                egui::ComboBox::from_id_salt("chart_to")
+                                    .selected_text(
+                                        related
+                                            .iter()
+                                            .find(|r| r.0 == to)
+                                            .map_or("", |r| r.1.as_str()),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for (id, n) in &related {
+                                            ui.selectable_value(&mut to, *id, n);
+                                        }
+                                    });
+                            }
+                            e.chart.source = match src {
+                                0 => Source::FoundSet,
+                                1 => Source::CurrentRecord,
+                                _ => Source::Related(to),
+                            };
+                        });
+                        ui.end_row();
                     });
-                    ui.end_row();
-                });
                 ui.checkbox(&mut e.chart.legend, tr("Show legend"));
                 ui.checkbox(&mut e.chart.data_points, tr("Show data points on chart"));
                 if let Some(err) = &e.error {
                     ui.colored_label(Color32::from_rgb(190, 40, 40), err);
                 }
-                ui.weak(tr(
-                    "Series can be edited, not added or removed (the chart's per-series settings are not decoded).",
-                ));
                 ui.horizontal(|ui| {
                     if ui.button(tr("OK")).clicked() {
                         done = Some(true);
@@ -2030,6 +2058,89 @@ pub(crate) mod tests {
         assert_eq!(calc_text(&d, c.y[1].name.as_ref().unwrap()), "\"Costs\"");
         assert_eq!((c.kind, c.source), (Kind::Area, Source::CurrentRecord));
         assert!(c.x_title.is_none());
+    }
+
+    /// Chart Setup adds series (five: the third's name, fourth's and
+    /// fifth's values use slots 138, 139 and 141, which a hide condition and
+    /// the settings record share as one-byte sub-nodes) and removes them;
+    /// the record grows 75 bytes per series. `BASECRAFT_CHART_DEMO=<dir>`
+    /// writes both files for FileMaker Server's consistency check.
+    #[test]
+    fn chart_series_added_and_removed() {
+        let p = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../fmp12/tests/fixtures/charts.fmp12"
+        );
+        let file = fmp12::File::open(p).unwrap();
+        let db = engine::Database::load(&file).unwrap();
+        let layouts = db.layouts.clone();
+        let mut d = Doc {
+            name: "charts".into(),
+            db,
+            layouts,
+            file,
+            path: None,
+            triggers: Default::default(),
+            related_cache: Default::default(),
+        };
+        let i = d.layouts.iter().position(|l| l.id == 1).unwrap();
+        let save = |d: &mut Doc, ds: &mut Designer| {
+            ds.apply(d);
+            let out = fmp12::save::save_layouts(&d.file, &d.db.layouts).unwrap();
+            fmp12::File::from_bytes(out).unwrap()
+        };
+        let mut ds = Designer::new(&d, i);
+        ds.open_chart_setup(2, &d);
+        let mut e = ds.extra.chart.take().unwrap();
+        for k in 3..=5 {
+            e.series.push((format!("{k}"), format!("\"S{k}\"")));
+        }
+        ds.set_chart(2, e.build(&d).unwrap());
+        let hide = compile(&d, "Get ( FoundCount ) = 0").unwrap();
+        ds.object_mut(2).unwrap().hide = Some(hide.clone());
+        let f = save(&mut d, &mut ds);
+        let c = &fmp12::charts::charts(&f).unwrap()[&(1, 2)];
+        assert_eq!(c.y.len(), 5);
+        let names: Vec<String> = c.y[2..]
+            .iter()
+            .map(|s| calc_text(&d, s.name.as_ref().unwrap()))
+            .collect();
+        assert_eq!(names, ["\"S3\"", "\"S4\"", "\"S5\""]);
+        assert_eq!(calc_text(&d, &c.y[4].value), "5");
+        assert_eq!(c.record.len(), 1185 + 3 * 75);
+        // The record stays in `.[8B].[00 0A]` (FileMaker ignores it
+        // elsewhere); the fourth series' value is `.[00 0B]`.
+        let es = fmp12::write::entries(&f).unwrap();
+        let under = |a: &[u8], b: &[u8]| {
+            es.iter()
+                .any(|x| x.path.len() == 7 && x.path[5] == a && x.path[6] == b && x.item[0] != 0x80)
+        };
+        assert!(under(&[0x8B], &[0, 0x0A]));
+        assert!(under(&[0, 0x0B], &[0x05]));
+        assert!(!under(&[0, 0x0B], &[0, 0x0A]));
+        let back = fmp12::layouts::layouts(&f).unwrap();
+        let o = back[i].objects.iter().find(|o| o.id == 2).unwrap();
+        assert_eq!(o.hide.as_ref(), Some(&hide));
+        assert!(o.conditions.is_empty());
+        if let Some(dir) = std::env::var_os("BASECRAFT_CHART_DEMO") {
+            std::fs::write(std::path::Path::new(&dir).join("chart5.fmp12"), f.bytes()).unwrap();
+        }
+        // Down to one series.
+        d.file = f;
+        let mut ds = Designer::new(&d, i);
+        ds.open_chart_setup(2, &d);
+        let mut e = ds.extra.chart.take().unwrap();
+        e.series.truncate(1);
+        ds.set_chart(2, e.build(&d).unwrap());
+        let f = save(&mut d, &mut ds);
+        let c = &fmp12::charts::charts(&f).unwrap()[&(1, 2)];
+        assert_eq!((c.y.len(), c.record.len()), (1, 1110));
+        let back = fmp12::layouts::layouts(&f).unwrap();
+        let o = back[i].objects.iter().find(|o| o.id == 2).unwrap();
+        assert_eq!(o.hide.as_ref(), Some(&hide));
+        if let Some(dir) = std::env::var_os("BASECRAFT_CHART_DEMO") {
+            std::fs::write(std::path::Path::new(&dir).join("chart1.fmp12"), f.bytes()).unwrap();
+        }
     }
 
     /// `BASECRAFT_OBJECTS_DEMO=<out.fmp12>`: writes the demo for

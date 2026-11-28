@@ -50,6 +50,7 @@ pub struct State {
     pub opened: Option<String>,
     /// Last print job: the PDF file and whether it went to the viewer
     /// (with dialog) rather than the default printer (tests).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub printed: Option<(std::path::PathBuf, bool)>,
     /// Data file steps: the file's folder, writes the user agreed to.
     pub disk: script::files::Disk,

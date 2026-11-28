@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Chunk, Error, File, int_path, path_int, text};
+use crate::{Chunk, Error, File, int_path, path_int};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TableOccurrence {
@@ -293,17 +293,20 @@ pub fn table_occurrences(file: &File) -> Result<Vec<TableOccurrence>, Error> {
     let mut out: BTreeMap<u32, TableOccurrence> = BTreeMap::new();
     file.walk(|path, c| {
         let Some(p) = int_path(path) else { return };
-        let ([3, 17, 5, id], Chunk::Kv { key, data }) = (p.as_slice(), c) else {
+        let ([3, 17, 5, id, rel @ ..], Chunk::Kv { key, data }) = (p.as_slice(), c) else {
             return;
         };
         let to = out.entry(*id).or_insert_with(|| TableOccurrence {
             id: *id,
             ..Default::default()
         });
-        match key {
-            16 => to.name = text(data),
-            2 => read_occurrence(to, data),
-            _ => {}
+        if let Some((first, s)) = crate::schema::name_part(rel, c) {
+            if first {
+                to.name.clear();
+            }
+            to.name.push_str(&s);
+        } else if rel.is_empty() && *key == 2 {
+            read_occurrence(to, data);
         }
     })?;
     Ok(out.into_values().collect())

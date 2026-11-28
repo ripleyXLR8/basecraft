@@ -630,12 +630,28 @@ impl Editor {
             .map(|(_, d)| d)
     }
 
+    /// Name of a node: key 16, or its long form `[path].[16]` keys 1…n.
+    fn name_at(&self, path: &[Vec<u8>]) -> Option<String> {
+        if let Some(d) = self.get(path, 16) {
+            return Some(crate::text(&d));
+        }
+        let mut parts = self.kvs(&[path, &[path_elem(16)]].concat());
+        parts.retain(|(k, _)| *k >= 1);
+        parts.sort_by_key(|(k, _)| *k);
+        let bytes: Vec<u8> = parts.into_iter().flat_map(|(_, d)| d).collect();
+        (!bytes.is_empty()).then(|| crate::text(&bytes))
+    }
+
     fn remove_kv(&mut self, path: &[Vec<u8>], key: u32) {
         self.entries
             .retain(|e| !(e.path == path && entry_kv(e).is_some_and(|(k, _)| k == key)));
     }
 
     fn set(&mut self, path: Vec<Vec<u8>>, key: u32, data: Vec<u8>) {
+        if key == 16 {
+            // A name written inline replaces its long form `[path].[16]`.
+            self.remove_tree(&[path.clone(), vec![path_elem(16)]].concat());
+        }
         self.remove_kv(&path, key);
         self.ensure(path.clone());
         self.entries.push(kv(path, key, data));
@@ -814,6 +830,9 @@ impl Editor {
         let mut tables: BTreeMap<u32, schema::Table> = BTreeMap::new();
         let mut tos: BTreeMap<u32, TableOccurrence> = BTreeMap::new();
         let mut fields: BTreeMap<(u32, u32), Field> = BTreeMap::new();
+        // Names stored as long values in `[node].[16]` (keys 1…n), as in
+        // FileMaker's Japanese, Korean and Chinese templates (FORMAT.md §4).
+        let mut long: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<u8>>> = BTreeMap::new();
         for e in &self.entries {
             let Some(p) = int_path(&e.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>()) else {
                 continue;
@@ -822,6 +841,9 @@ impl Editor {
                 continue;
             };
             match (p.as_slice(), key) {
+                ([3, 16 | 17, 5, _, 16] | [_, 3, 5, _, 16], 1..) if p[0] >= 128 || p[1] != 3 => {
+                    long.entry(p[..4].to_vec()).or_default().insert(key, data);
+                }
                 ([3, 16, 5, t], 16) => {
                     tables
                         .entry(*t)
@@ -856,6 +878,31 @@ impl Editor {
                         _ => x.summary_raw = data,
                     }
                 }
+                _ => {}
+            }
+        }
+        for (p, parts) in long {
+            let name = crate::text(&parts.into_values().flatten().collect::<Vec<u8>>());
+            match p.as_slice() {
+                [3, 16, 5, t] => {
+                    tables
+                        .entry(*t)
+                        .or_insert_with(|| schema::Table {
+                            id: *t,
+                            name: String::new(),
+                            fields: BTreeMap::new(),
+                        })
+                        .name = name
+                }
+                [3, 17, 5, to] => {
+                    tos.entry(*to)
+                        .or_insert_with(|| TableOccurrence {
+                            id: *to,
+                            ..Default::default()
+                        })
+                        .name = name
+                }
+                [t, 3, 5, f] => fields.entry((*t, *f)).or_default().name = name,
                 _ => {}
             }
         }
@@ -1288,7 +1335,7 @@ impl Editor {
             self.cat_rename(&Self::occurrences_cat(), o.id, name);
             for l in self.layouts_on(o.id) {
                 let lp = sp(&[4, 5, l]);
-                if self.get(&lp, 16).map(|d| crate::text(&d)) == Some(old.clone()) {
+                if self.name_at(&lp).as_ref() == Some(&old) {
                     self.set(lp.clone(), 16, encode_text(name));
                     self.bump(lp);
                     self.set(sp(&[4, 1, 7, l]), 16, encode_text(name));

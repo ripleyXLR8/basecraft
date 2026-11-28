@@ -489,7 +489,7 @@ fn int_value_key(key: u32, table: &Table) -> Option<u32> {
 }
 /// Accumulates a value stored either inline (key 16 of `node`) or as a long
 /// value in sub-path `[node..., 16]` split over keys/segments 1, 2, ….
-fn name_part(rel: &[u32], c: &Chunk) -> Option<(bool, String)> {
+pub(crate) fn name_part(rel: &[u32], c: &Chunk) -> Option<(bool, String)> {
     match (rel, c) {
         ([], Chunk::Kv { key: 16, data }) => Some((true, text(data))),
         ([16], Chunk::Kv { key, data }) if *key >= 1 => Some((*key == 1, text(data))),

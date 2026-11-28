@@ -1615,6 +1615,11 @@ of the templates. Names with other characters get no index entry.
 FileMaker opens a file whose name indexes lack entries; it does not
 rebuild them.
 
+The Japanese, Korean and Chinese templates keep even short names in the
+long form `[node].[16]` (key 0 = length, keys 1…n = text), not in key 16.
+A name written inline must replace that subtree: a node with both forms
+fails FileMaker Server's consistency check (error 805, "bad blocks").
+
 ### A new table
 
 FileMaker's Manage Database › Tables › Create writes:

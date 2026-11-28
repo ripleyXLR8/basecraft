@@ -24,7 +24,7 @@ dir=$(ssh "${opts[@]}" -p "$port" "$host" 'mktemp -d')
 trap 'ssh "${opts[@]}" -p "$port" "$host" "rm -rf $dir"' EXIT
 scp -q "${opts[@]}" -P "$port" "$f" "$host:$dir/check.fmp12"
 status=0
-report=$(ssh "${opts[@]}" -p "$port" "$host" "cd $dir && '$tool' --checkConsistency check.fmp12" 2>&1) || status=$?
+report=$(ssh "${opts[@]}" -p "$port" "$host" "cd $dir && timeout -k 5 120 '$tool' --checkConsistency check.fmp12" 2>&1) || status=$?
 echo "$report"
 grep -q "found no problems" <<<"$report" || status=1
 if [ -n "$out" ]; then

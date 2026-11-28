@@ -468,3 +468,59 @@ fn lookups_and_more_field_options_round_trip() {
     assert_eq!(ed.field_spec(i, wa).unwrap(), weighted);
     assert_eq!(ed.field_spec(i, fr).unwrap(), share);
 }
+
+/// Names kept as long values in `[node].[16]` (FileMaker's Japanese,
+/// Korean and Chinese templates): the editor finds and renames them.
+#[test]
+fn long_form_names() {
+    use fmp12::save::{encode_text, path_elem};
+    use fmp12::write::{Entry, Item, encode};
+    let file = fmp12::File::from_bytes(fmp12::schema_edit::new_file("T").unwrap()).unwrap();
+    let mut ed = Editor::open(&file).unwrap();
+    let (t, _, _) = ed.add_table("People").unwrap();
+    let f = ed
+        .add_field(t, &FieldSpec::new("Name", DataType::Text))
+        .unwrap();
+    let file = reopen(ed.finish());
+    // Moves every name into its long form, as FileMaker writes them.
+    let mut es = fmp12::write::entries(&file).unwrap();
+    for name in ["People", "Name"] {
+        let inline = encode(&Item::Kv {
+            key: 16,
+            data: encode_text(name),
+        });
+        let text = encode_text(name);
+        let (a, b) = text.split_at(2);
+        while let Some(at) = es.iter().position(|e| e.item == inline) {
+            let sub = [es.remove(at).path, vec![path_elem(16)]].concat();
+            es.push(Entry {
+                path: sub.clone(),
+                item: vec![0x80],
+            });
+            for (key, data) in [(1, a.to_vec()), (2, b.to_vec())] {
+                es.push(Entry {
+                    path: sub.clone(),
+                    item: encode(&Item::Kv { key, data }),
+                });
+            }
+        }
+    }
+    fmp12::write::sort(&mut es);
+    let file = reopen(fmp12::write::build(&file.bytes()[..fmp12::SECTOR], &es));
+    let mut ed = Editor::open(&file).unwrap();
+    assert_eq!(ed.table_id("People"), Some(t));
+    assert_eq!(ed.field_id(t, "Name"), Some(f));
+    ed.rename_table(t, "Folks").unwrap();
+    ed.rename_field(t, f, "Nom").unwrap();
+    let file = reopen(ed.finish());
+    let tables = fmp12::schema::tables(&file).unwrap();
+    let tb = tables.iter().find(|x| x.id == t).unwrap();
+    assert_eq!(tb.name, "Folks");
+    assert_eq!(tb.fields[&f].name, "Nom");
+    // The occurrence and layout named after the table follow it.
+    let tos = fmp12::graph::table_occurrences(&file).unwrap();
+    assert!(tos.iter().any(|o| o.name == "Folks"));
+    let lays = fmp12::layouts::layouts(&file).unwrap();
+    assert!(lays.iter().any(|l| l.name == "Folks"));
+    assert!(!lays.iter().any(|l| l.name.contains("People")));
+}

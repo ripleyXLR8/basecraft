@@ -711,12 +711,17 @@ pub fn scripts(file: &File) -> Result<Vec<Script>, Error> {
         } else {
             r.list
         };
+        // A step without a number falls back to its position, unless
+        // another step names that parameter node (older files number only
+        // the steps that have parameters).
+        let named: BTreeSet<u32> = list.chunks(STEP_LEN).filter_map(step_number).collect();
         s.steps = list
             .chunks(STEP_LEN)
             .enumerate()
             .map(|(i, c)| {
-                let n = step_number(c).unwrap_or(i as u32 + 1);
-                step_from(c.to_vec(), r.params.remove(&n).unwrap_or_default())
+                let n = step_number(c).or(Some(i as u32 + 1).filter(|n| !named.contains(n)));
+                let params = n.and_then(|n| r.params.remove(&n)).unwrap_or_default();
+                step_from(c.to_vec(), params)
             })
             .collect();
     }
@@ -758,7 +763,8 @@ fn action_step(m: Msg, params: RawParams) -> Option<Step> {
 
 /// A new step aimed at a layout (Go to Layout [layout]) or a script
 /// (Perform Script [script]), as FileMaker writes them on buttons: the
-/// target is the inline slot `len 01 path-int`. The byte after the slot is
+/// target is the inline slot `len n path-int` (n = 1, or 2 from id 128 on).
+/// The byte after the slot is
 /// `BE` or `6F` in FileMaker's files whatever the target (unused).
 pub fn targeted_step(step: u16, target: u32) -> Step {
     let (arg, options) = match step {
@@ -768,7 +774,7 @@ pub fn targeted_step(step: u16, target: u32) -> Step {
     let mut r = vec![0u8; STEP_LEN];
     let e = crate::save::path_elem(target);
     r[6] = 1 + e.len() as u8;
-    r[7] = 1;
+    r[7] = e.len() as u8;
     r[8..8 + e.len()].copy_from_slice(&e);
     r[8 + e.len()] = 0xBE;
     r[20..22].copy_from_slice(&step.to_be_bytes());

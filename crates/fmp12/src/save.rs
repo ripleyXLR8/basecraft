@@ -482,7 +482,7 @@ pub(crate) fn fresh_uuid(seed: u64) -> Vec<u8> {
 pub(crate) fn index_ref(v: &[u8]) -> Option<u32> {
     let n = *v.get(1)? as usize;
     match v.get(2..2 + n)? {
-        [1, rest @ ..] => crate::path_int(rest),
+        [1 | 2, rest @ ..] => crate::path_int(rest),
         _ => None,
     }
 }

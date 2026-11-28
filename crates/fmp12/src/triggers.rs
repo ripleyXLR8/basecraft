@@ -147,7 +147,8 @@ fn slot(b: &[u8], i: usize) -> Option<(Option<u32>, usize)> {
     let s = b.get(i + 1..i + 1 + n)?;
     let id = match s {
         [] => None,
-        [1, rest @ ..] => Some(path_int(rest)?),
+        // The byte count of the id: `01 7F` = 127, `02 80 23` = 163.
+        [1 | 2, rest @ ..] => Some(path_int(rest)?),
         _ => return None,
     };
     Some((id, 1 + n))
@@ -176,7 +177,7 @@ pub fn encode_record(t: &Trigger) -> Vec<u8> {
     let mut out = t.event.to_be_bytes().to_vec();
     let e = crate::save::path_elem(t.script);
     out.push(1 + e.len() as u8);
-    out.push(1);
+    out.push(e.len() as u8);
     out.extend(e);
     out.push(0);
     out.extend(t.modes.to_be_bytes());
@@ -294,6 +295,16 @@ mod tests {
         let t = parse_record(&new).unwrap();
         assert_eq!((t.event, t.script, t.modes), (5, 7, mode::FIND));
         assert_eq!(encode_record(&t), new);
+    }
+
+    /// Script ids from 128 on take two bytes (`02 80 23` = 163), as in a
+    /// 2016 file's OnLayoutEnter.
+    #[test]
+    fn two_byte_script_id() {
+        let b = [0, 0x65, 3, 2, 0x80, 0x23, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        let t = parse_record(&b).unwrap();
+        assert_eq!((t.event, t.script, t.modes), (101, 163, mode::BROWSE));
+        assert_eq!(parse_record(&encode_record(&t)).unwrap().script, 163);
     }
 
     #[test]

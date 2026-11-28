@@ -516,8 +516,7 @@ impl App {
                 }
                 Mode::Preview => {
                     if ui.button(tr("Exit Preview")).clicked() {
-                        self.mode = Some(Mode::Browse);
-                        self.fire(event::MODE_ENTER);
+                        self.browse_mode();
                     }
                 }
                 Mode::Layout => {}
@@ -624,8 +623,9 @@ impl App {
                 (View::List, "List"),
                 (View::Table, "Table"),
             ] {
-                if ui.selectable_label(self.view == v, tr(label)).clicked() {
+                if ui.selectable_label(self.view == v, tr(label)).clicked() && self.view != v {
                     self.view = v;
+                    self.fire(event::VIEW_CHANGE);
                 }
             }
             if find {
@@ -670,9 +670,12 @@ impl App {
 
     pub fn toggle_preview(&mut self) {
         if self.mode() == Mode::Preview {
+            if !self.mode_exit() {
+                return;
+            }
             self.mode = Some(Mode::Browse);
             self.fire(event::MODE_ENTER);
-        } else if self.mode() != Mode::Layout && self.commit() {
+        } else if self.mode() != Mode::Layout && self.commit() && self.mode_exit() {
             self.mode = Some(Mode::Preview);
             self.page = 0;
             self.fire(event::MODE_ENTER);
@@ -684,6 +687,7 @@ impl App {
         match self.mode() {
             Mode::Layout => self.leave_layout(design::Then::Exit),
             Mode::Browse => {}
+            _ if !self.mode_exit() => {}
             _ => {
                 self.mode = Some(Mode::Browse);
                 self.fire(event::MODE_ENTER);
@@ -692,6 +696,9 @@ impl App {
     }
 
     fn cancel_find(&mut self) {
+        if !self.mode_exit() {
+            return;
+        }
         self.mode = Some(Mode::Browse);
         self.fire(event::MODE_ENTER);
     }
@@ -746,6 +753,9 @@ impl App {
                 String::new(),
                 tx("No records match this find criteria.").into(),
             ));
+            return;
+        }
+        if !self.mode_exit() {
             return;
         }
         self.found.insert(t, found);

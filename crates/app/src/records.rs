@@ -339,6 +339,8 @@ impl App {
     fn delete_records(&mut self, records: &[usize]) {
         let Some(t) = self.table() else { return };
         let ids = self.found_ids();
+        // OnWindowTransaction reads the records before they go.
+        self.window_transaction("Deleted", t, records);
         let Some(d) = self.doc.as_mut() else { return };
         let Some(tbl) = d.db.table(t) else { return };
         let rids: Vec<u32> = records
@@ -407,7 +409,7 @@ impl App {
             self.enter_find();
             return;
         }
-        if !self.commit() {
+        if !self.commit() || !self.mode_exit() {
             return;
         }
         self.mode = Some(Mode::Find);

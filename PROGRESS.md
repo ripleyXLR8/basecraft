@@ -24,7 +24,7 @@ counts asserted by tests), implemented / partial / missing:
 
 | Functions | `Get()` flags | Script steps | Triggers | Layout objects | Control styles | Error codes raised |
 |----------:|--------------:|-------------:|---------:|---------------:|---------------:|-------------------:|
-| 197 / 37 / 0 of 234 | 85 / 13 / 41 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 9 / 0 / 17 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 58 of 300 |
+| 197 / 37 / 0 of 234 | 85 / 13 / 41 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 22 / 0 / 4 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 58 of 300 |
 
 ## M1 — Reading `.fmp12`
 
@@ -419,6 +419,7 @@ Engine API for the app (not wired in `crates/app` yet):
 | Custom dialogs: modal with title, message, input fields and buttons (button 1 on the right, Enter); the script waits | ✅ |
 | Pause/Resume Script: "Script paused" with Continue / Cancel in the status area; timed pauses continue by themselves | ✅ |
 | Script triggers run: OnLayoutEnter/Exit, OnRecordLoad, OnModeEnter, OnRecordCommit (user actions and layout changes by scripts), OnObjectEnter/Modify/Exit on fields, OnFirstWindowOpen; queued, one at a time, no trigger loops | ✅ (Contacts sorts by name when opened) |
+| More triggers (`crates/app/src/triggers.rs`): "pre" triggers run at once and a False result cancels the event: OnObjectValidate (focus stays in the field), OnObjectKeystroke then OnLayoutKeystroke (keystroke dropped; `Get ( TriggerKeystroke / TriggerModifierKeys )`), OnRecordRevert, OnModeExit, OnPanelSwitch (`Get ( TriggerCurrentPanel / TriggerTargetPanel )`, tab and slide controls), OnWindowClose, OnLastWindowClose; queued: OnObjectSave, OnViewChange, OnLayoutSizeChange, OnWindowOpen (New Window, by the user or a script), OnWindowTransaction (FileMaker's JSON parameter on commit and delete). Not fired, no such event on a desktop client: OnGestureTap, OnExternalCommandReceived, OnObjectAVPlayerChange, OnFileAVPlayerChange (FileMaker Go) | ✅ 🔸 a pre trigger whose script waits (dialog) does not hold the event; OnWindowClose of a background window runs in the front window; a first commit is "Modified", not "New"; triggers are not fired by script steps (Revert Record, Close Window, Go to Object); OnObjectExit is still queued, so it cannot keep the focus |
 | Script Workspace (Scripts › Script Workspace…, Ctrl+Shift+S): script list with folders, step text with indentation and greyed disabled steps, palette by category with search, add / delete / duplicate / disable / move (drag or buttons), new / rename / delete script, Run | ✅ |
 | Workspace step editors: Set Field, Set Variable, If / Else If / Exit Loop If, Go to Layout, Go to Record, Perform Script, Show Custom Dialog, Sort, Perform Find, Enter Find Mode, Comment, Commit, Insert Text, Go to Field/Object, Pause/Resume, Refresh Window; calculation editor with fields, functions and Get flags | ✅ |
 | Data Viewer (Tools menu): watch expressions evaluated in the window's context (Get functions, $$ globals) | ✅ |

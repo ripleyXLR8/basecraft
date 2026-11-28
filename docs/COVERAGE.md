@@ -16,7 +16,7 @@ test until this page and the test are updated together.
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
 | `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 85 | 13 | 41 | `cargo test -p script get_coverage -- --nocapture` |
 | Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 23 | 0 (+71 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
-| Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 9 | 0 | 17 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
+| Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
 | Field control styles | [control_styles.txt](reference/control_styles.txt) | 7 | 3 | 3 | 1 | `cargo test -p basecraft control_style_coverage -- --nocapture` |
 | Error codes | [error_codes.txt](reference/error_codes.txt) | 300 | 58 raised | — | 242 never raised | `cargo test -p basecraft error_code_coverage -- --nocapture` |
@@ -53,10 +53,10 @@ decompiled.
    `Get ( WindowContentWidth/Height )`, `Get ( DesktopPath/DocumentsPath/TemporaryPath )`**: common
    in auto-enter keys and scripts; they fail with error 1225 ("needs a host") where FileMaker
    answers. `Get ( PrivilegeSetName )` does not even compile in a script.
-2. **Script triggers that are never fired**: OnObjectSave, OnObjectValidate,
-   OnObjectKeystroke, OnLayoutKeystroke, OnRecordRevert, OnModeExit, OnViewChange,
-   OnPanelSwitch, OnWindowOpen, OnWindowClose, OnLastWindowClose, OnLayoutSizeChange,
-   OnWindowTransaction. They are read from the file but never run their script.
+2. **Script triggers fired by script steps**: triggers fire on user actions; of the steps,
+   only a layout change, New Window and a view change fire them (FileMaker also fires
+   OnModeEnter/Exit, OnRecordRevert, OnWindowClose… for Enter Find Mode, Revert Record,
+   Close Window…).
 3. **Checkbox sets, radio button sets and drop-down calendars** show as edit boxes in
    Browse mode (PROGRESS.md M4).
 4. **Set Revert Transaction on Error** does nothing, and **Perform Find** drops criteria
@@ -130,16 +130,21 @@ Web Viewer Cookies (no web viewer).
 
 FileMaker's desktop error by design (71): listed in PROGRESS.md M5, "Step coverage".
 
-## Script triggers: never fired (17)
+## Script triggers: never fired (4)
 
-4 OnObjectSave, 5 OnObjectKeystroke, 6 OnObjectValidate, 7 OnPanelSwitch,
-8 OnObjectAVPlayerChange, 102 OnLayoutKeystroke, 105 OnRecordRevert, 107 OnModeExit,
-110 OnViewChange, 111 OnLayoutSizeChange, 112 OnGestureTap, 113 OnExternalCommandReceived,
-202 OnLastWindowClose, 204 OnWindowOpen, 205 OnWindowClose, 206 OnFileAVPlayerChange,
-209 OnWindowTransaction.
+8 OnObjectAVPlayerChange, 112 OnGestureTap, 113 OnExternalCommandReceived,
+206 OnFileAVPlayerChange: their events do not happen on a desktop client (the AVPlayer
+steps play media on FileMaker Go only, and gestures and lock-screen or remote commands
+are FileMaker Go's), so there is nothing to fire them on.
 
-Fired (9): OnObjectEnter, OnObjectExit, OnObjectModify, OnLayoutEnter, OnLayoutExit,
-OnRecordLoad, OnRecordCommit, OnModeEnter, OnFirstWindowOpen.
+Fired (22): OnObjectEnter, OnObjectExit, OnObjectModify, OnObjectSave, OnObjectKeystroke,
+OnObjectValidate, OnPanelSwitch, OnLayoutEnter, OnLayoutKeystroke, OnRecordLoad,
+OnRecordCommit, OnRecordRevert, OnModeEnter, OnModeExit, OnLayoutExit, OnViewChange,
+OnLayoutSizeChange, OnFirstWindowOpen, OnLastWindowClose, OnWindowOpen, OnWindowClose,
+OnWindowTransaction. The "pre" ones (OnObjectValidate, OnObjectKeystroke,
+OnLayoutKeystroke, OnRecordRevert, OnModeExit, OnPanelSwitch, OnWindowClose,
+OnLastWindowClose) run their script at once, and a False result (Exit Script) cancels
+the event; the others are queued. Limits: PROGRESS.md, "More triggers".
 
 ## Layout objects and control styles
 

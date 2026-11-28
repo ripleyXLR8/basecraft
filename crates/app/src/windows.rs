@@ -225,6 +225,9 @@ impl App {
             self.leave_layout(design::Then::Exit);
             return;
         }
+        if !self.window_close(name) {
+            return;
+        }
         if name != self.front_name() {
             if let Some(i) = self.bg_index(name)
                 && let Some(e) = self.engine.as_mut()

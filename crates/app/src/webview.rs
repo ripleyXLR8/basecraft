@@ -1,7 +1,8 @@
 //! Web viewers in Browse mode: a native child webview (wry: WebView2 on
 //! Windows, WKWebView on macOS) over the object's rectangle in the main
-//! window. Elsewhere (Linux, the other OS windows, the browser, the UI
-//! tests) the placeholder of `objects.rs` shows.
+//! window; in the web version a sandboxed `<iframe>` over the canvas
+//! (`iframe`). Elsewhere (Linux, the other OS windows, the UI tests)
+//! the placeholder of `objects.rs` shows.
 //!
 //! Each frame `objects::web_viewer` asks for the web viewers it drew
 //! ([`want`]); [`sync`] then creates, moves, hides and destroys the
@@ -95,7 +96,7 @@ thread_local! {
 }
 
 /// Live webviews on this platform.
-const NATIVE: bool = cfg!(any(windows, target_os = "macos"));
+const NATIVE: bool = cfg!(any(windows, target_os = "macos", target_arch = "wasm32"));
 
 /// A web viewer drawn this frame.
 pub fn want(w: Want) {
@@ -143,7 +144,12 @@ pub fn sync(ctx: &egui::Context, frame: &eframe::Frame) {
             });
             s.context = Some(wc);
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = frame;
+            s.update(hide, &mut |w| iframe::create(w, inbox.clone(), ctx.clone()));
+        }
+        #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
         {
             let _ = (frame, inbox);
             s.update(hide, &mut |_| None);
@@ -354,7 +360,10 @@ fn unescape(s: &str) -> Option<String> {
 /// The script run in each page before its own: reports the page's
 /// source once loaded, adds `window.FileMaker` when the web viewer lets
 /// JavaScript perform scripts, and swallows input when interaction is off.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_arch = "wasm32")),
+    allow(dead_code)
+)]
 pub fn bridge(flags: u64) -> String {
     let mut js = String::from(
         "(function () {\n\
@@ -447,6 +456,154 @@ mod native {
             .build_as_child(parent)
             .ok()
             .map(|v| Box::new(Wry(v)) as Box<dyn View>)
+    }
+}
+
+/// Web version: the address an iframe loads. Into a `data:text/html`
+/// page (not base64) goes the bridge: `window.ipc` posts to BaseCraft,
+/// and Perform JavaScript's calls posted by BaseCraft run. Other pages
+/// are another origin BaseCraft cannot reach: no bridge.
+#[cfg_attr(not(any(test, target_arch = "wasm32")), allow(dead_code))]
+pub fn inject(url: &str, flags: u64) -> String {
+    let Some((head, body)) = url.split_once(',') else {
+        return url.into();
+    };
+    let h = head.to_ascii_lowercase();
+    if !h.starts_with("data:text/html") || h.ends_with(";base64") {
+        return url.into();
+    }
+    let script = format!(
+        "<script>window.ipc = {{ postMessage: function (m) {{ parent.postMessage(String(m), '*'); }} }};\n\
+         window.addEventListener('message', function (e) {{\n\
+         if (e.source === parent && typeof e.data === 'string' && e.data.indexOf('{EVAL}') === 0) (0, eval)(e.data.slice({}));\n\
+         }});\n{}</script>",
+        EVAL.len(),
+        bridge(flags)
+    );
+    let mut out = format!("{head},");
+    for b in script.bytes() {
+        if b.is_ascii_alphanumeric() {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out + body
+}
+
+/// Prefix of Perform JavaScript's messages to an iframe.
+const EVAL: &str = "basecraft:eval:";
+
+/// Web version: a sandboxed `<iframe>` (scripts and forms, no same
+/// origin, no top navigation, no popups) over the canvas. Its messages
+/// are taken only from its own window.
+#[cfg(target_arch = "wasm32")]
+mod iframe {
+    use super::*;
+    use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+
+    type Listener = Closure<dyn FnMut(web_sys::MessageEvent)>;
+
+    struct Frame {
+        iframe: web_sys::HtmlIFrameElement,
+        url: String,
+        flags: u64,
+        listener: Option<Listener>,
+    }
+
+    impl Drop for Frame {
+        fn drop(&mut self) {
+            if let (Some(w), Some(l)) = (web_sys::window(), &self.listener) {
+                let _ =
+                    w.remove_event_listener_with_callback("message", l.as_ref().unchecked_ref());
+            }
+            self.iframe.remove();
+        }
+    }
+
+    impl View for Frame {
+        /// `rect` is in physical pixels of the canvas: CSS pixels over it.
+        fn place(&mut self, rect: Option<[i32; 4]>) {
+            let style = match (rect, web_sys::window()) {
+                (Some([x, y, w, h]), Some(win)) => {
+                    let dpr = win.device_pixel_ratio().max(0.1);
+                    // The canvas of index.html (`main.rs`).
+                    let (cx, cy) = win
+                        .document()
+                        .and_then(|d| d.get_element_by_id("basecraft"))
+                        .map(|c| {
+                            let r = c.get_bounding_client_rect();
+                            (r.left(), r.top())
+                        })
+                        .unwrap_or_default();
+                    let px = |v: i32| f64::from(v) / dpr;
+                    let input = if self.flags & web::INTERACTION == 0 {
+                        "pointer-events:none;"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "position:fixed;border:0;margin:0;left:{}px;top:{}px;width:{}px;height:{}px;{input}",
+                        cx + px(x),
+                        cy + px(y),
+                        px(w),
+                        px(h)
+                    )
+                }
+                _ => "display:none".into(),
+            };
+            let _ = self.iframe.set_attribute("style", &style);
+        }
+        fn navigate(&mut self, nav: Nav) {
+            match nav {
+                Nav::Load(u) => {
+                    self.url = u;
+                    self.iframe.set_src(&inject(&self.url, self.flags));
+                }
+                Nav::Reload => self.iframe.set_src(&inject(&self.url, self.flags)),
+                Nav::Eval(js) => {
+                    if let Some(w) = self.iframe.content_window() {
+                        let _ = w.post_message(&JsValue::from_str(&format!("{EVAL}{js}")), "*");
+                    }
+                }
+                // Another origin's history and cookies are out of reach.
+                Nav::Back | Nav::Forward | Nav::FlushCookies => {}
+            }
+        }
+    }
+
+    pub fn create(w: &Want, inbox: Inbox, ctx: egui::Context) -> Option<Box<dyn View>> {
+        let win = web_sys::window()?;
+        let doc = win.document()?;
+        let iframe: web_sys::HtmlIFrameElement =
+            doc.create_element("iframe").ok()?.dyn_into().ok()?;
+        iframe
+            .set_attribute("sandbox", "allow-scripts allow-forms")
+            .ok()?;
+        iframe.set_attribute("style", "display:none").ok()?;
+        iframe.set_src(&inject(&w.url, w.flags));
+        let mut f = Frame {
+            iframe: iframe.clone(),
+            url: w.url.clone(),
+            flags: w.flags,
+            listener: None,
+        };
+        doc.body()?.append_child(&iframe).ok()?;
+        let key = w.key;
+        let l = Listener::new(move |ev: web_sys::MessageEvent| {
+            let mine = match (iframe.content_window(), ev.source()) {
+                (Some(cw), Some(src)) => JsValue::from(cw) == JsValue::from(src),
+                _ => false,
+            };
+            if let Some(m) = ev.data().as_string().filter(|_| mine) {
+                inbox.borrow_mut().push((key, m));
+                ctx.request_repaint();
+            }
+        });
+        win.add_event_listener_with_callback("message", l.as_ref().unchecked_ref())
+            .ok()?;
+        f.listener = Some(l);
+        Some(Box::new(f))
     }
 }
 
@@ -598,6 +755,31 @@ mod tests {
              Load(\"http://y.org\"); Eval(\"f(\\\"1\\\");\"); \
              make 2; place Some([10, 20, 300, 200])"
         );
+    }
+
+    /// Web version: the bridge goes into `data:text/html` pages only,
+    /// percent-encoded before the page's own content.
+    #[test]
+    fn bridge_injected_into_data_pages() {
+        let u = inject("data:text/html;charset=utf-8,<b>x</b>", web::JAVASCRIPT);
+        let (head, rest) = u.split_once(',').unwrap();
+        assert_eq!(head, "data:text/html;charset=utf-8");
+        assert!(rest.starts_with("%3Cscript%3E") && rest.ends_with("%3C%2Fscript%3E<b>x</b>"));
+        let script = &rest[..rest.len() - 8];
+        assert!(
+            script
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'%')
+        );
+        assert!(unescape(script).unwrap().contains("FileMaker"));
+        for same in [
+            "https://x.org/",
+            "data:text/html;base64,PGI+",
+            "data:text/plain,a",
+            "about:blank",
+        ] {
+            assert_eq!(inject(same, web::JAVASCRIPT), same);
+        }
     }
 
     fn pages_of(s: &State) -> Option<(String, String)> {

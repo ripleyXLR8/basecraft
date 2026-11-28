@@ -126,6 +126,15 @@ impl App {
             UiRequest::OpenFile => self.after_run(After::Open),
             UiRequest::CloseFile => self.after_run(After::Close),
             UiRequest::ConfirmFile { path } => self.confirm_file(ctx, path),
+            // Insert from URL: the window stays live while the request
+            // runs on its thread; the script goes on once it has answered.
+            UiRequest::Fetch { .. } => {
+                if self.engine.as_ref().is_none_or(|e| e.fetch_done()) {
+                    return Some(Answer::Continue);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+                None
+            }
             // Print PDF and Close PDF without a path: saved where the user
             // says (BaseCraft prints to PDF).
             UiRequest::PdfDocument { path, data, .. } => {

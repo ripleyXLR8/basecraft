@@ -28,6 +28,29 @@ pub fn handles(id: u16) -> bool {
     matches!(id, SAVE_AS_XML | INSERT_FROM_URL | DATA_API | SAVE_AS_JSONL)
 }
 
+/// Insert from URL's request running in the background: its URL and
+/// thread ([`Host::background_requests`]).
+#[derive(Default)]
+pub(crate) struct Fetch(
+    #[cfg(not(target_arch = "wasm32"))] Option<(String, std::thread::JoinHandle<curl::Outcome>)>,
+);
+
+impl Engine {
+    /// Whether Insert from URL's background request has its answer (or
+    /// none runs): the run can go on ([`UiRequest::Fetch`]).
+    pub fn fetch_done(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.fetch.0.as_ref().is_none_or(|(_, h)| h.is_finished())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Fetch() = self.fetch;
+            true
+        }
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 impl Engine {
     pub(crate) fn exec_net(
@@ -41,7 +64,7 @@ impl Engine {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod curl;
+pub(crate) mod curl;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dataapi;
 #[cfg(not(target_arch = "wasm32"))]
@@ -173,7 +196,27 @@ mod native {
             let read = |name: &str| variable(globals, frame, name);
             let (req, result) = curl::request(&url, &o, s.options & VERIFY_SSL != 0, &read);
             let req = req?;
-            let outcome = curl::exchange(&req, &o);
+            // ponytail: the step runs twice in the background case (to
+            // start the request, then to take its response), so its
+            // calculations are evaluated twice; keep the request in the
+            // pending state if one ever has side effects that matter.
+            let outcome = match self.fetch.0.take() {
+                Some((u, h)) if u == req.url => h.join().unwrap_or_else(|_| curl::Outcome {
+                    response: None,
+                    code: curl::CONNECTION_FAILED,
+                    detail: String::new(),
+                }),
+                _ if host.background_requests() => {
+                    let (r, opts) = (req.clone(), o.clone());
+                    let h = std::thread::spawn(move || curl::exchange(&r, &opts));
+                    self.fetch.0 = Some((req.url.clone(), h));
+                    return Ok(Flow::Suspend(
+                        Suspend::Ui(UiRequest::Fetch { url: req.url }),
+                        Pending::Ui(UiPending::Rerun),
+                    ));
+                }
+                _ => curl::exchange(&req, &o),
+            };
             if let Some(v) = &o.dump_header {
                 let text = outcome.response.as_ref().map(|r| r.header_text());
                 let key = (v.to_lowercase(), 1);

@@ -333,6 +333,12 @@ pub trait Host {
         let _ = (event, object);
         None
     }
+    /// Insert from URL runs its request on another thread and the run
+    /// waits ([`UiRequest::Fetch`]) so the window stays responsive.
+    /// Default (CLI, MCP): the step waits for the answer itself.
+    fn background_requests(&self) -> bool {
+        false
+    }
     fn ui(&mut self, r: &UiRequest) -> Answer {
         match r {
             UiRequest::Index { .. } | UiRequest::FolderPath { .. } => Answer::Cancel,
@@ -432,6 +438,13 @@ pub enum UiRequest {
     /// folder: [`Answer::Continue`] lets it ([`Host::file_confirm`]).
     ConfirmFile {
         path: String,
+    },
+    /// Insert from URL's request runs in the background
+    /// ([`Host::background_requests`]): answer [`Answer::Continue`] once
+    /// [`Engine::fetch_done`] (earlier blocks until it is), the step then
+    /// takes the response.
+    Fetch {
+        url: String,
     },
     /// Close PDF / Print PDF: the PDF document a script built.
     /// `path` is where to save it (`None`: ask), `print` to print it.
@@ -542,6 +555,9 @@ enum Pending {
 enum UiPending {
     /// Nothing: Cancel is error 1.
     Done,
+    /// Run the step again (Insert from URL, its response ready).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    Rerun,
     /// Store the text in a variable (Get Folder Path).
     Variable(String),
     /// Insert the text into a field (Insert from Index).
@@ -778,6 +794,8 @@ pub struct Engine {
     step_detail: String,
     /// Open data files, the PDF being built, persistent data.
     pub more: datafiles::State,
+    /// Insert from URL's request running in the background.
+    fetch: net::Fetch,
     /// `open` is the app's record ([`HostInfo::record_open`]), and the
     /// record it is when that record is new.
     host_open: bool,
@@ -965,6 +983,7 @@ impl Engine {
             error_detail: String::new(),
             step_detail: String::new(),
             more: Default::default(),
+            fetch: Default::default(),
             host_open: false,
             host_new: None,
         }
@@ -1294,9 +1313,12 @@ impl Engine {
             (Pending::Break, Answer::Cancel) => Self::halt(run),
             (Pending::Break, _) => run.resumed = true,
             (Pending::Ui(_), Answer::Cancel) => {
+                // A cancelled background request: its response is dropped.
+                self.fetch = Default::default();
                 self.complete(run, host, Flow::Next, error::USER_CANCELED)
             }
             (Pending::Ui(UiPending::Halt), _) => Self::halt(run),
+            (Pending::Ui(UiPending::Rerun), _) => run.resumed = true,
             (Pending::Ui(UiPending::Retry(path)), _) => {
                 host.file_confirm(&path);
                 run.resumed = true;

@@ -2154,6 +2154,58 @@ pub(crate) mod tests {
         std::fs::write(out, written(&d)).unwrap();
     }
 
+    /// `BASECRAFT_WEB_DEMO=<out.fmp12>`: a blank file whose layout has a
+    /// Note field and a web viewer "web" showing a `data:` page with a
+    /// button calling `FileMaker.PerformScript ( "Mark" )`, which sets
+    /// Note (the web viewers' smoke test).
+    #[test]
+    fn web_demo_file() {
+        use fmp12::scripts::{Calc, FieldRef, Script, Step, StepParams, id};
+        let Some(out) = std::env::var_os("BASECRAFT_WEB_DEMO") else {
+            return;
+        };
+        let file = fmp12::File::from_bytes(fmp12::schema_edit::new_file("Web").unwrap()).unwrap();
+        let mut ed = fmp12::schema_edit::Editor::open(&file).unwrap();
+        let t = ed.table_id("Web").unwrap();
+        let spec = fmp12::schema_edit::FieldSpec::new("Note", fmp12::schema::DataType::Text);
+        let note = ed.add_field(t, &spec).unwrap();
+        let mut app = crate::App::default();
+        app.open("Web".into(), ed.finish());
+        let mut d = app.doc.take().unwrap();
+        let to = (d.layouts[0].table_occurrence & 0xFFF) as u32;
+        let mut ds = Designer::new(&d, 0);
+        ds.insert_field(&d, b(20.0, 120.0, 44.0, 420.0), to, note, true);
+        let page = "data:text/html,<body style=background:lightblue><h3>Web page</h3>\
+                    <button id=b onclick=FileMaker.PerformScript('Mark','from-the-page')>Run Mark</button></body>";
+        let url = compile(&d, &format!("\"{page}\"")).unwrap();
+        ds.insert_web_viewer(b(60.0, 20.0, 260.0, 420.0), url);
+        let web = last(&ds);
+        let o = ds.object_mut(web).unwrap();
+        o.name = "web".into();
+        o.external = Some((ly::WEB_VIEWER, WEB_FLAGS | ly::web::JAVASCRIPT));
+        ds.apply(&mut d);
+        d.db.new_record(t).unwrap();
+        let mut set = Step::new(id::SET_FIELD);
+        set.params = StepParams::SetField {
+            field: Some(FieldRef {
+                to,
+                field: note,
+                repetition: 1,
+            }),
+            value: Some(Calc(compile(&d, "Get ( ScriptParameter )").unwrap())),
+            repetition: None,
+        };
+        let script = Script {
+            id: 1,
+            name: "Mark".into(),
+            options: 8,
+            steps: vec![set],
+        };
+        let f = fmp12::File::from_bytes(written(&d)).unwrap();
+        let bytes = fmp12::scripts_save::save_scripts(&f, &[script]).unwrap();
+        std::fs::write(out, bytes).unwrap();
+    }
+
     /// The app on the Objects Demo layout of the demo file, as written.
     fn demo_app() -> Option<crate::App> {
         let d = objects_demo()?;

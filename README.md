@@ -100,8 +100,10 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 On Windows and macOS, web viewers show their page in Browse mode, with
 Set Web Viewer, Perform JavaScript in Web Viewer and the `FileMaker.PerformScript`
 bridge (when the web viewer allows JavaScript to perform scripts). Windows uses
-the Microsoft Edge WebView2 runtime, already present on Windows 10 and 11. On
-Linux and in the web version a web viewer is a box with its address.
+the Microsoft Edge WebView2 runtime, already present on Windows 10 and 11. In
+the web version a web viewer is a sandboxed iframe (the bridge and Perform
+JavaScript work for `data:text/html` pages only, browsers keep other sites out
+of reach). On Linux it is a box with its address.
 
 ## Command line for scripts and AI agents
 

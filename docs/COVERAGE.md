@@ -67,10 +67,17 @@ decompiled.
    other missing flags belong to servers, FileMaker Go or plug-ins.
 5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-6. **Web viewers** show their page on Windows and macOS only, in the main window only (a
-   placeholder box elsewhere: Linux, the file's other windows and other files' windows, the
-   web version). A partly scrolled-away viewer is shrunk, not clipped, and viewers are
-   hidden while a menu or modal dialog is open. Set Web Viewer's action codes other than
+6. **Web viewers** show their page on Windows and macOS (native webview) and in the web
+   version (a sandboxed `<iframe>` over the canvas: scripts and forms only, no same origin,
+   no popups or top navigation), in the main window only (a placeholder box elsewhere:
+   Linux, the file's other windows and other files' windows). A partly scrolled-away viewer
+   is shrunk, not clipped, and viewers are hidden while a menu or modal dialog is open. In
+   the web version the browser's cross-origin rules apply: the `FileMaker.PerformScript`
+   bridge and Perform JavaScript in Web Viewer work only for `data:text/html` pages (the
+   bridge is written into the page); other sites get no bridge, Perform JavaScript, Back
+   and Forward do nothing there, Flush Web Viewer Cookies does nothing, sites that refuse
+   framing (`X-Frame-Options`, CSP `frame-ancestors`) stay blank, and pages have no cookies
+   or storage of their own (opaque origin). Set Web Viewer's action codes other than
    5 (Go to URL) and Perform JavaScript's parameter layout are assumed 🔸;
    PerformScriptWithOption ignores its option (every call waits for the running script).
 7. **Steps FileMaker runs on Windows that BaseCraft refuses**: the dialogs BaseCraft does
@@ -177,7 +184,8 @@ parameters 0–2, not checked against a FileMaker-written step); 237 Flush Web V
 Cookies (desktop app only).
 
 Desktop build only (the web build returns 3; `crates/script/src/net.rs` and `net/`): 160
-Insert from URL (http and https only, other protocols 1626; the cURL options `-X`, `-H`,
+Insert from URL (in the app the request runs on its own thread and the script waits, the
+window staying responsive; the CLI and MCP wait in the step; http and https only, other protocols 1626; the cURL options `-X`, `-H`,
 `-d`, `--data-ascii`, `--data-raw`, `--data-binary`, `--data-urlencode` with `@$var`, `-I`,
 `-D $var`, `-u` (basic only), `-b`, `-A`, `-e`, `-L`, `--connect-timeout`, `-m`, `-k`, `-S`,
 `-o`, `--upload-file $var`, `--FM-return-container-variable`; the others, `--form` and
@@ -222,7 +230,7 @@ triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".
 Partial objects (4): Graphic (PNG, JPEG, BMP pictures drawn in Browse, Preview and PDF; not
 GIF, SVG or PDF pictures; no Insert › Picture in Layout mode), Rounded Rectangle
 (drawn as read; no tool makes one), Web Viewer (its page in a native webview on Windows and
-macOS, a placeholder box with its address elsewhere; Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
+macOS, a sandboxed iframe in the web version, a placeholder box with its address elsewhere; Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
 series added and removed; no Chart tool in Layout mode).
 
 Text is drawn in the font the file asks for (theme and local font-family, font-weight,

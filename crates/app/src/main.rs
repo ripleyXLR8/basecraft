@@ -2096,6 +2096,9 @@ impl script::Host for AppHost<'_> {
     fn window(&mut self) -> &mut script::Window {
         &mut self.window
     }
+    fn background_requests(&self) -> bool {
+        true
+    }
     fn trigger(
         &mut self,
         ev: u16,

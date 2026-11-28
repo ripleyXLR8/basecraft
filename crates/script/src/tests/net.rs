@@ -477,3 +477,54 @@ fn save_a_copy_as_xml() {
         - x.matches("<![CDATA[").count();
     assert_eq!(opens, x.matches("</").count());
 }
+
+/// A host that runs Insert from URL's request in the background.
+struct Background(FileHost);
+
+impl Host for Background {
+    fn db(&mut self) -> &mut Database {
+        self.0.db()
+    }
+    fn window(&mut self) -> &mut Window {
+        self.0.window()
+    }
+    fn background_requests(&self) -> bool {
+        true
+    }
+}
+
+/// With a host that asks for it, Insert from URL suspends the run while
+/// its request runs on another thread, and the run resumes with the
+/// response once it has come.
+#[test]
+fn insert_from_url_in_the_background() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/x", l.local_addr().unwrap());
+    let mut h = Background(host("url-bg"));
+    let mut e = Engine::new(Vec::new());
+    let mut r = e.start_step(&mut h, &fetch(&url, "", true));
+    let st = r.resume(&mut e, &mut h, Answer::Start);
+    assert!(
+        matches!(&st, Status::Suspended(Suspend::Ui(UiRequest::Fetch { url: u })) if *u == url),
+        "{st:?}"
+    );
+    // The server has not answered yet: the request is still running.
+    assert!(!e.fetch_done());
+    let (mut s, _) = l.accept().unwrap();
+    let mut rd = BufReader::new(s.try_clone().unwrap());
+    let mut line = String::new();
+    while rd.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+        line.clear();
+    }
+    s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nlater")
+        .unwrap();
+    while !e.fetch_done() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let Status::Finished(o) = r.resume(&mut e, &mut h, Answer::Continue) else {
+        panic!("still suspended")
+    };
+    assert_eq!(o.last_error, 0);
+    assert_eq!(g(&e, "$$r"), "later");
+    assert!(e.fetch_done());
+}

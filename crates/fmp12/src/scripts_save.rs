@@ -856,6 +856,16 @@ pub fn save_scripts(file: &File, scripts: &[Script]) -> Result<Vec<u8>, Error> {
             (ids.len() as u32).to_be_bytes().to_vec(),
         ));
     }
+    // Every node has a marker: a file with no script yet has none for the
+    // name index and the catalog members (FileMaker's consistency check
+    // calls such a file damaged).
+    for node in [[17, 1, 1], [17, 1, 7]] {
+        let under = |e: &Entry| ipath(e).is_some_and(|p| p.starts_with(&node));
+        let marked = |e: &Entry| ipath(e).as_deref() == Some(&node[..]) && e.item == [0x80];
+        if add.iter().any(under) && !entries.iter().chain(&add).any(marked) {
+            add.push(marker(&node));
+        }
+    }
     entries.extend(add);
     if renamed || ids != old_ids {
         entries.retain(|e| {

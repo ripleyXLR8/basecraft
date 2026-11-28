@@ -437,7 +437,7 @@ fn writes_outside_the_folder_ask_first() {
         st => panic!("{st:?}"),
     }
     assert!(outside.exists());
-    assert_eq!(h.asked, [fm.clone()]);
+    assert_eq!(h.asked, std::slice::from_ref(&fm));
     // Refused: error 1, nothing written.
     let other = fm.replace("x.txt", "y.txt");
     let s = st(CREATE_DATA_FILE, 0, 0, Some(&other), None, &[]);

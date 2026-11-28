@@ -181,7 +181,7 @@ pub fn draw(
                     .eval_tokens(l, table, layout_to, band.record)
                     .to_text()
             } else if let Some(t) = &o.text {
-                merge_fields(doc, t, table, layout_to, band.record)
+                merge_fields(doc, &Default::default(), t, table, layout_to, band.record)
             } else {
                 String::new()
             };

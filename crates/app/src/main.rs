@@ -1341,6 +1341,11 @@ impl App {
         let pos = self.current.get(&t).copied().unwrap_or(0);
         let mode = self.mode();
         let view = self.view;
+        let globals = self
+            .engine
+            .as_ref()
+            .map(|e| e.globals.clone())
+            .unwrap_or_default();
         let Some(doc) = self.doc.as_mut() else { return };
         let Some(layout) = doc.layouts.get(self.layout).cloned() else {
             return;
@@ -1680,7 +1685,7 @@ impl App {
                             continue;
                         }
                         if let Some(txt) = o.text.as_ref().filter(|x| x.contains("<<")) {
-                            let merged = merge_fields(doc, txt, t, layout_to, rec);
+                            let merged = merge_fields(doc, &globals, txt, t, layout_to, rec);
                             lk.paint_box(&painter, r);
                             lk.paint_text(&painter, r, &merged);
                             continue;
@@ -1776,7 +1781,14 @@ impl App {
 }
 
 /// Replaces `<<Field>>` and `<<TO::Field>>` merge fields in layout text.
-fn merge_fields(doc: &Doc, text: &str, t: u32, layout_to: u32, rec: Option<usize>) -> String {
+fn merge_fields(
+    doc: &Doc,
+    globals: &Globals,
+    text: &str,
+    t: u32,
+    layout_to: u32,
+    rec: Option<usize>,
+) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(a) = rest.find("<<") {
@@ -1786,6 +1798,14 @@ fn merge_fields(doc: &Doc, text: &str, t: u32, layout_to: u32, rec: Option<usize
             return out;
         };
         let name = &rest[a + 2..a + b];
+        // Merge variable `<<$$name>>` (globals keep lower-case names).
+        if name.starts_with("$$") {
+            if let Some(v) = globals.get(&(name.to_lowercase(), 1)) {
+                out.push_str(&v.to_text());
+            }
+            rest = &rest[a + b + 2..];
+            continue;
+        }
         let (to_name, field) = name.split_once("::").unwrap_or(("", name));
         let to = doc
             .db
@@ -1809,6 +1829,9 @@ fn merge_fields(doc: &Doc, text: &str, t: u32, layout_to: u32, rec: Option<usize
     out.push_str(rest);
     out
 }
+
+/// `$$` variables of the script engine, by (lower-case name, repetition).
+pub(crate) type Globals = std::collections::HashMap<(String, usize), calc::Value>;
 
 /// Table and record whose value a field object shows: the layout's own
 /// record, or the first related record for a field of another occurrence.

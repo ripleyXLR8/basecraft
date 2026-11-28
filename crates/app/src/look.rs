@@ -7,6 +7,9 @@ use fmp12::theme::{INNER_BORDER, NORMAL, ObjectStyle, PropsExt, SELF, TEXT, Them
 #[derive(Debug, Clone)]
 pub struct Look {
     pub background: Option<Color32>,
+    /// Linear gradient over the background: start and end as fractions of
+    /// the box, and the colour stops.
+    pub gradient: Option<Gradient>,
     /// Border width and colour per side: top, right, bottom, left.
     pub borders: [(f32, Color32); 4],
     pub radius: f32,
@@ -20,10 +23,84 @@ pub struct Look {
     pub padding: [f32; 4],
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradient {
+    pub start: Vec2,
+    pub end: Vec2,
+    pub stops: Vec<(f32, Color32)>,
+}
+
+impl Gradient {
+    fn from_theme(g: &fmp12::theme::Gradient) -> Self {
+        // Points are percentages of the box (lengths in points kept as is).
+        let f = |(x, y): (fmp12::theme::Length, fmp12::theme::Length)| {
+            Vec2::new(x.pt(0.0, 1.0) as f32, y.pt(0.0, 1.0) as f32)
+        };
+        Gradient {
+            start: f(g.start),
+            end: f(g.end),
+            stops: g.stops.iter().map(|(p, c)| (*p, color(*c))).collect(),
+        }
+    }
+
+    /// Colour at `p` (fractions of the box).
+    fn at(&self, p: Vec2) -> Color32 {
+        let d = self.end - self.start;
+        let t = if d.length_sq() > 0.0 {
+            ((p - self.start).dot(d) / d.length_sq()).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut prev = self.stops[0];
+        for &s in &self.stops {
+            if t <= s.0 {
+                let span = s.0 - prev.0;
+                let k = if span > 0.0 { (t - prev.0) / span } else { 1.0 };
+                return prev.1.lerp_to_gamma(s.1, k);
+            }
+            prev = s;
+        }
+        prev.1
+    }
+
+    /// Fills `r` (corners rounded by `radius`) as a triangle fan whose
+    /// vertex colours follow the gradient. ponytail: colours interpolate
+    /// linearly between vertices, exact for two stops only.
+    fn fill(&self, painter: &egui::Painter, r: Rect, radius: f32) {
+        let rad = radius.min(r.width() / 2.0).min(r.height() / 2.0);
+        let mut pts = Vec::new();
+        let corners = [
+            (r.right_top() + Vec2::new(-rad, rad), -90.0f32),
+            (r.right_bottom() + Vec2::new(-rad, -rad), 0.0),
+            (r.left_bottom() + Vec2::new(rad, -rad), 90.0),
+            (r.left_top() + Vec2::new(rad, rad), 180.0),
+        ];
+        for (c, a0) in corners {
+            for i in 0..=8 {
+                let a = (a0 + i as f32 * 11.25).to_radians();
+                pts.push(c + rad * Vec2::new(a.cos(), a.sin()));
+            }
+        }
+        let frac =
+            |p: egui::Pos2| Vec2::new((p.x - r.left()) / r.width(), (p.y - r.top()) / r.height());
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(r.center(), self.at(frac(r.center())));
+        for p in &pts {
+            mesh.colored_vertex(*p, self.at(frac(*p)));
+        }
+        let n = pts.len() as u32;
+        for i in 0..n {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
 impl Default for Look {
     fn default() -> Self {
         Look {
             background: None,
+            gradient: None,
             borders: [(0.0, Color32::TRANSPARENT); 4],
             radius: 0.0,
             color: Color32::BLACK,
@@ -54,6 +131,10 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
         .color(prop::BACKGROUND_COLOR)
         .map(color)
         .filter(|c| c.a() > 0);
+    l.gradient = p
+        .get(&prop::BACKGROUND_IMAGE)
+        .and_then(Value::gradient)
+        .map(|g| Gradient::from_theme(&g));
     for i in 0..4u32 {
         // Border style 1 = none.
         let none = p.enum_value(prop::BORDER_STYLE + i) == Some(1);
@@ -129,6 +210,9 @@ impl Look {
         if let Some(bg) = self.background {
             painter.rect_filled(r, rad, bg);
         }
+        if let Some(g) = &self.gradient {
+            g.fill(painter, r, self.radius);
+        }
         let [t, ri, b, le] = self.borders;
         if [t, ri, b, le].iter().all(|s| s == &t) && t.0 > 0.0 {
             painter.rect_stroke(r, rad, Stroke::new(t.0, t.1), StrokeKind::Inside);
@@ -170,8 +254,17 @@ impl Look {
             [egui::Align::Min, egui::Align::Center, egui::Align::Max][self.align as usize],
             [egui::Align::Min, egui::Align::Center, egui::Align::Max][self.valign as usize],
         ]);
+        let mut job = egui::text::LayoutJob::simple(
+            text.replace('\r', "\n"),
+            self.font(),
+            self.color,
+            f32::INFINITY,
+        );
+        job.halign = anchor.x();
+        let galley = painter.layout_job(job);
+        let at = anchor.anchor_size(egui::pos2(x, y), galley.size());
         painter
             .with_clip_rect(r)
-            .text(egui::pos2(x, y), anchor, text, self.font(), self.color);
+            .galley(at.min - galley.rect.min.to_vec2(), galley, self.color);
     }
 }

@@ -667,6 +667,12 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
             [4, 5, l, 5, obj] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
             }
+            // Styled text (several fonts or sizes): the characters in
+            // `.[1]` key 1, their lengths in key 0 and the style runs in
+            // `.[1].[255]` (not decoded).
+            [4, 5, l, 5, obj, 1] if *key == 1 => {
+                raw.entry(*l).or_default().texts.insert(*obj, text(data));
+            }
             [4, 5, l, 5, obj] if *key == 16 && !data.is_empty() => {
                 raw.entry(*l).or_default().names.insert(*obj, text(data));
             }

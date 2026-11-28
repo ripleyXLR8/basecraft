@@ -21,6 +21,8 @@ pub const NORMAL: u32 = 1;
 
 /// Property ids used by most renderers. Full table: [`css_name`].
 pub mod prop {
+    /// `background-image`: a gradient ([`super::Value::gradient`]) or an image.
+    pub const BACKGROUND_IMAGE: u32 = 1;
     pub const BACKGROUND_COLOR: u32 = 7;
     /// Border colour of the top side; right, bottom and left follow (21–23).
     pub const BORDER_COLOR: u32 = 20;
@@ -255,6 +257,43 @@ fn value(field: u32, b: &[u8]) -> Value {
             spread: len(7),
         },
         _ => Value::Raw(field, b.to_vec()),
+    }
+}
+
+/// A `linear-gradient` background (`background-image`, wire field 18:
+/// `{1: 1, 2: {1: 1, 2: start, 3: end, repeated 6: stop}}`; a point is
+/// `{1: {1: x, 2: y}}` as lengths, a stop `{1: position 0–1, 2: colour}`).
+/// Read from a FileMaker 12-era file's buttons; other image kinds give `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradient {
+    pub start: (Length, Length),
+    pub end: (Length, Length),
+    pub stops: Vec<(f32, Rgba)>,
+}
+
+impl Value {
+    pub fn gradient(&self) -> Option<Gradient> {
+        let Value::Raw(18, b) = self else { return None };
+        let m = Msg::parse(b)?;
+        let g = m.msg(2).filter(|_| m.uint(1) == Some(1))?;
+        let point = |i| {
+            let p = g.msg(i)?.msg(1)?;
+            Some((length(&p.msg(1)?), length(&p.msg(2)?)))
+        };
+        let stops: Vec<_> = g
+            .msgs(6)
+            .map(|s| {
+                (
+                    s.f64(1).unwrap_or(0.0) as f32,
+                    color(&s.msg(2).unwrap_or_default()),
+                )
+            })
+            .collect();
+        (!stops.is_empty()).then_some(Gradient {
+            start: point(2)?,
+            end: point(3)?,
+            stops,
+        })
     }
 }
 
@@ -780,5 +819,32 @@ mod tests {
             62
         );
         assert_eq!(with_local_prop(&style, SELF, NORMAL, 7, None), style);
+    }
+}
+
+#[cfg(test)]
+mod gradient_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// A top-to-bottom grey gradient (#DCDCDC → #808080), as FileMaker 12
+    /// stored a button fill.
+    #[test]
+    fn linear_gradient() {
+        let b = [
+            8, 1, 18, 132, 1, 8, 1, 18, 34, 10, 30, 10, 13, 9, 0, 0, 0, 0, 0, 0, 57, 64, 16, 1, 24,
+            0, 18, 13, 9, 0, 0, 0, 0, 0, 0, 0, 0, 16, 1, 24, 0, 16, 1, 26, 34, 10, 30, 10, 13, 9,
+            0, 0, 0, 0, 0, 0, 57, 64, 16, 1, 24, 0, 18, 13, 9, 0, 0, 0, 0, 0, 0, 89, 64, 16, 1, 24,
+            0, 16, 1, 50, 27, 13, 0, 0, 0, 0, 18, 20, 13, 145, 237, 92, 63, 21, 145, 237, 92, 63,
+            29, 145, 237, 92, 63, 37, 0, 0, 128, 63, 50, 27, 13, 0, 0, 128, 63, 18, 20, 13, 18,
+            131, 0, 63, 21, 18, 131, 0, 63, 29, 18, 131, 0, 63, 37, 0, 0, 128, 63,
+        ];
+        let g = Value::Raw(18, b.to_vec()).gradient().unwrap();
+        assert_eq!((g.start.1.value, g.end.1.value), (0.0, 100.0));
+        assert_eq!(g.start.0.value, g.end.0.value);
+        assert_eq!(g.stops.len(), 2);
+        assert!((g.stops[0].1.r - 0.863).abs() < 1e-3);
+        assert!((g.stops[1].1.r - 0.502).abs() < 1e-3);
+        assert_eq!(Value::Raw(12, vec![]).gradient(), None);
     }
 }

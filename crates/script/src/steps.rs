@@ -58,6 +58,7 @@ pub mod sid {
     pub const SAVE_AS_EXCEL: u16 = 143;
     pub const SAVE_AS_PDF: u16 = 144;
     pub const SET_WEB_VIEWER: u16 = 146;
+    pub const PERFORM_JAVASCRIPT: u16 = 175;
     pub const INSTALL_ON_TIMER: u16 = 148;
     pub const QUICK_FIND: u16 = 150;
     pub const FIND_MATCHING: u16 = 155;
@@ -108,8 +109,8 @@ pub const DESIGN_DIALOGS: [u16; 8] = [38, 112, 113, 114, 140, 151, 156, 165];
 /// returns 3.
 pub const UNSUPPORTED: &[u16] = &[
     32, 38, 57, 59, 64, 67, 96, 106, 107, 108, 109, 112, 113, 114, 115, 118, 139, 140, 142, 149,
-    151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201, 202, 208, 210, 211,
-    213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 226, 227, 239, 240, 241,
+    151, 152, 156, 157, 161, 164, 165, 172, 177, 178, 179, 183, 184, 201, 202, 208, 210, 211, 213,
+    214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 226, 227, 239, 240, 241,
 ];
 
 /// Option bits of these steps (record bytes 24–27, FORMAT.md §8).
@@ -657,12 +658,18 @@ impl Engine {
                     Pending::Ui(UiPending::Variable(name)),
                 ))
             })(),
-            // Web viewers are not drawn: a named one is left as it is.
-            SET_WEB_VIEWER => (|| {
-                let name = match p.calc(0) {
-                    Some(c) => self.eval(host, frame, &c)?.to_text(),
-                    None => String::new(),
-                };
+            // Set Web Viewer ([128] object name, [129] URL) and Perform
+            // JavaScript in Web Viewer: the host acts on the web viewer
+            // named on the window's layout.
+            SET_WEB_VIEWER | PERFORM_JAVASCRIPT => (|| {
+                let mut texts = Vec::new();
+                let mut i = 0;
+                while let Some(c) = p.calc(i) {
+                    texts.push(self.eval(host, frame, &c)?.to_text());
+                    i += 1;
+                }
+                let mut texts = texts.into_iter();
+                let name = texts.next().unwrap_or_default();
                 let layout = host.window().layout;
                 let found = host
                     .db()
@@ -670,19 +677,43 @@ impl Engine {
                     .iter()
                     .find(|l| l.id == layout)
                     .is_some_and(|l| l.objects.iter().any(|o| o.name == name));
-                if found {
-                    Ok(Flow::Next)
+                if !found {
+                    return Err(error::OBJECT_MISSING);
+                }
+                // 🔸 Only "5 go to URL" was observed; the other codes follow
+                // the order of FileMaker's Action menu. Perform JavaScript's
+                // [129] function name and [130…] parameters are assumed.
+                let action = if s.id == PERFORM_JAVASCRIPT {
+                    WebAction::Js {
+                        function: texts.next().unwrap_or_default(),
+                        parameters: texts.collect(),
+                    }
                 } else {
-                    Err(error::OBJECT_MISSING)
+                    match s.arg {
+                        1 => WebAction::Reset,
+                        2 => WebAction::Reload,
+                        3 => WebAction::Forward,
+                        4 => WebAction::Back,
+                        5 => WebAction::Go(texts.next().unwrap_or_default()),
+                        _ => return Ok(Flow::Next),
+                    }
+                };
+                match host.web_viewer(&name, action) {
+                    0 => Ok(Flow::Next),
+                    e => Err(e),
                 }
             })(),
+            FLUSH_WEB_COOKIES => {
+                host.web_viewer("", WebAction::FlushCookies);
+                Ok(Flow::Next)
+            }
             // No speech, telephony, region monitoring or SQL data source
             // on Windows; FileMaker 26 returns these codes.
             SPEAK | DIAL_PHONE | REGION_MONITOR => Err(error::UNAVAILABLE),
             EXECUTE_SQL => Err(err::COMMAND_INVALID),
             ENABLE_TOUCH_KEYBOARD => Ok(Flow::Next),
-            // No spelling dictionaries, web viewers or popovers are
-            // drawn, and the layout is drawn every frame: nothing to do.
+            // No spelling dictionaries or popovers are drawn, and the
+            // layout is drawn every frame: nothing to do.
             CHECK_SELECTION
             | CHECK_RECORD
             | CHECK_FOUND_SET
@@ -690,8 +721,7 @@ impl Engine {
             | SET_USE_SYSTEM_FORMATS
             | REFRESH_OBJECT
             | CLOSE_POPOVER
-            | REFRESH_PORTAL
-            | FLUSH_WEB_COOKIES => Ok(Flow::Next),
+            | REFRESH_PORTAL => Ok(Flow::Next),
             REVERT_ON_ERROR => {
                 self.revert_on_error = o & bit::ON != 0;
                 Ok(Flow::Next)

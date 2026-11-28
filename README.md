@@ -92,6 +92,14 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
   not honoured yet. Opening a protected file always needs its account name and
   password: BaseCraft has no way around them.
 
+## Web viewers
+
+On Windows and macOS, web viewers show their page in Browse mode, with
+Set Web Viewer, Perform JavaScript in Web Viewer and the `FileMaker.PerformScript`
+bridge (when the web viewer allows JavaScript to perform scripts). Windows uses
+the Microsoft Edge WebView2 runtime, already present on Windows 10 and 11. On
+Linux and in the web version a web viewer is a box with its address.
+
 ## Command line for scripts and AI agents
 
 `basecraft-cli` drives BaseCraft without a GUI. Every command prints **JSON**,

@@ -134,7 +134,7 @@ fn step_coverage() {
     // Every step runs; none is left to `Host::other` (PROGRESS.md M5).
     assert_eq!(
         (runs.len(), stub.len(), host.len()),
-        (158, 64, 0),
+        (159, 63, 0),
         "{host:?}"
     );
 }
@@ -161,6 +161,7 @@ fn get_coverage() {
         modifier_keys: Some(0),
         quick_find: String::new(),
         record_open: 0,
+        web_pages: Default::default(),
     };
     let mut h = TestHost {
         db,
@@ -235,7 +236,7 @@ const PARTIAL_GET: [&str; 8] = [
 
 /// Steps that run but ignore stored options or do nothing where FileMaker
 /// acts (docs/COVERAGE.md), with the reason.
-const PARTIAL_STEPS: [(u16, &str); 28] = [
+const PARTIAL_STEPS: [(u16, &str); 29] = [
     (18, "no spelling check"),
     (19, "no spelling check"),
     (20, "no spelling check"),
@@ -252,7 +253,8 @@ const PARTIAL_STEPS: [(u16, &str); 28] = [
     (131, "stored path and options not decoded (file picker)"),
     (132, "stored path not decoded (save dialog)"),
     (138, "\"with dialog\" shows no dialog"),
-    (146, "web viewers are not drawn: only checks the name"),
+    (146, "action codes other than 5 assumed"),
+    (175, "parameter layout assumed"),
     (169, "popover not closed"),
     (209, "no dictionaries"),
     (205, "Skip auto-enter / Skip data entry validation ignored"),
@@ -260,7 +262,7 @@ const PARTIAL_STEPS: [(u16, &str); 28] = [
         207,
         "condition, error code, message read as parameters 0-2: not checked",
     ),
-    (237, "no web viewer"),
+    (237, "desktop app only"),
     (42, "no Print Setup dialog: US Letter, portrait"),
     (
         43,
@@ -1175,4 +1177,67 @@ fn record_open_state() {
         let st = step(id::EXIT_SCRIPT, StepParams::ExitScript(Some(c.clone())));
         assert_eq!(e.run_step(&mut h, &st).result.to_text(), want);
     }
+}
+
+/// Set Web Viewer, Perform JavaScript in Web Viewer and Flush Web Viewer
+/// Cookies hand the web viewer's name and the action to the host.
+#[test]
+fn web_viewer_steps_reach_the_host() {
+    struct Web(TestHost, Vec<(String, WebAction)>);
+    impl Host for Web {
+        fn db(&mut self) -> &mut Database {
+            &mut self.0.db
+        }
+        fn window(&mut self) -> &mut Window {
+            &mut self.0.win
+        }
+        fn web_viewer(&mut self, name: &str, action: WebAction) -> u32 {
+            self.1.push((name.into(), action));
+            0
+        }
+    }
+    let mut h = Web(TestHost::new(PEOPLE), Vec::new());
+    let l = h.0.win.layout;
+    if let Some(l) = h.0.db.layouts.iter_mut().find(|x| x.id == l) {
+        l.objects.push(fmp12::layouts::LayoutObject {
+            id: 77,
+            name: "Web".into(),
+            ..Default::default()
+        });
+    }
+    let c = |s: &str| calc(&h.0, s);
+    let name = c("\"Web\"");
+    let steps = vec![
+        rawp(
+            sid::SET_WEB_VIEWER,
+            &[name.clone(), c("\"about:blank\"")],
+            0x80,
+            5,
+        ),
+        rawp(sid::SET_WEB_VIEWER, std::slice::from_ref(&name), 0x80, 2),
+        rawp(
+            sid::PERFORM_JAVASCRIPT,
+            &[name.clone(), c("\"show\""), c("1 + 1"), c("\"x\"")],
+            0,
+            0,
+        ),
+        rawp(sid::FLUSH_WEB_COOKIES, &[], 0, 0),
+        rawp(sid::PERFORM_JAVASCRIPT, &[c("\"nope\""), c("\"f\"")], 0, 0),
+    ];
+    let mut e = Engine::new(vec![script(1, steps)]);
+    let o = e.perform(&mut h, 1, None);
+    assert_eq!(o.last_error, error::OBJECT_MISSING);
+    let js = WebAction::Js {
+        function: "show".into(),
+        parameters: vec!["2".into(), "x".into()],
+    };
+    assert_eq!(
+        h.1,
+        vec![
+            ("Web".into(), WebAction::Go("about:blank".into())),
+            ("Web".into(), WebAction::Reload),
+            ("Web".into(), js),
+            (String::new(), WebAction::FlushCookies),
+        ]
+    );
 }

@@ -149,6 +149,9 @@ pub struct HostInfo {
     /// record: 1 new, 2 modified (`Get ( RecordOpenState )`); 0 none.
     /// A script started then sees it open (an OnRecordCommit script).
     pub record_open: u8,
+    /// Pages shown by the layout's web viewers, by object name: (URL,
+    /// HTML source), for GetLayoutObjectAttribute "source" and "content".
+    pub web_pages: std::collections::BTreeMap<String, (String, String)>,
 }
 
 /// View As.
@@ -336,6 +339,36 @@ pub trait Host {
             _ => Answer::Continue,
         }
     }
+    /// Set Web Viewer and Perform JavaScript in Web Viewer on the web
+    /// viewer `name` of the window's layout (checked to exist), Flush Web
+    /// Viewer Cookies (`name` empty). Returns an error code. Default (no
+    /// web viewers): nothing happens, Perform JavaScript answers 3.
+    fn web_viewer(&mut self, name: &str, action: WebAction) -> u32 {
+        let _ = name;
+        match action {
+            WebAction::Js { .. } => error::UNAVAILABLE,
+            _ => 0,
+        }
+    }
+}
+
+/// What a script asks of a web viewer ([`Host::web_viewer`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WebAction {
+    /// Set Web Viewer: back to its address calculation.
+    Reset,
+    Reload,
+    Forward,
+    Back,
+    /// Set Web Viewer › Go to URL.
+    Go(String),
+    /// Perform JavaScript in Web Viewer: `function(parameters…)`, each
+    /// parameter passed as a string.
+    Js {
+        function: String,
+        parameters: Vec<String>,
+    },
+    FlushCookies,
 }
 
 /// Something only the application can do (a dialog, a file, the OS):

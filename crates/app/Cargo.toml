@@ -34,6 +34,11 @@ script = { version = "0.1.0", path = "../script" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 remote = { version = "0.1.0", path = "../remote" }
 
+# Web viewers: native child webviews (WebView2, WKWebView). Linux would
+# need GTK driven from the winit event loop (not done: placeholder).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+wry = { version = "0.58.2", default-features = false, features = ["os-webview"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"

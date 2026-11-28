@@ -47,6 +47,7 @@ mod triggers;
 #[cfg(test)]
 mod ui_tests;
 mod views;
+mod webview;
 mod windows;
 mod workspace;
 use fmp12::triggers::event;
@@ -665,6 +666,7 @@ impl App {
                 }
                 _ => 0,
             },
+            web_pages: webview::pages(),
             ..self.seen.clone()
         };
         window.mode = match self.mode() {
@@ -810,6 +812,22 @@ impl App {
     fn fire_object(&mut self, object: u64, ev: u16) {
         if let Some(t) = self.object_trigger(object, ev) {
             self.trigger_queue.push_back((t.script, t.parameter));
+        }
+    }
+
+    /// Runs the next `FileMaker.PerformScript` call of a web viewer's page
+    /// when nothing runs. 🔸 PerformScriptWithOption's option is not used:
+    /// every call waits for the running script (option 0).
+    fn web_calls(&mut self) {
+        if self.active.is_some() {
+            return;
+        }
+        let Some((name, parameter)) = webview::take_call() else {
+            return;
+        };
+        if let Some(id) = self.engine.as_ref().and_then(|e| e.script_named(&name)) {
+            let p = calc::Value::text(parameter);
+            self.start_run(false, |e, h| e.start(h, id, Some(p)));
         }
     }
 
@@ -1697,7 +1715,21 @@ impl App {
                     14 => objects::popover_button(ui, &painter, doc, o, lk, r, &mut self.objs, oc),
                     15 => objects::popover(ui, &painter, doc, o, lk, r, &mut self.objs, oc),
                     16 => objects::slide_control(ui, &painter, &layout, o, lk, r, &mut self.tabs),
-                    13 if objects::web_viewer(ui, &painter, doc, o, lk, r, &mut self.objs, oc) => {}
+                    13 if objects::web_viewer(
+                        ui,
+                        &painter,
+                        doc,
+                        o,
+                        lk,
+                        r,
+                        &mut self.objs,
+                        oc,
+                        (browse
+                            || mode == Mode::Find
+                                && o.external
+                                    .is_some_and(|e| e.1 & fmp12::layouts::web::FIND_MODE != 0))
+                        .then_some((layout.id, o.id, dy as i64)),
+                    ) => {}
                     // Tab control: one clickable tab per panel.
                     11 => {
                         lk.paint_box(&painter, r);
@@ -2093,6 +2125,9 @@ impl script::Host for AppHost<'_> {
     }
     fn file_confirm(&mut self, path: &str) {
         self.disk.confirm(path);
+    }
+    fn web_viewer(&mut self, name: &str, action: script::WebAction) -> u32 {
+        webview::command(self.window.layout, name, action)
     }
 }
 
@@ -2598,9 +2633,12 @@ fn commit_field(
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         windows::begin_frame(ui.ctx());
         self.file_frame(ui);
+        // Web viewers live in the main window, the first file's.
+        webview::sync(ui.ctx(), frame);
+        self.web_calls();
     }
 }
 

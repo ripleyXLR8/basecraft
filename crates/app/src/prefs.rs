@@ -161,6 +161,12 @@ fn path() -> Option<std::path::PathBuf> {
     Some(dir.join("preferences.txt"))
 }
 
+/// BaseCraft's settings folder (also the web viewers' cookies and cache).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub fn dir() -> Option<std::path::PathBuf> {
+    path()?.parent().map(Into::into)
+}
+
 /// The preferences (read from the settings file the first time).
 pub fn get() -> Prefs {
     PREFS.with(|p| {

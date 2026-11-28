@@ -313,7 +313,9 @@ pub fn slide_control(
 }
 
 /// A web viewer: a placeholder box with its address and an "open in the
-/// browser" button.
+/// browser" button, under the live webview (`webview.rs`) where there is
+/// one. `live`: the web viewer shows its page (Browse mode, or Find mode
+/// with "Display content in Find mode"), keyed by layout and row.
 #[allow(clippy::too_many_arguments)]
 pub fn web_viewer(
     ui: &mut egui::Ui,
@@ -324,10 +326,11 @@ pub fn web_viewer(
     r: Rect,
     st: &mut State,
     c: print::objects::Context,
+    live: Option<crate::webview::Key>,
 ) -> bool {
-    if o.external.is_none_or(|e| e.0 != WEB_VIEWER) {
+    let Some((WEB_VIEWER, flags)) = o.external else {
         return false;
-    }
+    };
     painter.rect_filled(r, 0.0, Color32::from_gray(246));
     painter.rect_stroke(
         r,
@@ -340,6 +343,21 @@ pub fn web_viewer(
         .as_ref()
         .map(|u| doc.db.eval_tokens(u, c.table, c.to, c.record).to_text())
         .unwrap_or_default();
+    // Live webviews are children of the main OS window only.
+    if let Some(key) = live.filter(|_| ui.ctx().viewport_id() == egui::ViewportId::ROOT) {
+        let ppp = ui.ctx().pixels_per_point();
+        let vis = r.intersect(painter.clip_rect());
+        let rect = vis.is_positive().then(|| {
+            [vis.left(), vis.top(), vis.width(), vis.height()].map(|v| (v * ppp).round() as i32)
+        });
+        crate::webview::want(crate::webview::Want {
+            key,
+            name: o.name.clone(),
+            url: crate::webview::resolve(&url, flags & fmp12::layouts::web::ENCODE_URL != 0),
+            flags,
+            rect,
+        });
+    }
     painter.text(
         r.center() - Vec2::new(0.0, 10.0),
         egui::Align2::CENTER_CENTER,

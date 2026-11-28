@@ -25,6 +25,9 @@ unused-allowed-license = "allow"
 # to check FileMaker Server's TLS certificate. A permissive data licence.
 exceptions = [
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    # A build dependency of wry's Linux (WebKitGTK) bindings, in the graph
+    # cargo-deny checks: Apache 2.0 with LLVM's permissive linking exception.
+    { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "target-lexicon" },
 ]
 
 [bans]

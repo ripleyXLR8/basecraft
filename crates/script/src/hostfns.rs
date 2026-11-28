@@ -57,8 +57,9 @@ impl Seen<'_> {
     /// repetition ; portalRow ); empty for an unknown object or attribute
     /// (FileMaker 26 for an unknown object).
     // ponytail: rotation is 0 (not decoded); the window's chrome is taken
-    // to sit above the content; a graphic's source, a chart's content and
-    // a web viewer's content are empty; the front tab panel is the stored
+    // to sit above the content; a graphic's source and a chart's content
+    // are empty, a web viewer's content is empty until its page has
+    // loaded in the desktop app (`web_pages`); the front tab panel is the stored
     // one (the window's tab choice is not tracked).
     fn attribute(&self, name: &str, attr: &str, rep: usize, row: usize) -> Value {
         let Some(l) = self.layout() else {
@@ -182,6 +183,9 @@ impl Seen<'_> {
             return to_name(to);
         }
         if let Some(u) = &o.url {
+            if let Some((url, _)) = self.window.host.web_pages.get(&o.name) {
+                return url.clone();
+            }
             return self.eval(u).to_text();
         }
         match (&o.text, o.kind) {
@@ -205,6 +209,10 @@ impl Seen<'_> {
         }
         if let Some(label) = &o.label {
             return Value::Text(self.eval(label).to_text());
+        }
+        if o.url.is_some() {
+            let page = self.window.host.web_pages.get(&o.name);
+            return page.map_or_else(Value::empty, |p| Value::Text(p.1.clone()));
         }
         if matches!(o.kind, 2 | 10 | 14) {
             let t = o

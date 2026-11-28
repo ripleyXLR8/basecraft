@@ -67,10 +67,14 @@ decompiled.
    other missing flags belong to servers, FileMaker Go or plug-ins.
 5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
-   and Flush Web Viewer Cookies have nothing to act on.
-7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Perform JavaScript in Web
-   Viewer, and the dialogs BaseCraft does not have: Open Manage Database, Manage Value
+6. **Web viewers** show their page on Windows and macOS only, in the main window only (a
+   placeholder box elsewhere: Linux, the file's other windows and other files' windows, the
+   web version). A partly scrolled-away viewer is shrunk, not clipped, and viewers are
+   hidden while a menu or modal dialog is open. Set Web Viewer's action codes other than
+   5 (Go to URL) and Perform JavaScript's parameter layout are assumed 🔸;
+   PerformScriptWithOption ignores its option (every call waits for the running script).
+7. **Steps FileMaker runs on Windows that BaseCraft refuses**: the dialogs BaseCraft does
+   not have: Open Manage Database, Manage Value
    Lists, Manage Layouts, Manage Data Sources, Manage Containers, Manage Themes, File
    Options, Sharing (error 9 without full access, else 3), Open Help, Edit Saved Finds,
    Hosts, Upload to Host, Favorites, Starter Solution (3). Open Script Workspace, Open
@@ -104,7 +108,8 @@ ExecuteSQLe's messages are BaseCraft's); GetAddonInfo (empty: no add-ons are ins
 FileMaker's answer for that is not documented or checked); GetLayoutObjectAttribute
 (answers in scripts and the Data Viewer only, so empty in layout calculations; rotation 0;
 the window's chrome is taken to sit above the content; the front tab panel is the stored
-one; a graphic's source and a chart's or web viewer's content are empty; `content` is the
+one; a graphic's source and a chart's content are empty, a web viewer's content is its
+page's HTML once loaded (desktop app); `content` is the
 value's text, not its display format).
 
 Missing: none.
@@ -155,7 +160,7 @@ LastStepTokensUsed, GuidedAccessState, AccountPasswordDaysRemaining, WindowUUID.
 
 ## Script steps
 
-Partial (28): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
+Partial (29): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
 35 Import Records, 36 Export Records
 (stored options not used, the dialog opens); 37 Save a Copy as (stored path not used);
 42 Print Setup (no dialog; pages are US Letter, portrait); 43 Print (no print dialog of
@@ -164,11 +169,12 @@ decoded, a file picker opens); 132 Export Field Contents (stored path not decode
 63 Send Mail (`mailto:` only, no SMTP); 81 Scroll Window, 84 Set Multi-User, 94 Set Use
 System Formats, 120 Arrange All Windows (do nothing); 128 Perform Find/Replace (a
 script's "current field" searches every field); 138 Re-Login ("with dialog" shows none);
-146 Set Web Viewer (only checks the name); 169 Close Popover (does nothing); 209 Set
+146 Set Web Viewer (action codes other than 5 assumed); 175 Perform JavaScript in Web
+Viewer (parameter layout assumed; error 3 where there are no webviews); 169 Close Popover (does nothing); 209 Set
 Dictionary (no dictionaries); 205 Open Transaction (Skip auto-enter / Skip data entry
 validation ignored); 207 Revert Transaction (condition, error code and message read as
 parameters 0–2, not checked against a FileMaker-written step); 237 Flush Web Viewer
-Cookies (no web viewer).
+Cookies (desktop app only).
 
 Desktop build only (the web build returns 3; `crates/script/src/net.rs` and `net/`): 160
 Insert from URL (http and https only, other protocols 1626; the cURL options `-X`, `-H`,
@@ -215,8 +221,8 @@ triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".
 
 Partial objects (4): Graphic (PNG, JPEG, BMP pictures drawn in Browse, Preview and PDF; not
 GIF, SVG or PDF pictures; no Insert › Picture in Layout mode), Rounded Rectangle
-(drawn as read; no tool makes one), Web Viewer (a placeholder box with its address;
-Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
+(drawn as read; no tool makes one), Web Viewer (its page in a native webview on Windows and
+macOS, a placeholder box with its address elsewhere; Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
 series added and removed; no Chart tool in Layout mode).
 
 Text is drawn in the font the file asks for (theme and local font-family, font-weight,

@@ -22,7 +22,7 @@
   <img alt="Agent-drivable over MCP and CLI" src="https://img.shields.io/badge/agents-MCP%20%C2%B7%20CLI-8a5cc2?style=flat-square">
   <br>
   <a href="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ripleyXLR8/basecraft/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-89%25-orange?style=flat-square"></a>
+  <a href="#progress-to-10"><img alt="Progress to 1.0" src="https://img.shields.io/badge/progress%20to%201.0-90%25-orange?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -65,7 +65,7 @@ Early development. See **[PROGRESS.md](PROGRESS.md)** for the live feature matri
 
 ## Progress to 1.0
 
-**Estimated overall progress: ~89 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
+**Estimated overall progress: ~90 %** (▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░)
 
 This is a weighted estimate over the milestones that make up version 1.0 (a
 faithful single-user FileMaker Pro). Server hosting (M9) is excluded. It is
@@ -223,9 +223,48 @@ server on stdio. It exposes these tools:
 * `create_occurrence`, `create_relationship`, `create_valuelist`;
 * `list_scripts`, `run_script`;
 * `export_records`, `import_records`, `print_pdf`;
-* `save_file`.
+* `save_file`;
+* `remote_command` (a hosted file, see below).
 
 Changes stay in memory until `save_file` is called.
+
+### Remote files (FileMaker Server, Data API)
+
+BaseCraft can also work on a file hosted by FileMaker Server, through the
+server's [Data API](https://help.claris.com/en/data-api-guide/). In the app,
+**File › Open Remote…** asks for the host, the database, an account and its
+password. Browse, Find, sort, List and Table views then work on the hosted
+records, and committed changes go straight back to the server.
+**File › Perform Script on Server…** runs the file's scripts there. Layout
+mode, schema changes and Manage Security are not available for a hosted file,
+because the Data API does not offer them.
+
+From the command line, `--remote` takes the place of the file. The password
+comes from an environment variable (`--password-env`) or from stdin
+(`--password-stdin`), so it never appears on the command line:
+
+```sh
+read -rs FMS_PASSWORD && export FMS_PASSWORD          # typed, not echoed
+R="--remote https://fms.example.com/Contacts --account api --password-env FMS_PASSWORD"
+basecraft-cli info       $R                                          # layouts, fields, scripts
+basecraft-cli records    $R "Contact List" --sort "Last Name:desc" --limit 20
+basecraft-cli find       $R "Contact List" --find "City=Paris" --omit "Status=Closed"
+basecraft-cli new        $R "Contact List" "First Name=Ada" "Last Name=Lovelace"
+basecraft-cli set        $R "Contact List" 12 "Company=Navy" --mod-id 3   # refused if changed since
+basecraft-cli delete     $R "Contact List" 12
+basecraft-cli run-script $R "Send Reminders" --layout "Contact List" --param 7
+```
+
+* The account's privilege set needs the **fmrest** extended privilege
+  ("Access via FileMaker Data API"). `basecraft-cli privileges set file.fmp12
+  "Set" --extended fmrest --in-place` grants it before hosting.
+* Certificates are checked. `--insecure` (or the app's checkbox) accepts a
+  self-signed certificate, with a warning. Use it only for your own test
+  servers.
+* Records are addressed by layout, as in the Data API; `recordId` and `modId`
+  come back with each record. FileMaker's error codes are kept (`212` wrong
+  password, `9` no access, `306` record changed by someone else…).
+* Not in the web version yet.
 
 ```sh
 cargo install --path crates/cli                      # installs basecraft-cli
@@ -251,6 +290,7 @@ crates/fmp12   .fmp12 (HBAM7) reader, later writer
 crates/app     the BaseCraft desktop application (egui)
 crates/cli     basecraft-cli: JSON command line for scripts and AI agents
 crates/print   Preview-mode pagination and PDF output
+crates/remote  FileMaker Data API client (files hosted by FileMaker Server)
 tools/fmdump   command-line inspector for .fmp12 files
 tools/oracle   scripts that drive a real FileMaker Pro to produce test oracles
 docs/          format specification and reference lists

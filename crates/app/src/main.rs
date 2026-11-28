@@ -25,6 +25,7 @@ mod i18n;
 mod look;
 mod preview;
 mod records;
+mod remote_ui;
 mod script_ui;
 mod security_ui;
 #[cfg(test)]
@@ -143,6 +144,8 @@ struct App {
     win: script::Window,
     /// Login dialog and File › Manage › Security (`security_ui.rs`).
     security: security_ui::State,
+    /// File › Open Remote… and the hosted file's session (`remote_ui.rs`).
+    remote: remote_ui::State,
 }
 
 impl App {
@@ -263,7 +266,7 @@ impl App {
 
     /// Saves the records into a new `.fmp12` image. `as_copy` asks where.
     fn save(&mut self, ctx: &egui::Context, as_copy: bool) {
-        if !self.commit() {
+        if self.remote_save() || !self.commit() {
             return;
         }
         let Some(d) = self.doc.as_mut() else { return };
@@ -928,7 +931,7 @@ impl App {
 
     /// View › Layout Mode: edits a copy of the current layout.
     fn enter_layout(&mut self) {
-        if self.mode() == Mode::Layout || !self.commit() {
+        if self.mode() == Mode::Layout || self.remote_refuses(tr("Layout Mode")) || !self.commit() {
             return;
         }
         let Some(d) = self.doc.as_ref() else { return };
@@ -981,6 +984,7 @@ impl App {
                     ui.close();
                     self.open_dialog(&ui.ctx().clone());
                 }
+                self.remote_menu(ui);
                 if ui
                     .add(egui::Button::new(tr("Save")).shortcut_text("Ctrl+S"))
                     .clicked()
@@ -2291,6 +2295,7 @@ impl eframe::App for App {
         }
         self.data_viewer_window(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
+        self.remote_frame(ui);
         if self.doc.is_some() && self.win.toolbar {
             egui::Panel::top("status").show(ui, |ui| {
                 self.status_toolbar(ui);

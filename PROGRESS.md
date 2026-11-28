@@ -1,6 +1,6 @@
 # Progress
 
-**Estimated progress to 1.0: ~89 %**, weighted by milestone (see the README table).
+**Estimated progress to 1.0: ~90 %**, weighted by milestone (see the README table).
 
 Legend: ✅ done and tested · 🚧 in progress · ⏳ not started
 
@@ -284,6 +284,7 @@ M5 the engine ran 50 of the 222 steps; the other 172 returned error 3.
 | Charts drawn in Browse, Preview (`app::chart`) and PDF (`print::chart`, one layout for both): all 10 types, title, legend, ticks, value labels, Earth and Bright palettes | ✅ compared with FileMaker screenshots |
 | Chart fonts, custom series colours, gridlines, legend position, axis ranges and formats, other colour schemes, "summary groups when sorted" | ⏳ |
 | Security (`fmp12::security`, `engine::access`): login with FileMaker's salted password hash (`--account`/`--password` in the CLI and MCP, a login dialog in the app, "Log in using" honoured, "must change password" asks for a new one); privileges enforced (records with limiting calculations, read-only and hidden fields, hidden layouts, scripts, print, export; errors 9, 200, 201); `Get ( AccountName )`, `Get ( AccountPrivilegeSetName )`, `Get ( AccountExtendedPrivileges )`; script steps Add Account, Delete Account, Reset Account Password, Enable Account, Change Password, Re-Login (`script::accounts`); writing accounts and privilege sets with full access (File › Manage › Security, `accounts`/`privileges` commands, MCP tools) | ✅ verified in FileMaker 26: files BaseCraft wrote open without warning and take its passwords (wrong password and inactive account refused with FileMaker's alert, a no-access layout shows « Accès refusé »); hashes FileMaker wrote for test passwords verify; the account steps store and fail as in FileMaker (`tools/oracle/security_check.ps1`) |
+| Extended privileges written as FileMaker reads them (key 02 `01 01` turns a privilege's set list on, FORMAT.md §15) | ✅ FMDeveloperTool's Save as XML lists the sets BaseCraft grants `fmrest`/`fmodata`; FileMaker Server writes the same bytes when it adds `fmapp`; the Data API logs in the account of such a set |
 | External-server and OAuth logins, "Run script with full access privileges", Re-Login/Change Password dialogs from scripts, encryption at rest | ⏳ |
 
 ## M4 — GUI (`crates/app`)
@@ -311,6 +312,8 @@ M5 the engine ran 50 of the 222 steps; the other 172 returned error 3.
 | Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |
 | Save from the app: Ctrl+S / Save a Copy As (desktop), download (web) | ✅ |
+| File › Open Remote… (`remote_ui.rs`, `crates/remote`): a file hosted by FileMaker Server, through the Data API; its layouts' fields and records in Browse, Find, sort, List and Table views; committed edits, new and deleted records sent with their modId (conflicts reported); Perform Script on Server…, Refresh from Server; "Hosted on <host>"; self-signed certificates only by explicit opt-in. Desktop only | ✅ against FileMaker Server 26 (VM) |
+| Hosted files: related fields and portals in the GUI, containers (shown as URLs, not written), value lists, server-side find for files over 50,000 records, live refresh, Layout mode and schema (refused: not possible through the Data API) | ⏳ |
 
 ## Automation (`crates/cli`)
 
@@ -320,6 +323,7 @@ M5 the engine ran 50 of the 222 steps; the other 172 returned error 3.
 | Session mode (JSON-lines on stdin/stdout) with save | ✅ |
 | Run scripts from the CLI and MCP (`run-script`, `run_script`, `list_scripts`), dialogs answered automatically | ✅ |
 | MCP server for AI agents (`basecraft-cli mcp`): open, describe, find, evaluate, create/update/delete, save | ✅ |
+| Hosted files through FileMaker Server's Data API: `--remote https://host/Database --account A --password-env VAR` for `info`, `records`, `find`, `new`, `set` (`--mod-id`), `delete`, `run-script`; MCP `remote_command` | ✅ against FileMaker Server 26 (VM) |
 | Manage Database from the CLI: `schema add-table`, `add-field`, `set-options`, `add-occurrence`, `add-relationship`, `set-relationship`, `add-valuelist`, `set-valuelist`, `rename`, `delete`, `new-file`; MCP `new_file`, `create_table`, `create_field` (lookups, validation, summaries), `create_occurrence`, `create_relationship`, `create_valuelist` | ✅ |
 
 ### Scripts in the GUI

@@ -1932,24 +1932,57 @@ Floor ( -0.0000000000000001 )	-1
 Abs ( -0 )	0
 Sign ( -0.0000000000000000001 )	-1
 Sign ( 1/10^17 )	1
-# known differences: FileMaker's result is recorded, calc gives something else (see PROGRESS.md M2)
-# platform-dependent: SystemPlatform differs per OS; the libm sine differs in the last digit on Linux
-Get ( SystemPlatform )	-2
-Sin ( Pi / 4 )	.7071067811865476
-Sin ( 2 * Pi / 3 )	.8660254037844386
+SortValues ( "2¶1¶x¶1/1/2003" ; -3 )	x\r1/1/2003\r2\r1\r
+SortValues ( "2¶1¶x¶1/1/2003" ; 3 )	1/1/2003\r2\r1\rx\r
+SortValues ( "x¶1/1/2003¶2¶1" ; -3 )	x\r1/1/2003\r2\r1\r
+SortValues ( "x¶1/1/2003¶2¶1" ; 3 )	1/1/2003\rx\r2\r1\r
+SortValues ( "1/1/2003¶x¶2/2/2004¶y" ; -3 )	x\ry\r2/2/2004\r1/1/2003\r
+SortValues ( "1/1/2003¶x¶2/2/2004¶y" ; 3 )	1/1/2003\r2/2/2004\rx\ry\r
+SortValues ( "b¶3¶a¶1" ; -2 )	b\ra\r3\r1\r
+SortValues ( "b¶3¶a¶1" ; 2 )	1\r3\rb\ra\r
+SortValues ( "3¶b¶1¶a" ; -2 )	b\ra\r3\r1\r
+SortValues ( "1/1/2003¶2¶x" ; -3 )	x\r1/1/2003\r2\r
+SortValues ( "y¶1/1/2003¶x" ; -3 )	y\rx\r1/1/2003\r
+SortValues ( "2¶x¶1" ; -3 )	x\r2\r1\r
+SortValues ( "1:30¶x¶2:00¶3" ; -4 )	x\r3\r2:00\r1:30\r
+SortValues ( "1:30¶x¶2:00¶3" ; 4 )	1:30\r2:00\r3\rx\r
+IsEmpty ( 1/0 )	0	15
+IsValid ( Evaluate ( "1 +" ) & "" )	0
+Evaluate ( "1 +" ) & "x"	?x	1204
+Length ( Evaluate ( "1 +" ) )	1	1204
+Sum ( 1 ; 1/0 )	1	15
+Count ( 1/0 ; 2 ; 3 )	2	15
+Count ( "" ; 1/0 )	0	15
+Max ( 1 ; 1/0 )	1	15
+List ( 1 ; 1/0 ; 2 )	1\r?\r2	15
+EvaluationError ( Evaluate ( "Left ( \"a\" ; )" ) )	1204
+EvaluationError ( Evaluate ( "Left ( \"a\" ; 1 ; )" ) )	1202
+EvaluationError ( Evaluate ( "Upper ( \"a\" ; )" ) )	1202
+EvaluationError ( Evaluate ( "If ( 1 ; 2 ; 3 ; )" ) )	1202
+EvaluationError ( Evaluate ( "Case ( 1 ; 2 ; )" ) )	0
+HexEncode ( TextEncode ( "aé" ; "bogus" ; 1 ) )	3F	4
+HexEncode ( TextEncode ( "a€" ; "ascii" ; 1 ) )	3F	4
+HexEncode ( TextEncode ( "aé" ; "utf-16" ; 1 ) ) & "|" & HexEncode ( TextEncode ( "aé" ; "UTF-16LE" ; 1 ) )	3F|3F	4
+TextDecode ( HexDecode ( "61" ) ; "bogus" )	?	4
+JSONGetElement ( "{\"a\":{\"b\":1,\"b\":2}}" ; "a" )	? * Line 1, Column 13\r  Duplicate key: 'b'
+JSONGetElement ( "{\"a\":1,\"b\":2,\"a\":3}" ; "b" )	? * Line 1, Column 14\r  Duplicate key: 'a'
+JSONSetElement ( "{\"a\":1,\"a\":2}" ; "c" ; 1 ; JSONNumber )	? * Line 1, Column 8\r  Duplicate key: 'a'
+Count ( 1 ; 1/0 )	1	15
+JSONGetElement ( "{\"a\":1,\"a\":2}" ; "a" )	? * Line 1, Column 8\r  Duplicate key: 'a'
+HexEncode ( TextEncode ( "é" ; "utf-16" ; 1 ) )	3F	4
+HexEncode ( TextEncode ( "é" ; "bogus" ; 1 ) )	3F	4
+HexEncode ( TextEncode ( "é" ; "utf-16le" ; 1 ) )	3F	4
+SortValues ( "2¶1¶x¶1/1/2003" ; -3 )	x\r1/1/2003\r2\r1\r
+EvaluationError ( Evaluate ( "Abs ( 1 ; )" ) )	1202
+EvaluationError ( Evaluate ( "x::" ) )	106
+IsEmpty ( Evaluate ( "1 +" ) )	0	1204
 GetAsDate ( "1.15.2024" )	1.15.2024
 GetAsDate ( "1-15-2024" )	1-15-2024
 GetAsTime ( "1:30 PM" )	1:30 PM
 GetAsTime ( "12:00 AM" )	12:00 AM
 GetAsTime ( "12:00 PM" )	12:00 PM
 GetAsTime ( "1:30:00 pm" )	1:30 PM
-Sin ( Pi / 6 )	.4999999999999999
 GetAsTime ( Timestamp ( Date ( 1 ; 2 ; 2003 ) ; Time ( 4 ; 5 ; 6 ) ) )	4:05:06 AM
-Exp ( 1 ) * 10^20	271828182845904523536
-Ln ( 2 ) * 10^20	69314718055994530940
-Exp ( 100 )	26881171418161354484126255515800135873611119.5005345509451436
-Exp ( 1000 )	197007111401704699388887935224332312531693852293157096323465601220269560311601484840688299433746242450462453749999068243478134653744408491486690103829466973278001266510148879457959170620401321728497536441726069956390433800466145462297845919132934562536422269931637485008911227409134541343486285678601924917997381192569293132555762291210181290506420757443865495446877214039874879382022119781395555259900355256302137144995300127001856835.8928006115442374
-Count ( 1 ; 1/0 )	1	15
 GetAsTime ( "1:30:05 PM" )	1:30:05 PM
 GetAsTime ( "1:30:00 AM" )	1:30 AM
 GetAsTime ( "1:30:05.25 PM" )	1:30:05.25 PM
@@ -1962,6 +1995,16 @@ GetAsTime ( "1/2/2003 1:30" )	1:30 AM
 GetAsDate ( "1.15.2024" ) & ""	1.15.2024
 GetAsText ( GetAsDate ( "1.15.2024" ) )	1.15.2024
 GetAsTimestamp ( "1.15.2024 1:30" )	1.15.2024 1:30 AM
+# known differences: FileMaker's result is recorded, calc gives something else (see PROGRESS.md M2)
+# platform-dependent: SystemPlatform differs per OS; the libm sine differs in the last digit on Linux
+Get ( SystemPlatform )	-2
+Sin ( Pi / 4 )	.7071067811865476
+Sin ( 2 * Pi / 3 )	.8660254037844386
+Sin ( Pi / 6 )	.4999999999999999
+Exp ( 1 ) * 10^20	271828182845904523536
+Ln ( 2 ) * 10^20	69314718055994530940
+Exp ( 100 )	26881171418161354484126255515800135873611119.5005345509451436
+Exp ( 1000 )	197007111401704699388887935224332312531693852293157096323465601220269560311601484840688299433746242450462453749999068243478134653744408491486690103829466973278001266510148879457959170620401321728497536441726069956390433800466145462297845919132934562536422269931637485008911227409134541343486285678601924917997381192569293132555762291210181290506420757443865495446877214039874879382022119781395555259900355256302137144995300127001856835.8928006115442374
 Exp ( 1 ) * 10^25	27182818284590452353600000
 Ln ( 2 ) * 10^25	6931471805599453094000000
 Log ( 2 ) * 10^25	3010299956639811952140000
@@ -1969,11 +2012,7 @@ Lg ( 3 ) * 10^25	15849625007211561814500000
 Exp ( 2 ) * 10^25	73890560989306502272300000
 Degrees ( 1 ) * 10^20	5729577951308232088500
 (1/3) * (1/3) * 10^20	11111111111111110900
-JSONGetElement ( "{\"a\":1,\"a\":2}" ; "a" )	? * Line 1, Column 8\r  Duplicate key: 'a'
 JSONMakeArray ( "" ; ¶ ; JSONString )	?	-1
-HexEncode ( TextEncode ( "é" ; "utf-16" ; 1 ) )	3F	4
-HexEncode ( TextEncode ( "é" ; "bogus" ; 1 ) )	3F	4
-HexEncode ( TextEncode ( "é" ; "utf-16le" ; 1 ) )	3F	4
 HexEncode ( TextEncode ( "é" ; "shift_jis" ; 1 ) )	20
 HexEncode ( TextEncode ( "日" ; "shift_jis" ; 1 ) )	93FA
 GetAsCSS ( TextColor ( "abc" ; RGB ( 255 ; 0 ; 0 ) ) )	<span style="color: #FF0000;" >abc</span>
@@ -1986,7 +2025,3 @@ Cos ( Pi / 6 )	.8660254037844387
 Tan ( Pi / 6 )	.5773502691896257
 Sin ( 1/7 )	.1423717297922637
 Cos ( 3/7 )	.9095603516741666
-SortValues ( "2¶1¶x¶1/1/2003" ; -3 )	x\r1/1/2003\r2\r1\r
-EvaluationError ( Evaluate ( "Abs ( 1 ; )" ) )	1202
-EvaluationError ( Evaluate ( "x::" ) )	106
-IsEmpty ( Evaluate ( "1 +" ) )	0	1204

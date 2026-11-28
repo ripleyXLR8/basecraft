@@ -733,7 +733,9 @@ impl Database {
             };
             let mut ctx = RecordContext::new(self, table, f.context, Some(record), &scope, None);
             ctx.rep = rep;
-            return calc::evaluate(src, &mut ctx).unwrap_or_else(|_| Value::text("?"));
+            return calc::evaluate(src, &mut ctx)
+                .map(Value::plain)
+                .unwrap_or_else(|_| Value::text("?"));
         }
         let raw = t
             .records

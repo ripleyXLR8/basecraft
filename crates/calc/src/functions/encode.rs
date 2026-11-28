@@ -299,9 +299,17 @@ fn codec(enc: &str) -> Result<Codec, EvalError> {
 
 /// TextEncode: line endings 2 = CR, 3 = LF, 4 = CR LF, others unchanged
 /// (CR, FileMaker's own). The container is named after the encoding.
-pub fn text_encode(_: &mut Evaluator, a: &[Value]) -> R {
+pub fn text_encode(ev: &mut Evaluator, a: &[Value]) -> R {
     let enc = txt(a, 1);
-    let codec = codec(&enc)?;
+    // An encoding FileMaker does not know ("utf-16" included) gives "?",
+    // with error 4 for EvaluationError.
+    let codec = match codec(&enc) {
+        Ok(c) => c,
+        Err(e) => {
+            ev.sticky.get_or_insert(e);
+            return Ok(Value::text("?"));
+        }
+    };
     let s = txt(a, 0);
     let eol = match int(a, 2)? {
         2 => Some("\r"),
@@ -338,8 +346,14 @@ pub fn text_encode(_: &mut Evaluator, a: &[Value]) -> R {
 }
 
 /// TextDecode: line endings become CR.
-pub fn text_decode(_: &mut Evaluator, a: &[Value]) -> R {
-    let codec = codec(&txt(a, 1))?;
+pub fn text_decode(ev: &mut Evaluator, a: &[Value]) -> R {
+    let codec = match codec(&txt(a, 1)) {
+        Ok(c) => c,
+        Err(e) => {
+            ev.sticky.get_or_insert(e);
+            return Ok(Value::text("?"));
+        }
+    };
     let data = bytes(&a[0]);
     let s: String = match codec {
         Codec::Utf8 => String::from_utf8_lossy(&data).into_owned(),

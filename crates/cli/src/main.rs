@@ -8,7 +8,7 @@
 //! basecraft-cli info    <file>
 //! basecraft-cli records <file> <table> [--find Field=criterion]… [--omit Field=criterion]…
 //!                       [--sort Field[:desc]]… [--limit N]
-//! basecraft-cli eval    <file> <calculation> [--table T] [--record ID]
+//! basecraft-cli eval    <file> <calculation> [--table T] [--record ID] [--find F=crit] [--sort F[:desc]]
 //! basecraft-cli new     <file> <table> [Field=value]…        (-o out | --in-place; Container=@file inserts a file)
 //! basecraft-cli set     <file> <table> <id> Field=value…      (-o out | --in-place)
 //! basecraft-cli delete  <file> <table> <id>                   (-o out | --in-place)

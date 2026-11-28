@@ -435,7 +435,7 @@ fn datatype(a: &[Value]) -> Result<i64, EvalError> {
 // ponytail: the locale parameter is ignored; text uses a simple Latin
 // collation (case- and accent-insensitive first).
 pub fn sort_values(_: &mut Evaluator, a: &[Value]) -> R {
-    use std::cmp::Ordering::{Equal, Greater, Less};
+    use std::cmp::Ordering::Equal;
     let s = txt(a, 0);
     let dt = datatype(a)?;
     let mut v: Vec<(&str, Option<Value>)> = split_values(&s)
@@ -443,26 +443,22 @@ pub fn sort_values(_: &mut Evaluator, a: &[Value]) -> R {
         .map(|x| (x, typed_key(x, dt)))
         .collect();
     let desc = dt < 0;
-    v.sort_by(|(_, x), (_, y)| match (x, y) {
-        (Some(x), Some(y)) => {
-            let o = compare_keys(x, y);
-            if desc { o.reverse() } else { o }
-        }
-        (Some(_), None) => {
-            if desc {
-                Greater
-            } else {
-                Less
-            }
-        }
-        (None, Some(_)) => {
-            if desc {
-                Less
-            } else {
-                Greater
-            }
-        }
-        (None, None) => Equal,
+    // Values that are not of the type keep their order. Ascending, they
+    // follow the others; descending, those without any digit come first
+    // and those with digits ("2" as a date) last (FileMaker 26).
+    let class = |(x, k): &(&str, Option<Value>)| match (k, desc) {
+        (Some(_), false) => 0,
+        (None, false) => 1,
+        (None, true) if crate::value::text_to_num(x).is_none() => 0,
+        (Some(_), true) => 1,
+        (None, true) => 2,
+    };
+    v.sort_by(|a, b| {
+        class(a).cmp(&class(b)).then_with(|| match (&a.1, &b.1) {
+            (Some(x), Some(y)) if desc => compare_keys(y, x),
+            (Some(x), Some(y)) => compare_keys(x, y),
+            _ => Equal,
+        })
     });
     join_values(v.into_iter().map(|(x, _)| x))
 }

@@ -23,6 +23,15 @@ pub enum Value {
         text: String,
         state: i64,
     },
+    /// A date, time or timestamp shown in the form it was read in:
+    /// FileMaker keeps a date's separator (`GetAsDate ( "1.15.2024" )`) and
+    /// the 12-hour form of a time read with AM/PM or from a timestamp. It
+    /// behaves as `value`; only its text differs. Calculations make it; the
+    /// engine stores fields as [`Value::plain`].
+    Shown {
+        value: Box<Value>,
+        text: String,
+    },
 }
 
 /// A container value: a file name and its bytes, or a file stored by
@@ -63,6 +72,7 @@ impl Value {
         match self {
             Value::Text(s) | Value::Json { text: s, .. } => s.is_empty(),
             Value::Container(c) => c.data.is_empty() && c.name.is_empty() && c.path.is_empty(),
+            Value::Shown { value, .. } => value.is_empty(),
             _ => false,
         }
     }
@@ -78,6 +88,7 @@ impl Value {
             // GetAsText: the path of a reference, else the file name.
             Value::Container(c) if !c.path.is_empty() => c.path.clone(),
             Value::Container(c) => c.name.clone(),
+            Value::Shown { text, .. } => text.clone(),
         }
     }
 
@@ -90,6 +101,7 @@ impl Value {
             Value::Time(t) | Value::Timestamp(t) => Some(t.clone()),
             Value::Text(s) | Value::Json { text: s, .. } => text_to_num(s),
             Value::Container(_) => None,
+            Value::Shown { value, .. } => value.to_num(),
         }
     }
 
@@ -118,6 +130,7 @@ impl Value {
                 ts.flatten().map(|t| ts_date(&t))
             }),
             Value::Time(_) | Value::Container(_) => None,
+            Value::Shown { value, .. } => value.to_date(),
         }
     }
 
@@ -133,6 +146,23 @@ impl Value {
             }),
             Value::Date(d) => Some(make_ts(*d, &num::int(0))),
             Value::Container(_) => None,
+            Value::Shown { value, .. } => value.to_time(),
+        }
+    }
+
+    /// The value without its shown form ([`Value::Shown`]).
+    pub fn plain(self) -> Value {
+        match self {
+            Value::Shown { value, .. } => *value,
+            v => v,
+        }
+    }
+
+    /// [`Value::plain`] by reference.
+    pub fn plain_ref(&self) -> &Value {
+        match self {
+            Value::Shown { value, .. } => value,
+            v => v,
         }
     }
 }

@@ -464,7 +464,7 @@ pub(crate) fn fresh_uuid(seed: u64) -> Vec<u8> {
 
 /// Object id referenced by a layout index value `00 len 01 id …`
 /// (spatial index `[L].[10]`, tab order `[L].[21]`).
-fn index_ref(v: &[u8]) -> Option<u32> {
+pub(crate) fn index_ref(v: &[u8]) -> Option<u32> {
     let n = *v.get(1)? as usize;
     match v.get(2..2 + n)? {
         [1, rest @ ..] => crate::path_int(rest),
@@ -490,10 +490,65 @@ fn object_blob(entries: &[Entry], l: u32) -> Vec<u8> {
     parts.into_values().flatten().collect()
 }
 
+/// Sub-nodes of an object node holding calculations (label, tooltip, hide
+/// condition, placeholder, web address) or conditional formats (138).
+const NODE_CALCS: [u32; 6] = [2, 3, 4, 6, 128, 138];
+
+#[derive(PartialEq)]
+enum NodeCalc<'a> {
+    Calc(Option<&'a Vec<u8>>),
+    Conditions(&'a [crate::layouts::Condition]),
+}
+
+/// What sub-node `sub` of object `o`'s node holds, `None` when the writer
+/// does not own it (a tab panel's label, a chart's calculations…).
+fn node_calc(o: &crate::layouts::LayoutObject, sub: u32) -> Option<NodeCalc<'_>> {
+    use crate::layouts::{WEB_VIEWER, kind};
+    Some(match sub {
+        2 if o.kind != kind::TAB_PANEL => NodeCalc::Calc(o.label.as_ref()),
+        3 => NodeCalc::Calc(o.tooltip.as_ref()),
+        4 => NodeCalc::Calc(o.hide.as_ref()),
+        6 => NodeCalc::Calc(o.placeholder.as_ref()),
+        128 if o.external.is_some_and(|e| e.0 == WEB_VIEWER) => NodeCalc::Calc(o.url.as_ref()),
+        138 => NodeCalc::Conditions(&o.conditions),
+        _ => return None,
+    })
+}
+
+/// Node entries of an object's conditional formats: `.[138]` key 4 = count,
+/// `.[138].[128 + i]`: key 1 / 6 = compared values (text), key 13 =
+/// format and operator, `.[5]` = formula.
+fn condition_entries(
+    l: u32,
+    o: &crate::layouts::LayoutObject,
+    calc: &dyn Fn(u64, &[u32], &[u8]) -> Vec<Entry>,
+) -> Vec<Entry> {
+    let base = [4, 5, l, 5, o.id as u32, 138];
+    if o.conditions.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![
+        marker(&base),
+        kv_entry(&base, 4, (o.conditions.len() as u16).to_be_bytes().to_vec()),
+    ];
+    for (i, c) in o.conditions.iter().enumerate() {
+        let i = 128 + i as u32;
+        let p = [4, 5, l, 5, o.id as u32, 138, i];
+        out.push(marker(&p));
+        out.push(kv_entry(&p, 1, encode_text(&c.value1)));
+        out.push(kv_entry(&p, 6, encode_text(&c.value2)));
+        out.push(kv_entry(&p, 13, c.format.clone()));
+        if let Some(t) = &c.calc {
+            out.extend(calc(o.id, &[138, i, 5], t));
+        }
+    }
+    out
+}
+
 /// Kinds that FileMaker lists in a layout's spatial index `[L].[10]`
 /// (fields, buttons, tab controls, button bars; not text or shapes).
 fn indexed_kind(kind: u64) -> bool {
-    matches!(kind, 1 | 10 | 11 | 18)
+    matches!(kind, 1 | 10 | 11 | 13 | 14 | 16 | 18)
 }
 
 /// Rebuilds `file` with edited layouts. Each layout of `layouts` that
@@ -636,26 +691,55 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                 5 => match key {
                     Some(1) => o.text == n.text,
                     Some(16) => o.name == n.name,
+                    Some(13) => o.format == n.format,
                     _ => true,
                 },
-                // Button label calculation and step parameters.
-                _ if p[5] == 3 => o.label == n.label,
                 // Tab label calculation of a panel.
                 _ if p[5] == 2 && n.kind == 12 => o.text == n.text,
                 _ if p[5] == 17 => {
                     o.button.as_ref().map(|s| s.id) == n.button.as_ref().map(|s| s.id)
                 }
-                _ => true,
+                _ => match node_calc(n, p[5]) {
+                    Some(new_calc) => node_calc(o, p[5]) == Some(new_calc),
+                    None => true,
+                },
             }
         });
-        let calc_entries = |id: u64, sub: u32, tokens: &[u8]| -> Vec<Entry> {
-            let p = [4, 5, l, 5, id as u32, sub];
+        let calc_entries = |id: u64, sub: &[u32], tokens: &[u8]| -> Vec<Entry> {
+            let p: Vec<u32> = [4, 5, l, 5, id as u32].iter().chain(sub).copied().collect();
+            let compiled = crate::calc::compiled(tokens).unwrap_or_else(|_| tokens.to_vec());
             vec![
                 marker(&p),
                 kv_entry(&p, 4, vec![1, 0]),
                 kv_entry(&p, 5, tokens.to_vec()),
-                kv_entry(&p, 6, tokens.to_vec()),
+                kv_entry(&p, 6, compiled),
             ]
+        };
+        // Calculations and conditions of an object (all of them for a new one).
+        let node_entries = |n: &LayoutObject, o: Option<&LayoutObject>| -> Vec<Entry> {
+            let mut out = Vec::new();
+            for sub in NODE_CALCS {
+                let Some(NodeCalc::Calc(new_calc)) = node_calc(n, sub) else {
+                    if sub == 138 && o.is_none_or(|o| o.conditions != n.conditions) {
+                        out.extend(condition_entries(l, n, &calc_entries));
+                    }
+                    continue;
+                };
+                if o.and_then(|o| node_calc(o, sub)) == Some(NodeCalc::Calc(new_calc))
+                    || new_calc.is_none()
+                {
+                    continue;
+                }
+                if let Some(t) = new_calc {
+                    out.extend(calc_entries(n.id, &[sub], t));
+                }
+            }
+            if o.is_none_or(|o| o.format != n.format)
+                && let Some(f) = &n.format
+            {
+                out.push(kv_entry(&node(n.id), 13, f.encode()));
+            }
+            out
         };
         for n in &new.objects {
             let Some(o) = olds.get(&n.id) else { continue };
@@ -664,24 +748,20 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             {
                 add.push(kv_entry(&node(n.id), 1, encode_text(t)));
                 if n.kind == 12 {
-                    add.extend(calc_entries(n.id, 2, &text_literal_tokens(t)));
+                    add.extend(calc_entries(n.id, &[2], &text_literal_tokens(t)));
                 }
             }
             if o.name != n.name {
                 add.push(kv_entry(&node(n.id), 16, encode_text(&n.name)));
             }
-            if o.label != n.label
-                && let Some(t) = &n.label
-            {
-                add.extend(calc_entries(n.id, 3, t));
-            }
+            add.extend(node_entries(n, Some(o)));
         }
         for n in &added {
             add.push(marker(&node(n.id)));
             if let Some(t) = &n.text {
                 add.push(kv_entry(&node(n.id), 1, encode_text(t)));
                 if n.kind == 12 {
-                    add.extend(calc_entries(n.id, 2, &text_literal_tokens(t)));
+                    add.extend(calc_entries(n.id, &[2], &text_literal_tokens(t)));
                 }
             }
             for (k, v) in protos_of
@@ -689,15 +769,16 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                 .map(|p| p.1.clone())
                 .unwrap_or_default()
             {
-                add.push(kv_entry(&node(n.id), k, v));
+                // The object's own formats replace the prototype's.
+                if k != 13 || n.format.is_none() {
+                    add.push(kv_entry(&node(n.id), k, v));
+                }
             }
             add.push(kv_entry(&node(n.id), 16, encode_text(&n.name)));
             let seed = (l as u64) << 32 | n.id;
             add.push(kv_entry(&node(n.id), 216, fresh_uuid(seed)));
             add.push(kv_entry(&node(n.id), 217, fresh_uuid(seed)));
-            if let Some(t) = &n.label {
-                add.extend(calc_entries(n.id, 3, t));
-            }
+            add.extend(node_entries(n, None));
         }
         // Last object id: `[4].[5].[L].[5]` key 0.
         let max_new = new.objects.iter().map(|o| o.id).max().unwrap_or(0);

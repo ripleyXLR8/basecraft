@@ -54,6 +54,102 @@ pub const LOCKED: u64 = 0x2;
 pub const SLIDE_UP: u64 = 0x10;
 pub const SLIDE_LEFT: u64 = 0x20;
 pub const HIDE_WHEN_PRINTING: u64 = 0x200;
+/// The object has conditional formatting (node `.[138]`); set by FileMaker
+/// on every object with conditions, checked on the templates.
+pub const HAS_CONDITIONS: u64 = 0x1;
+/// The object has a tooltip (node `.[3]`), checked on the templates.
+pub const HAS_TOOLTIP: u64 = 0x4000;
+
+/// Object kinds (field 1, XML `kind`).
+pub mod kind {
+    pub const FIELD: u64 = 1;
+    pub const TEXT: u64 = 2;
+    pub const PORTAL: u64 = 9;
+    pub const BUTTON: u64 = 10;
+    pub const TAB_CONTROL: u64 = 11;
+    pub const TAB_PANEL: u64 = 12;
+    /// External object: web viewer (`WEBV`) or chart (`CHRT`), field 11.
+    pub const EXTERNAL: u64 = 13;
+    pub const POPOVER_BUTTON: u64 = 14;
+    pub const POPOVER: u64 = 15;
+    pub const SLIDE_CONTROL: u64 = 16;
+    pub const SLIDE_PANEL: u64 = 17;
+    pub const BUTTON_BAR: u64 = 18;
+}
+
+/// Type id of a web viewer in object field 11.1 (`WEBV`).
+pub const WEB_VIEWER: u64 = 0x5745_4256;
+
+/// Slide control option bits (object field 19.1).
+pub mod slide {
+    /// Swipe gestures off.
+    pub const NO_SWIPE: u64 = 0x1;
+    /// Navigation dots hidden.
+    pub const NO_DOTS: u64 = 0x2;
+}
+
+/// A conditional format (`.[138].[128 + i]`): a test, and the style it
+/// applies (`k13` = `{1 options, 2 style {1 local rules}, 3 operator}`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Condition {
+    /// 0 formula; value comparisons, see [`op`].
+    pub op: u64,
+    /// The formula (token stream, node `.[5]`), for op 0.
+    pub calc: Option<Vec<u8>>,
+    /// The values compared with (keys 1 and 6, text).
+    pub value1: String,
+    pub value2: String,
+    /// Raw `k13` message: options, style and operator.
+    pub format: Vec<u8>,
+}
+
+/// Conditional format operators (k13 field 3), in the order of
+/// FileMaker's Conditional Formatting dialog.
+pub mod op {
+    pub const FORMULA: u64 = 0;
+    pub const BETWEEN: u64 = 1;
+    pub const NOT_BETWEEN: u64 = 2;
+    pub const EQUAL: u64 = 3;
+    pub const NOT_EQUAL: u64 = 4;
+    pub const GREATER: u64 = 5;
+    pub const GREATER_EQUAL: u64 = 6;
+    pub const LESS: u64 = 7;
+    pub const LESS_EQUAL: u64 = 8;
+    pub const CONTAINING: u64 = 9;
+    pub const NOT_CONTAINING: u64 = 10;
+    pub const BEGINNING: u64 = 11;
+    pub const ENDING: u64 = 12;
+    pub const EMPTY: u64 = 13;
+    pub const NOT_EMPTY: u64 = 14;
+}
+
+impl Condition {
+    /// The style it applies: an object style message (local rules in field 1).
+    pub fn style(&self) -> Vec<u8> {
+        Msg::parse(&self.format)
+            .and_then(|m| m.bytes(2).map(<[u8]>::to_vec))
+            .unwrap_or_default()
+    }
+
+    /// A condition applying `style` (an object style message, see
+    /// [`crate::theme::ObjectStyle`]), as FileMaker writes it: options 3 when
+    /// only the text colour is set (as seen), the operator in field 3.
+    pub fn with_style(&self, style: &[u8]) -> Vec<u8> {
+        let mut m = MsgBuf::parse(&self.format).unwrap_or_default();
+        if m.get(1).is_none() {
+            m.set(1, Field::Varint(3));
+        }
+        m.set(2, Field::Bytes(style.to_vec()));
+        set_op(&mut m, self.op);
+        m.encode()
+    }
+}
+
+/// The operator: field 3 of a condition's `k13`, after the style.
+fn set_op(m: &mut MsgBuf, op: u64) {
+    m.remove(3);
+    m.0.push((3, Field::Varint(op)));
+}
 
 /// Object type (style field 3) of a part kind, as FileMaker gives a new part.
 pub fn part_style_type(kind: u64) -> u32 {
@@ -157,6 +253,27 @@ pub struct LayoutObject {
     pub button_raw: Option<Vec<u8>>,
     /// Button action: a single step (Perform Script for a script button).
     pub button: Option<crate::scripts::Step>,
+    /// Tooltip calculation (node `.[3]`).
+    pub tooltip: Option<Vec<u8>>,
+    /// Placeholder text calculation of a field (node `.[6]`).
+    pub placeholder: Option<Vec<u8>>,
+    /// "Hide object when" calculation (node `.[4]`).
+    pub hide: Option<Vec<u8>>,
+    /// Data formatting (node key 13), see [`crate::formats`].
+    pub format: Option<crate::formats::Format>,
+    /// Conditional formatting, in order (node `.[138]`).
+    pub conditions: Vec<Condition>,
+    /// Web viewer address calculation (node `.[128]`).
+    pub url: Option<Vec<u8>>,
+    /// External object (field 11): type (`WEBV`, `CHRT`) and options.
+    pub external: Option<(u64, u64)>,
+    /// Popover button: its popover (field 17.3); popover: its button (18.4).
+    pub popover: Option<u64>,
+    /// Options of popovers (18.1), slide controls (19.1, see [`slide`]),
+    /// slide panels (20.1) and button bars (21.1).
+    pub flags: u64,
+    /// Button bar: the active segment (field 21.2).
+    pub selected: Option<u64>,
 }
 
 impl Bounds {
@@ -225,6 +342,8 @@ pub struct Layout {
     pub css_raw: Vec<u8>,
     pub parts: Vec<Part>,
     pub objects: Vec<LayoutObject>,
+    /// Tab order (`[L].[21]`): object ids, first to last.
+    pub tab_order: Vec<u64>,
 }
 
 impl Layout {
@@ -255,7 +374,14 @@ struct Raw {
     objects: BTreeMap<u32, Vec<u8>>,
     texts: BTreeMap<u32, String>,
     names: BTreeMap<u32, String>,
-    labels: BTreeMap<u32, Vec<u8>>,
+    /// Calculations under an object's node: sub-path → token stream (k5).
+    calcs: BTreeMap<u32, BTreeMap<Vec<u32>, Vec<u8>>>,
+    /// Keys of an object's node (7 tab order, 13 formats).
+    keys: BTreeMap<u32, BTreeMap<u32, Vec<u8>>>,
+    /// Keys of conditional formats: (object, 128 + i) → key → value.
+    conds: BTreeMap<(u32, u32), BTreeMap<u32, Vec<u8>>>,
+    /// Tab order `[L].[21]`: key → object id.
+    tabs: BTreeMap<u32, u64>,
     /// Button step parameters: `[4].[5].[L].[5].[obj].[17]`.
     actions: BTreeMap<u32, crate::scripts::RawParams>,
 }
@@ -265,7 +391,7 @@ fn style_name(m: &Msg) -> String {
 }
 
 fn object(m: &Msg, r: &Raw) -> LayoutObject {
-    let (texts, labels) = (&r.texts, &r.labels);
+    let texts = &r.texts;
     let b = m.msg(4).unwrap_or_default();
     let id = m.uint(2).unwrap_or(0);
     LayoutObject {
@@ -293,7 +419,7 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
             .and_then(|i| r.names.get(&i).cloned())
             .unwrap_or_default(),
         parent: None,
-        label: u32::try_from(id).ok().and_then(|i| labels.get(&i).cloned()),
+        label: None,
         display: m.msg(8).and_then(|f| f.uint(5)).unwrap_or(0),
         value_list: m.msg(8).and_then(|f| f.uint(6)).map(|v| v as u32),
         active_child: m.uint(6),
@@ -315,6 +441,67 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
                 .unwrap_or_default();
             crate::scripts::button_action(b, params)
         }),
+        external: m
+            .msg(11)
+            .map(|x| (x.uint(1).unwrap_or(0), x.uint(3).unwrap_or(0))),
+        popover: m
+            .msg(17)
+            .and_then(|x| x.uint(3))
+            .or_else(|| m.msg(18).and_then(|x| x.uint(4))),
+        flags: [18, 19, 20, 21]
+            .iter()
+            .find_map(|f| m.msg(*f).and_then(|x| x.uint(1)))
+            .unwrap_or(0),
+        selected: m.msg(21).and_then(|x| x.uint(2)),
+        ..Default::default()
+    }
+    .with_node(r)
+}
+
+impl LayoutObject {
+    /// Fills what the object's node `[4].[5].[L].[5].[id]` holds.
+    fn with_node(mut self, r: &Raw) -> Self {
+        let Ok(id) = u32::try_from(self.id) else {
+            return self;
+        };
+        let calc = |sub: &[u32]| r.calcs.get(&id).and_then(|c| c.get(sub)).cloned();
+        // Tab panels keep their label in `text` (node key 1 and `.[2]`).
+        if self.kind != kind::TAB_PANEL {
+            self.label = calc(&[2]);
+        }
+        self.tooltip = calc(&[3]);
+        self.placeholder = calc(&[6]);
+        self.hide = calc(&[4]);
+        if self.external.is_some_and(|e| e.0 == WEB_VIEWER) {
+            self.url = calc(&[128]);
+        }
+        let keys = r.keys.get(&id);
+        self.format = keys
+            .and_then(|k| k.get(&13))
+            .and_then(|b| crate::formats::Format::parse(b));
+        self.conditions = r
+            .conds
+            .range((id, 0)..=(id, u32::MAX))
+            .map(|((_, i), k)| {
+                let get = |key: u32| k.get(&key).cloned().unwrap_or_default();
+                let format = get(13);
+                let op = Msg::parse(&format)
+                    .and_then(|m| m.all(3).last().copied())
+                    .and_then(|v| match v {
+                        crate::pb::Value::Varint(x) => Some(x),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Condition {
+                    op,
+                    calc: calc(&[138, *i, 5]),
+                    value1: crate::text(&get(1)),
+                    value2: crate::text(&get(6)),
+                    format,
+                }
+            })
+            .collect();
+        self
     }
 }
 
@@ -355,14 +542,37 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                     .objects
                     .insert(*key, data.to_vec());
             }
-            // Button label calculation: token stream (see `crate::calc`).
-            [4, 5, l, 5, obj, 3] if *key == 5 => {
+            // Calculations under an object's node: token stream (`crate::calc`).
+            [4, 5, l, 5, obj, sub @ ..] if *key == 5 && !sub.is_empty() => {
                 raw.entry(*l)
                     .or_default()
-                    .labels
+                    .calcs
                     .entry(*obj)
                     .or_default()
+                    .entry(sub.to_vec())
+                    .or_default()
                     .extend_from_slice(data);
+            }
+            [4, 5, l, 5, obj, 138, i] => {
+                raw.entry(*l)
+                    .or_default()
+                    .conds
+                    .entry((*obj, *i))
+                    .or_default()
+                    .insert(*key, data.to_vec());
+            }
+            [4, 5, l, 21] => {
+                if let Some(id) = crate::save::index_ref(data) {
+                    raw.entry(*l).or_default().tabs.insert(*key, id as u64);
+                }
+            }
+            [4, 5, l, 5, obj] if matches!(key, 7 | 13) => {
+                raw.entry(*l)
+                    .or_default()
+                    .keys
+                    .entry(*obj)
+                    .or_default()
+                    .insert(*key, data.to_vec());
             }
             [4, 5, l, 5, obj] if *key == 1 => {
                 raw.entry(*l).or_default().texts.insert(*obj, text(data));
@@ -429,6 +639,7 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 css_raw: header.bytes(7).unwrap_or_default().to_vec(),
                 parts,
                 objects,
+                tab_order: r.tabs.values().copied().collect(),
             }
         })
         .collect())
@@ -540,8 +751,8 @@ pub fn patch_object(
         m.set(1, Field::Varint(new.kind));
         changed = true;
     }
-    if new.options != old.options {
-        m.set(3, Field::Varint(new.options));
+    if effective_options(new) != effective_options(old) {
+        m.set(3, Field::Varint(effective_options(new)));
         changed = true;
     }
     if let Some(c) = children {
@@ -581,6 +792,12 @@ pub fn patch_object(
         m.set_msg(8, &f);
         changed = true;
     }
+    if (new.external, new.popover, new.flags, new.selected)
+        != (old.external, old.popover, old.flags, old.selected)
+    {
+        kind_fields(&mut m, new);
+        changed = true;
+    }
     if new.button != old.button {
         match &new.button {
             Some(s) => {
@@ -596,6 +813,80 @@ pub fn patch_object(
     if changed { m.encode() } else { raw.to_vec() }
 }
 
+/// Options with the bits FileMaker keeps in step with the object's node:
+/// [`HAS_CONDITIONS`] and [`HAS_TOOLTIP`].
+pub fn effective_options(o: &LayoutObject) -> u64 {
+    let mut v = o.options & !(HAS_CONDITIONS | HAS_TOOLTIP);
+    if !o.conditions.is_empty() {
+        v |= HAS_CONDITIONS;
+    }
+    if o.tooltip.is_some() {
+        v |= HAS_TOOLTIP;
+    }
+    v
+}
+
+/// The fields of popover buttons (17), popovers (18), slide controls (19),
+/// slide panels (20), button bars (21) and external objects (11), as
+/// FileMaker writes them for new objects (Insert menu, FileMaker Pro 26).
+fn kind_fields(m: &mut MsgBuf, o: &LayoutObject) {
+    let set1 = |m: &mut MsgBuf, f: u32, extra: &[(u32, u64)]| {
+        let mut x = m.msg(f);
+        x.set(1, Field::Varint(o.flags));
+        for (k, v) in extra {
+            x.set(*k, Field::Varint(*v));
+        }
+        m.set_msg(f, &x);
+    };
+    match o.kind {
+        kind::POPOVER_BUTTON => {
+            let mut x = m.msg(17);
+            if x.0.is_empty() {
+                x = MsgBuf(vec![
+                    (1, Field::Varint(0)),
+                    (2, Field::Varint(2)),
+                    (3, Field::Varint(0)),
+                    (5, Field::Varint(12)),
+                    (6, Field::Varint(0)),
+                ]);
+            }
+            x.set(3, Field::Varint(o.popover.unwrap_or(0)));
+            m.set_msg(17, &x);
+        }
+        kind::POPOVER => {
+            let x = m.msg(18);
+            let pos = match x.get(3) {
+                Some(Field::Varint(v)) => *v,
+                _ => 0,
+            };
+            set1(m, 18, &[(3, pos), (4, o.popover.unwrap_or(0))]);
+        }
+        kind::SLIDE_CONTROL => set1(m, 19, &[]),
+        kind::SLIDE_PANEL => set1(m, 20, &[]),
+        kind::BUTTON_BAR => {
+            set1(m, 21, &[]);
+            let mut x = m.msg(21);
+            match o.selected {
+                Some(s) => x.set(2, Field::Varint(s)),
+                None => x.remove(2),
+            }
+            m.set_msg(21, &x);
+        }
+        kind::EXTERNAL => {
+            if let Some((ty, flags)) = o.external {
+                let mut x = m.msg(11);
+                x.set(1, Field::Varint(ty));
+                if x.get(2).is_none() {
+                    x.set(2, Field::Varint(0));
+                }
+                x.set(3, Field::Varint(flags));
+                m.set_msg(11, &x);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Message of a new object, built on `proto` (an existing object of the
 /// same kind and style type, whose unknown fields FileMaker expects) or
 /// from scratch.
@@ -609,9 +900,15 @@ pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject, children: &[u64]) -> V
     m.set(1, Field::Varint(o.kind));
     m.set(2, Field::Varint(o.id));
     if o.options != 0 {
-        m.set(3, Field::Varint(o.options));
+        m.set(3, Field::Varint(effective_options(o)));
     } else if m.get(3).is_none() {
-        m.set(3, Field::Varint(anchor::LEFT | anchor::TOP));
+        m.set(
+            3,
+            Field::Varint(effective_options(&LayoutObject {
+                options: anchor::LEFT | anchor::TOP,
+                ..o.clone()
+            })),
+        );
     }
     let b = bounds_msg(m.msg(4), &o.bounds);
     m.set_msg(4, &b);
@@ -682,7 +979,24 @@ pub fn new_object(proto: Option<&[u8]>, o: &LayoutObject, children: &[u64]) -> V
             );
         }
     }
+    kind_fields(&mut m, o);
     match &o.button {
+        None if o.kind == kind::BUTTON && m.get(16).is_none() => {
+            // A button without an action (a new button bar segment), as
+            // FileMaker writes one: an empty step and its inline block.
+            let step = MsgBuf(vec![
+                (1, Field::Varint(0)),
+                (2, Field::Varint(0)),
+                (3, Field::Varint(0)),
+                (4, Field::Bytes(vec![0; 14])),
+            ]);
+            let mut b = MsgBuf(vec![(1, Field::Varint(0)), (2, Field::Varint(2))]);
+            b.set_msg(3, &step);
+            b.set(5, Field::Varint(12));
+            b.set(6, Field::Varint(0));
+            m.set_msg(16, &b);
+        }
+        None if o.kind == kind::BUTTON => {}
         Some(s) => {
             let mut b = m.msg(16);
             if b.0.is_empty() {

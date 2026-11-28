@@ -21,6 +21,8 @@ use crate::Doc;
 use crate::i18n::tr;
 use crate::look::{self, Look};
 
+pub(crate) mod objects;
+
 const RULER: f32 = 18.0;
 /// Left margin holding the part labels.
 const GUTTER: f32 = 96.0;
@@ -79,6 +81,7 @@ mod kind {
     pub const BUTTON: u64 = 10;
     pub const TAB_CONTROL: u64 = 11;
     pub const TAB_PANEL: u64 = 12;
+    pub const SLIDE_PANEL: u64 = 17;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +95,10 @@ pub enum Tool {
     Button,
     Portal,
     TabControl,
+    PopoverButton,
+    SlideControl,
+    ButtonBar,
+    WebViewer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +248,8 @@ pub struct Designer {
     pub guides: Vec<Guide>,
     /// Screen position of the layout's (0, 0) in the last frame.
     pub canvas_origin: Pos2,
+    /// Conditional formatting, tab order, web viewer dialogs (`objects.rs`).
+    extra: objects::Extra,
 }
 
 fn rect_of(b: &Bounds) -> Rect {
@@ -311,7 +320,9 @@ fn front_panel(l: &Layout, tc: &LayoutObject) -> Option<u64> {
     tc.active_child.or_else(|| {
         l.objects
             .iter()
-            .filter(|x| x.parent == Some(tc.id) && x.kind == kind::TAB_PANEL)
+            .filter(|x| {
+                x.parent == Some(tc.id) && matches!(x.kind, kind::TAB_PANEL | kind::SLIDE_PANEL)
+            })
             .map(|x| x.id)
             .min()
     })
@@ -323,7 +334,7 @@ fn visible(l: &Layout, o: &LayoutObject) -> bool {
         let Some(p) = l.objects.iter().find(|x| x.id == *a) else {
             return true;
         };
-        if p.kind != kind::TAB_PANEL {
+        if !matches!(p.kind, kind::TAB_PANEL | kind::SLIDE_PANEL) {
             return true;
         }
         let tc = p.parent.and_then(|t| l.objects.iter().find(|x| x.id == t));
@@ -418,6 +429,7 @@ impl Designer {
             show_rulers: true,
             guides: Vec::new(),
             canvas_origin: Pos2::ZERO,
+            extra: Default::default(),
         }
     }
 
@@ -729,6 +741,10 @@ impl Designer {
             (Tool::Button, "(B)", "Button tool"),
             (Tool::Portal, "[P]", "Portal tool"),
             (Tool::TabControl, "[Tab]", "Tab control tool"),
+            (Tool::PopoverButton, "[▾]", "Popover button tool"),
+            (Tool::SlideControl, "[•••]", "Slide control tool"),
+            (Tool::ButtonBar, "[|||]", "Button bar tool"),
+            (Tool::WebViewer, "[www]", "Web viewer tool"),
         ] {
             if ui
                 .selectable_label(self.tool == t, icon)
@@ -1167,7 +1183,12 @@ impl Designer {
         let r = rect_of(b);
         l.objects
             .iter()
-            .filter(|c| matches!(c.kind, kind::PORTAL | kind::TAB_PANEL))
+            .filter(|c| {
+                matches!(
+                    c.kind,
+                    kind::PORTAL | kind::TAB_PANEL | kind::SLIDE_PANEL | 15
+                )
+            })
             .filter(|c| !not.contains(&c.id) && visible(l, c))
             .filter(|c| rect_of(&l.absolute(c)).expand(0.5).contains_rect(r))
             // The innermost, then the frontmost (first in the list).
@@ -1237,6 +1258,10 @@ impl Designer {
             Tool::Line => (100.0, 0.0),
             Tool::Portal => (320.0, 150.0),
             Tool::TabControl => (360.0, 220.0),
+            Tool::PopoverButton => (100.0, 30.0),
+            Tool::SlideControl => (290.0, 170.0),
+            Tool::ButtonBar => (300.0, 30.0),
+            Tool::WebViewer => (300.0, 150.0),
             _ => (100.0, 60.0),
         };
         if r.width() < 3.0 && r.height() < 3.0 {
@@ -1319,6 +1344,10 @@ impl Designer {
                     tabs: format!("{}\n{}", tr("Tab 1"), tr("Tab 2")),
                 })
             }
+            Tool::PopoverButton => self.insert_popover_button(rect),
+            Tool::SlideControl => self.insert_slide_control(rect),
+            Tool::ButtonBar => self.insert_button_bar(rect),
+            Tool::WebViewer => self.new_web_setup(rect),
             Tool::Select => {}
         }
     }
@@ -1327,7 +1356,8 @@ impl Designer {
     fn place_inside(&mut self, id: u64) {
         let Some(o) = self.object(id) else { return };
         let b = self.layout.absolute(o);
-        let parent = self.container_for(&b, &BTreeSet::from([id]));
+        // Not into itself or its own panels.
+        let parent = self.container_for(&b, &subtree(&self.layout, id));
         self.set_parent(id, parent);
     }
 
@@ -1961,6 +1991,13 @@ impl Designer {
         {
             match o.kind {
                 kind::TEXT => self.text_edit = Some((id, o.text.clone().unwrap_or_default())),
+                fmp12::layouts::kind::EXTERNAL
+                    if o.external
+                        .is_some_and(|e| e.0 == fmp12::layouts::WEB_VIEWER) =>
+                {
+                    let b = o.bounds.clone();
+                    self.open_web_setup(b, Some(id), doc);
+                }
                 kind::BUTTON => {
                     let label = o
                         .label
@@ -2090,7 +2127,11 @@ impl Designer {
             (Tool::Field, "Field…"),
             (Tool::Portal, "Portal…"),
             (Tool::TabControl, "Tab Control…"),
+            (Tool::SlideControl, "Slide Control"),
+            (Tool::WebViewer, "Web Viewer…"),
             (Tool::Button, "Button…"),
+            (Tool::PopoverButton, "Popover Button"),
+            (Tool::ButtonBar, "Button Bar"),
             (Tool::Text, "Text"),
             (Tool::Line, "Line"),
             (Tool::Rect, "Rectangle"),
@@ -2110,6 +2151,8 @@ impl Designer {
 
     /// Arrange menu (Layout mode).
     pub fn arrange_menu(&mut self, ui: &mut egui::Ui) {
+        self.tab_order_item(ui);
+        ui.separator();
         let n = self.movable().len();
         let item = |ui: &mut egui::Ui, on: bool, name: &'static str, keys: &str| {
             ui.add_enabled(on, egui::Button::new(tr(name)).shortcut_text(keys))
@@ -2274,7 +2317,10 @@ impl Designer {
             ui.label(format!("{} {}", ids.len(), tr("objects selected")));
         }
         match self.tab {
-            Tab::Position => self.position_tab(ui, &ids),
+            Tab::Position => {
+                self.position_tab(ui, &ids);
+                self.position_extra(ui, doc, &ids);
+            }
             Tab::Styles => self.styles_tab(ui, doc, &ids),
             Tab::Appearance => self.appearance_tab(ui, doc, &ids),
             Tab::Data => self.data_tab(ui, doc, &ids),
@@ -2781,6 +2827,7 @@ impl Designer {
         }
         let Some((to_ref, field, rep)) = o.field else {
             ui.label(tr("No field selected"));
+            self.data_extra(ui, doc, ids);
             return;
         };
         let to = (to_ref & 0xFFF) as u32;
@@ -2877,10 +2924,7 @@ impl Designer {
             }
         }
         ui.separator();
-        ui.label(tr("Data formatting"));
-        // ponytail: number and date formats live in the object node's key
-        // 13, not decoded yet; the field keeps the formats it has.
-        ui.weak(tr("As entered (formats are kept, not edited yet)"));
+        self.data_extra(ui, doc, ids);
     }
 
     fn portal_data(&mut self, ui: &mut egui::Ui, doc: &Doc, o: &LayoutObject) {
@@ -2921,6 +2965,7 @@ impl Designer {
     /// Specify Field, Portal Setup, Tab Control Setup, Part Setup, Button
     /// Setup, New Layout, Delete Layout and Layout Setup dialogs.
     pub fn dialogs(&mut self, ctx: &egui::Context, doc: &Doc, scripts: &[(u32, String)]) {
+        self.object_dialogs(ctx, doc);
         let mut close = false;
         let mut done = false;
         let layout_to = (self.layout.table_occurrence & 0xFFF) as u32;
@@ -3481,6 +3526,9 @@ fn paint_object(
     table: u32,
     layout_to: u32,
 ) {
+    if objects::paint(painter, doc, l, o, lk, r, table, layout_to) {
+        return;
+    }
     let thin = Stroke::new(0.5, Color32::from_gray(150));
     match o.kind {
         // Line: from the top-left to the bottom-right corner.

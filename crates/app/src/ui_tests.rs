@@ -16,7 +16,7 @@ fn harness(name: &str) -> Option<Harness<'static, App>> {
     Some(harness_for(app))
 }
 
-fn harness_for(app: App) -> Harness<'static, App> {
+pub(crate) fn harness_for(app: App) -> Harness<'static, App> {
     Harness::builder()
         .with_size([1060.0, 900.0])
         .with_accessibility_check(false)
@@ -33,7 +33,7 @@ fn harness_for(app: App) -> Harness<'static, App> {
 }
 
 /// Renders the window to `$BASECRAFT_SHOTS/<name>.png`.
-fn shot(h: &mut Harness<'_, App>, name: &str) {
+pub(crate) fn shot(h: &mut Harness<'_, App>, name: &str) {
     let Some(dir) = std::env::var_os("BASECRAFT_SHOTS") else {
         return;
     };

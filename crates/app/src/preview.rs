@@ -67,7 +67,7 @@ pub fn draw(
             layout
                 .objects
                 .iter()
-                .filter(|x| x.parent == Some(tc) && x.kind == 12)
+                .filter(|x| x.parent == Some(tc) && matches!(x.kind, 12 | 17))
                 .map(|x| x.id)
                 .min()
         })
@@ -79,12 +79,15 @@ pub fn draw(
                 break;
             };
             // ponytail: portal rows are not printed yet.
-            if a.kind == 9 || (a.kind == 12 && a.parent.and_then(front) != Some(a.id)) {
+            // Popovers do not print; tab and slide panels only the front one.
+            if matches!(a.kind, 9 | 15)
+                || (matches!(a.kind, 12 | 17) && a.parent.and_then(front) != Some(a.id))
+            {
                 return false;
             }
             p = a.parent;
         }
-        o.kind != 12
+        !matches!(o.kind, 12 | 15 | 17)
     };
     for band in &p.bands {
         let part = &layout.parts[band.part];
@@ -101,7 +104,54 @@ pub fn draw(
             if crate::chart::draw(ui.ctx(), &painter, doc, layout, o, r, found, band.record) {
                 continue;
             }
+            let oc = crate::objects::context(table, layout_to, band.record);
+            if print::objects::hidden(&doc.db, o, oc) {
+                continue;
+            }
+            let value = o.field.and_then(|(to, field, _)| {
+                let to = (to & 0xFFF) as u32;
+                let tbl = doc.db.table_of(to)?.id;
+                // Summaries are computed over the band's records below.
+                let kind = doc.db.table(tbl)?.field(field as u32)?.kind;
+                if kind == fmp12::schema::FieldKind::Summary {
+                    return None;
+                }
+                let rec = if to == layout_to || tbl == table {
+                    band.record
+                } else {
+                    band.record
+                        .and_then(|r| doc.db.related(layout_to, r, to).first().copied())
+                }?;
+                Some(doc.db.value(tbl, rec, field as u32))
+            });
+            let cond_look;
+            let lk = if o.conditions.is_empty() {
+                lk
+            } else {
+                let v = value
+                    .clone()
+                    .unwrap_or_else(|| calc::Value::text(o.text.clone().unwrap_or_default()));
+                cond_look = crate::objects::conditional_look(doc, theme, o, &v, oc);
+                &cond_look
+            };
             lk.paint_box(&painter, r);
+            if let Some(u) = o.url.as_ref() {
+                let url = doc
+                    .db
+                    .eval_tokens(u, table, layout_to, band.record)
+                    .to_text();
+                lk.paint_text(&painter, r, &url);
+                continue;
+            }
+            if let Some((s, color)) = value
+                .as_ref()
+                .and_then(|v| crate::objects::formatted(doc, o, v))
+            {
+                let mut l2 = lk.clone();
+                l2.color = color.unwrap_or(lk.color);
+                l2.paint_text(&painter, r, &s);
+                continue;
+            }
             let text = if let Some((to, field, _)) = o.field {
                 let to = (to & 0xFFF) as u32;
                 let rec = band.record;
@@ -126,7 +176,7 @@ pub fn draw(
                     (Some(tid), Some(r)) => doc.db.value(tid, r, field as u32).to_text(),
                     _ => String::new(),
                 }
-            } else if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 18)) {
+            } else if let Some(l) = o.label.as_ref().filter(|_| matches!(o.kind, 10 | 14 | 18)) {
                 doc.db
                     .eval_tokens(l, table, layout_to, band.record)
                     .to_text()

@@ -197,12 +197,15 @@ M5 the engine ran 50 of the 222 steps; the other 172 returned error 3.
 | Inspector › Styles: theme, named styles of the object's type, clear local changes | ✅ |
 | Inspector › Appearance: fill, line (style none/solid/dashed/dotted/double, colour, width), corner radius; text font (font catalog), size, bold, italic, underline, strikethrough, colour, alignment (left, centre, right, justify) — written as local `.self` properties FileMaker reads (XML `LocalCSS`) | ✅ verified in FileMaker |
 | Inspector › Data: field, control style (edit box, drop-down list, pop-up menu, checkbox set, radio button set, drop-down calendar), value list; portal occurrence, first row, rows | ✅ |
-| Inspector › Data: number and date display formats (object node key 13) | ⏳ kept as they are, not decoded |
+| Inspector › Data: data formatting (object node key 13, `fmp12::formats`): number (as entered, general, decimal, currency, percent, Boolean; fixed decimals, thousands, system separators, currency symbol leading or trailing, negative style and colour, hide zero), date (predefined formats, custom elements and separators, day and month styles), time (custom hours/minutes/seconds, separator, styles, AM/PM), container format number | ✅ offsets and meanings checked against FileMaker's rendering |
+| Inspector › Data: placeholder text, "Hide object when" (and in Find mode); Position: tooltip; sliding "only objects directly above" and "also resize enclosing part" | ✅ option bits decoded in FileMaker's Inspector |
+| Format › Conditional Formatting…: formula or "Value is" tests (FileMaker's 20 operators, written with the `Self` formula FileMaker stores), text colour, fill, bold, italic, underline | ✅ |
+| Insert › Popover Button, Slide Control, Button Bar, Web Viewer… (tools too); Web Viewer Setup; Arrange › Set Tab Order… | ✅ round trip; FileMaker check in `layout_check.ps1` |
 | Rulers, grid (show, snap to grid), guides dragged from the rulers (snap within 5 pt; dragged back onto the ruler to remove) | ✅ (guides are kept for the session; FileMaker stores its own guides in a place not decoded) |
 | Save to `.fmp12`: object list, container child lists (field 6), per-object nodes (text, name, button/tab labels, UUIDs), parts (added, removed, reordered) and their object lists, layout name, table occurrence, width, last object id, spatial index and tab order | ✅ verified in FileMaker |
 | Protobuf encoder (`pb::Msg::encode`, `pb::MsgBuf`): all 418 template layouts and 5,544 objects re-encode byte for byte | ✅ |
 | Layout object nesting read from the containers' child lists: 633/633 objects match the XML | ✅ |
-| Web viewer, chart, popover, button bar and slide control tools; tab order editing; conditional formatting; script triggers on objects; sliding "only objects directly above" | ⏳ |
+| Chart tool; script triggers on objects; icons of buttons; popover and slide control options (position, title bar, dots, swipe bits 🔸) | ⏳ |
 
 ## M7 — Writing `.fmp12`
 
@@ -308,6 +311,10 @@ M5 the engine ran 50 of the 222 steps; the other 172 returned error 3.
 | Related fields outside portals (first related record) | ✅ |
 | Pop-up menus and drop-down lists from value lists (custom and field-based) | ✅ |
 | Checkboxes, radio buttons, calendars | ⏳ |
+| Data formats (numbers, dates, times, timestamps) shown as FileMaker shows them, in Browse, Preview and PDF (`print::format`) | ✅ |
+| Conditional formatting, "Hide object when", placeholder text, tooltips | ✅ |
+| Popovers (open and close), slide controls (dots, swipe), button bars (active segment, segment actions), web viewers (address in a box, "Open in Browser…" after a confirmation; no browser engine) | ✅ |
+| Tab and Shift+Tab follow the layout's tab order | ✅ |
 | Layout mode (see M6) | 🚧 |
 | Preview mode | ⏳ |
 | Web version (WebAssembly, GitHub Pages): open or drop a file, everything runs locally | ✅ |

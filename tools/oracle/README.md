@@ -90,7 +90,8 @@ from files we authored ourselves.
   template, which FileMaker needs to show numbers). Open it, choose the Sales layout, Table
   view, and read the values through UI Automation (`AutomationId` `Field: Sales::…`, value
   pattern), unsorted and after the Region column's menu › Sort ascending.
-* `layout_check.ps1`: `Test-FmLayout <file> -Layouts "BaseCraft Demo:3,Contact List 2:2" [-Xml out.xml]`
+* `layout_check.ps1`: `Test-FmLayout <file> -Layouts "BaseCraft Demo:3,Contact List 2:2" [-Xml out.xml] [-Clicks "Layout:x,y;x,y"] [-Keys "Layout:{TAB}"] [-NoRecord]`
+  (dot-source `security_check.ps1` too: it waits for a free FileMaker and quits only its own)
   checks a file whose layouts BaseCraft wrote: opens a copy, reports the damage dialog if any,
   and for each layout (name and its place in the layout pop-up) screenshots FileMaker's window
   in Browse mode (after creating a record) and in Layout mode; optionally saves the copy as

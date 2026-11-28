@@ -14,7 +14,7 @@ test until this page and the test are updated together.
 | Category | Reference | Total | Implemented | Partial | Missing | Test |
 |----------|-----------|------:|------------:|--------:|--------:|------|
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
-| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 86 | 13 | 40 | `cargo test -p script get_coverage -- --nocapture` |
+| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 95 | 8 | 36 | `cargo test -p script get_coverage -- --nocapture` |
 | Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 23 | 0 (+71 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 22 | 0 | 4 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
@@ -47,24 +47,27 @@ decompiled.
 
 ## Top gaps by likely user impact
 
-1. **`Get ( UUIDNumber )`, `Get ( FileName )`, `Get ( FilePath )`, `Get ( ApplicationVersion )`,
-   `Get ( SystemLanguage )`, `Get ( ModifiedFields )`, `Get ( ActiveRepetitionNumber )`,
-   `Get ( RecordModificationCount )`, `Get ( ActiveLayoutObjectName )`, `Get ( QuickFindText )`,
-   `Get ( WindowContentWidth/Height )`, `Get ( DesktopPath/DocumentsPath/TemporaryPath )`**: common
-   in auto-enter keys and scripts; they fail with error 1225 ("needs a host") where FileMaker
-   answers. `Get ( PrivilegeSetName )` does not even compile in a script.
-2. **OnRecordCommit on user actions** is queued after the commit (FileMaker runs it
+1. **OnRecordCommit on user actions** is queued after the commit (FileMaker runs it
    before and a False result keeps the record open); script steps run it before.
-3. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
-   editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
-4. **Revert Transaction**'s condition, error code and message are read from the step
+2. **ExecuteSQL / ExecuteSQLe** have joins, GROUP BY, HAVING and the aggregates, but no
+   SQL functions (UPPER, CAST, …), no arithmetic, no subqueries and no FileMaker_Tables /
+   FileMaker_Fields system tables, which solutions use to read their own schema.
+3. **Revert Transaction**'s condition, error code and message are read from the step
    by guess (no FileMaker-written step checked them), and Open Transaction's Skip
    auto-enter / Skip validation options are ignored.
-5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
+4. **Checkbox sets and radio button sets** have no "Other…" item and ignore "Allow
+   editing"; their columns are not checked against FileMaker's (PROGRESS.md M4).
+5. **`Get()` flags a local solution still misses**: PageNumber and PageCount (page
+   headers in Preview and PDF), SystemLocaleElements / FileLocaleElements, CustomMenuSetName
+   (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
+   where FileMaker answers). The active-field flags see only fields a script entered, and
+   RecordModificationCount is kept in memory (a save keeps the file's previous count). The
+   other missing flags belong to servers, FileMaker Go or plug-ins.
+6. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
+7. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
    and Flush Web Viewer Cookies have nothing to act on.
-7. **Steps FileMaker runs on Windows that BaseCraft refuses**: Insert from URL (no HTTP
+8. **Steps FileMaker runs on Windows that BaseCraft refuses**: Insert from URL (no HTTP
    client), Save a Copy as XML, Save Records as JSONL, Execute FileMaker Data API,
    Perform JavaScript in Web Viewer, Open Manage Database and the other design dialogs.
 
@@ -93,26 +96,31 @@ against (PROGRESS.md M2). Flags that need a server answer FileMaker's value for 
 file (HostName = the computer's name, MultiUserState 0, UserCount 1). FileName, FilePath,
 FileSize, QuickFindText, WindowContentWidth/Height, ScreenWidth/Height and
 ScreenScaleFactor come from the app (`script::HostInfo`; the coverage test fills it as the
-app does).
+app does). CurrentDate, CurrentTime, CurrentTimestamp and CurrentHostTimestamp are the
+computer's local time (Windows' `ActiveTimeBias`, `date +%z` elsewhere, the JavaScript
+`Date` offset in the browser); the UTC milli- and microseconds stay UTC. SystemLanguage is
+`LANG` / `LC_ALL` or the OS's language (English in the browser). LastErrorDetail gives
+Revert Transaction's custom message, else the failing script, step and line of a
+transaction that fails or reverts; Claris's other cases (ODBC, SSL, cURL, plug-ins, locked
+records) do not arise in BaseCraft. RecordAccess and LayoutAccess come from the privilege
+set; EncryptionState is 0 (encrypted files are not opened).
 
-Partial (13): ActiveFieldName, ActiveFieldTableName, ActiveFieldContents,
+Partial (8): ActiveFieldName, ActiveFieldTableName, ActiveFieldContents,
 ActiveRepetitionNumber, ActiveLayoutObjectName (empty / 0 with no active field, but only
 fields and objects a script entered: the app's own focus is not passed to the engine);
-ModifiedFields (only a record a script opened); SystemLanguage (from `LANG` / `LC_ALL`,
-English otherwise); ActiveModifierKeys (no Caps Lock); CurrentDate, CurrentTime,
-CurrentTimestamp, CurrentHostTimestamp (UTC: no time-zone data); LastErrorDetail (always
-empty).
+ModifiedFields (only a record a script opened); ActiveModifierKeys (no Caps Lock);
+RecordModificationCount (the file's record key 252, then each commit of a changed existing
+record in the app or a script; kept in memory, not written on save; Replace Field Contents,
+Relookup and imports do not count).
 
-Missing (41): PageNumber, PrinterName, ScreenDepth, RecordModificationCount, RecordAccess,
-HighContrastState, LayoutAccess, SystemAppearance, SystemIPAddress, SystemNICAddress,
-WindowDesktopHeight, WindowDesktopWidth, HostIPAddress, AllowFormattingBarState,
-CustomMenuSetName, UseSystemFormatsState, HostApplicationVersion, DocumentsPathListing,
-WindowStyle, PersistentID, TriggerGestureInfo, EncryptionState, WindowOrientation,
+Missing (36): PageNumber, PrinterName, ScreenDepth, HighContrastState, SystemAppearance,
+SystemIPAddress, SystemNICAddress, WindowDesktopHeight, WindowDesktopWidth, HostIPAddress,
+AllowFormattingBarState, CustomMenuSetName, UseSystemFormatsState, HostApplicationVersion,
+DocumentsPathListing, WindowStyle, PersistentID, TriggerGestureInfo, WindowOrientation,
 NetworkType, ConnectionAttributes, TouchKeyboardState, RegionMonitorEvents, PageCount,
 OpenDataFileInfo, InstalledFMPluginsAsJSON, SessionIdentifier, SystemLocaleElements,
-FileLocaleElements, CacheFileName, CacheFilePath, RevertTransactionOnErrorState,
-SystemStorageAvailable, LastStepTokensUsed, GuidedAccessState,
-AccountPasswordDaysRemaining, WindowUUID.
+FileLocaleElements, CacheFileName, CacheFilePath, SystemStorageAvailable,
+LastStepTokensUsed, GuidedAccessState, AccountPasswordDaysRemaining, WindowUUID.
 
 ## Script steps
 

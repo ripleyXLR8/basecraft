@@ -43,6 +43,8 @@ pub(super) fn system_get(flag: &str) -> Option<Value> {
         "UserCount" => Value::int(1),
         "NetworkProtocol" => Value::text("TCP/IP"),
         "InstalledFMPlugins" => Value::text(""),
+        // BaseCraft does not open encrypted (EAR) files.
+        "EncryptionState" => Value::int(0),
         "UUIDNumber" => Value::Number(uuid_number()),
         "DesktopPath" => path(home().map(|h| h.join("Desktop"))),
         "DocumentsPath" => path(home().map(|h| h.join("Documents"))),
@@ -232,17 +234,97 @@ fn system_version() -> String {
     .clone()
 }
 
-/// The system's language, in English, from the locale variables
-/// (`LANG`, `LC_ALL`, `LANGUAGE`); English when none is set.
-// ponytail: Windows and macOS keep the region format outside the
-// environment; reading it needs OS calls (GetUserDefaultLocaleName,
-// CFLocale). English is answered there unless LANG is set.
+/// The system's language, in English: the locale variables (`LC_ALL`,
+/// `LANG`, `LANGUAGE`) first, then the OS's preferred language (Windows'
+/// user locale, macOS's preferred languages, through `sys-locale`);
+/// English when neither is known (and in the browser).
 fn system_language() -> &'static str {
     let code = ["LC_ALL", "LANG", "LANGUAGE"]
         .iter()
         .find_map(|v| env(v))
+        .or_else(os_locale)
         .unwrap_or_default()
         .to_lowercase();
+    language_name(&code)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn os_locale() -> Option<String> {
+    sys_locale::get_locale()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn os_locale() -> Option<String> {
+    None
+}
+
+/// Seconds to add to UTC for the computer's local time now (FileMaker's
+/// clock is local). Native: Windows' `ActiveTimeBias` (daylight saving
+/// included) or `date +%z`, read again after a minute so that a change of
+/// daylight saving time is seen; browser: JavaScript's `Date`. 0 if unknown.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn utc_offset_secs() -> i64 {
+    use std::sync::Mutex;
+    use web_time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, i64)>> = Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, off)) = *c
+        && at.elapsed() < Duration::from_secs(60)
+    {
+        return off;
+    }
+    let off = if cfg!(windows) {
+        command(
+            "reg",
+            &[
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation",
+                "/v",
+                "ActiveTimeBias",
+            ],
+        )
+        .and_then(|o| parse_bias(&o))
+    } else {
+        command("date", &["+%z"]).and_then(|o| parse_z(&o))
+    }
+    .unwrap_or(0);
+    *c = Some((Instant::now(), off));
+    off
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn utc_offset_secs() -> i64 {
+    // getTimezoneOffset: minutes from local time to UTC.
+    -(js_sys::Date::new_0().get_timezone_offset() * 60.0) as i64
+}
+
+/// `reg query … /v ActiveTimeBias`: "ActiveTimeBias    REG_DWORD
+/// 0xffffffc4", minutes from local time to UTC (−60 for UTC+1).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn parse_bias(out: &str) -> Option<i64> {
+    let line = out.lines().find(|l| l.contains("ActiveTimeBias"))?;
+    let hex = line.split_whitespace().last()?.strip_prefix("0x")?;
+    let bias = u32::from_str_radix(hex, 16).ok()? as i32;
+    Some(-(bias as i64) * 60)
+}
+
+/// `date +%z`: "+0100", "-0530".
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn parse_z(out: &str) -> Option<i64> {
+    let (sign, d) = match out.trim().split_at_checked(1)? {
+        ("+", d) => (1, d),
+        ("-", d) => (-1, d),
+        _ => return None,
+    };
+    if d.len() != 4 || !d.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m): (i64, i64) = (d[..2].parse().ok()?, d[2..].parse().ok()?);
+    Some(sign * (h * 3600 + m * 60))
+}
+
+/// English name of the language of a locale code ("fr-FR", "de_DE.UTF-8").
+fn language_name(code: &str) -> &'static str {
     let lang = code.get(..2).unwrap_or("");
     match lang {
         "fr" => "French",
@@ -292,6 +374,29 @@ mod tests {
     }
 
     #[test]
+    fn utc_offsets() {
+        let reg = "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\…\r\n    ActiveTimeBias    REG_DWORD    0xffffffc4\r\n";
+        assert_eq!(parse_bias(reg), Some(3600));
+        assert_eq!(parse_bias("ActiveTimeBias REG_DWORD 0x12c"), Some(-18_000));
+        assert_eq!(parse_z("+0100\n"), Some(3600));
+        assert_eq!(parse_z("-0530"), Some(-19_800));
+        assert_eq!(parse_z("UTC"), None);
+        // The computer's offset: whole quarter hours within ±14 h.
+        let off = utc_offset_secs();
+        assert!(off % 900 == 0 && off.abs() <= 14 * 3600, "{off}");
+        // Get ( CurrentTimestamp ) is local, the UTC milliseconds are not.
+        let get = |f: &str| match super::super::builtin_get(f) {
+            Some(Value::Timestamp(n) | Value::Number(n)) => n.to_string().parse::<i64>().unwrap(),
+            v => panic!("{v:?}"),
+        };
+        let utc_ms = get("CurrentTimeUTCMilliseconds");
+        let local = get("CurrentTimestamp");
+        // Both count from 0001-01-01.
+        let diff = local - utc_ms / 1000 - off;
+        assert!(diff.abs() <= 2, "{diff}");
+    }
+
+    #[test]
     fn system_flags() {
         let t = |f: &str| system_get(f).map(|v| v.to_text()).unwrap_or_default();
         assert_eq!(t("ApplicationVersion"), "Pro 26.0.1");
@@ -306,6 +411,9 @@ mod tests {
         assert_ne!(n, t("UUIDNumber"));
         assert!(t("DesktopPath").ends_with("/Desktop/"));
         assert!(t("TemporaryPath").starts_with('/') && t("TemporaryPath").ends_with('/'));
+        assert_eq!(language_name("fr-fr"), "French");
+        assert_eq!(language_name("de_de.utf-8"), "German");
+        assert_eq!(language_name(""), "English");
         if cfg!(windows) {
             assert_eq!(t("Device"), "2");
             assert!(["10.0", "11.0", "6.3"].contains(&t("SystemVersion").as_str()));

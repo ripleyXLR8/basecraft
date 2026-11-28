@@ -215,13 +215,13 @@ fn get_coverage() {
     assert_eq!(flags.len(), 139);
     assert_eq!(
         (answered.len(), PARTIAL_GET.len(), missing.len()),
-        (86, 13, 40)
+        (95, 8, 36)
     );
 }
 
 /// Flags answered with a fixed or approximate value, or only in some
 /// states (docs/COVERAGE.md).
-const PARTIAL_GET: [&str; 13] = [
+const PARTIAL_GET: [&str; 8] = [
     // Only fields and objects a script entered: the app's own focus is
     // not passed to the engine.
     "ActiveFieldName",
@@ -231,17 +231,11 @@ const PARTIAL_GET: [&str; 13] = [
     "ActiveLayoutObjectName",
     // Only a record a script opened.
     "ModifiedFields",
-    // From LANG / LC_ALL only (English otherwise).
-    "SystemLanguage",
     // No Caps Lock (egui does not report it).
     "ActiveModifierKeys",
-    // UTC: the engine has no time-zone data.
-    "CurrentDate",
-    "CurrentTime",
-    "CurrentTimestamp",
-    "CurrentHostTimestamp",
-    // Empty, but after Revert Transaction with a custom error.
-    "LastErrorDetail",
+    // Counted in memory on commits (not written back on save; Replace
+    // Field Contents, Relookup and imports do not count).
+    "RecordModificationCount",
 ];
 
 /// Steps that run but ignore stored options or do nothing where FileMaker
@@ -969,6 +963,31 @@ fn transactions() {
     assert_eq!(h.db.tables[0].records[0].values[&NAME], "Yves");
 }
 
+/// Get ( RecordModificationCount ) counts commits that changed the
+/// record; a new record's first commit leaves it at 0.
+#[test]
+fn record_modification_count() {
+    let mut h = TestHost::new(PEOPLE);
+    let count = "Get(RecordModificationCount)";
+    let steps = vec![
+        set_field(NAME, "\"x\""),
+        plain(id::COMMIT),
+        var_c(&h, "$a", count),
+        set_field(NAME, "\"y\""),
+        var_c(&h, "$b", count),
+        plain(id::COMMIT),
+        // Nothing changed: not counted.
+        plain(id::COMMIT),
+        var_c(&h, "$c", count),
+        plain(id::NEW_RECORD),
+        set_field(NAME, "\"n\""),
+        plain(id::COMMIT),
+        exit_c(&h, &format!("$a & $b & $c & {count}")),
+    ];
+    let (_, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "1120");
+}
+
 /// A validation error reverts the transaction unless Set Revert
 /// Transaction on Error is off.
 #[test]
@@ -990,22 +1009,30 @@ fn transaction_revert_on_error() {
             plain(id::COMMIT),
             set_field(NAME, "\"Zed\""),
             rawp(sid::COMMIT_TRANSACTION, &[], 0, 0),
-            exit_c(h, "$state & Get(LastError) & Get(FoundCount)"),
+            exit_c(
+                h,
+                "$state & Get(LastError) & Get(FoundCount) & \"|\" & Get(LastErrorDetail)",
+            ),
         ]
     };
     let (_, o) = {
         let s = body(&h, on);
         go(&mut h, s)
     };
-    // Reverted on the error: on after Commit Transaction.
-    assert_eq!(o.result.to_text(), "15094");
+    // Reverted on the error: on after Commit Transaction. The detail is
+    // the failing step (FileMaker: script, step, line).
+    let r = o.result.to_text();
+    let (codes, detail) = r.split_once('|').unwrap();
+    assert_eq!(codes, "15094");
+    // (`go` puts Set Error Capture first.)
+    assert_eq!(detail, "S1\rCommit Records/Requests\r7");
     assert_eq!(h.db.tables[0].records.len(), 4);
     assert_eq!(h.db.tables[0].records[0].values[&NAME], "Ann");
     let (_, o) = {
         let s = body(&h, 0);
         go(&mut h, s)
     };
-    assert_eq!(o.result.to_text(), "005");
+    assert_eq!(o.result.to_text(), "005|");
     assert_eq!(h.db.tables[0].records.len(), 5);
     assert_eq!(h.db.tables[0].records[0].values[&NAME], "Xavier");
 }

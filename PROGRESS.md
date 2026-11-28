@@ -24,7 +24,7 @@ counts asserted by tests), implemented / partial / missing:
 
 | Functions | `Get()` flags | Script steps | Triggers | Layout objects | Control styles | Error codes raised |
 |----------:|--------------:|-------------:|---------:|---------------:|---------------:|-------------------:|
-| 197 / 37 / 0 of 234 | 86 / 13 / 40 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 22 / 0 / 4 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 59 of 300 |
+| 197 / 37 / 0 of 234 | 95 / 8 / 36 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 22 / 0 / 4 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 59 of 300 |
 
 ## M1 — Reading `.fmp12`
 
@@ -80,29 +80,40 @@ numbers and the list of missing functions.
 | Item | Done / total |
 |------|-------------:|
 | Functions | 234 / 234 |
-| `Get()` flags answered without a host | 29 / 139 |
-| `Get()` flags answered by the data engine without a script or window | 16 more |
+| `Get()` flags answered without a host | 30 / 139 |
+| `Get()` flags answered by the data engine without a script or window | 18 more |
 
 The 234 reference lines include `Status` twice. The 139 `Get()` flags exclude the
-`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 29
+`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 30
 built-in flags are UserName, CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimestamp
-(UTC, because the engine has no time-zone data), CurrentTimeUTCMilliseconds,
-CurrentTimeUTCMicroseconds, UUID, UUIDNumber (192 random bits), CalculationRepetitionNumber,
+(the computer's local time, as FileMaker: Windows' `ActiveTimeBias`, `date +%z` elsewhere,
+read again every minute for daylight saving; the JavaScript `Date` offset in the browser;
+auto-enter creation/modification stamps, Insert Current Date/Time and "today" in
+conditional formatting use the same clock), CurrentTimeUTCMilliseconds,
+CurrentTimeUTCMicroseconds (UTC), UUID, UUIDNumber (192 random bits), CalculationRepetitionNumber,
 SystemPlatform, ApplicationArchitecture, Device, SystemVersion ("10.0" / "11.0" on Windows,
-the macOS version), SystemLanguage (from `LANG` / `LC_ALL`, else English), HostName (the
+the macOS version), SystemLanguage (`LANG` / `LC_ALL` first, else the OS's language through
+`sys-locale`; English in the browser), HostName (the
 computer's name, FileMaker's answer for a file FileMaker Pro hosts), ApplicationLanguage (the
 interface language, set by the app), MultiUserState and ConnectionState (0) and UserCount (1)
-for a local file, NetworkProtocol (TCP/IP), InstalledFMPlugins (empty), and DesktopPath,
+for a local file, NetworkProtocol (TCP/IP), InstalledFMPlugins (empty), EncryptionState (0:
+BaseCraft does not open encrypted files), and DesktopPath,
 DocumentsPath, PreferencesPath, TemporaryPath, FileMakerPath and SystemDrive in FileMaker's
 path format (empty in the browser). ApplicationVersion answers **"Pro 26.0.1"**, the FileMaker
 Pro release BaseCraft is checked against, so solutions that test the version keep working
 (`calc::functions::APPLICATION_VERSION`). The engine answers FoundCount, RecordNumber, TotalRecordCount,
 RecordID, SortState and LayoutCount from the found set it is given (every record,
-unsorted, without one), and outside a script LastError, ErrorCaptureState,
+unsorted, without one), RecordAccess from the privilege set (2 edit, 1 view, 0 none),
+RecordModificationCount (the file's record key 252, then +1 for each commit that changed an
+existing record, in the app or a script; kept in memory: a save keeps the file's previous
+count, and Replace Field Contents, Relookup and imports do not count), and outside a script LastError, ErrorCaptureState,
 RecordOpenState, RecordOpenCount, TransactionOpenState and WindowMode (0),
 AllowAbortState (1), ScriptName, ScriptParameter, ScriptResult, LastErrorDetail and
 LastErrorLocation (empty), AccountGroupName (empty for FileMaker accounts); a script answers
-them from its own state first. The app hands scripts FileName, FilePath, FileSize,
+them from its own state first (LastErrorDetail: Revert Transaction's custom message, else,
+for a transaction that fails or reverts, the failing script, step and line, as Claris
+documents; its other cases, ODBC, SSL, cURL, plug-ins and locked records, do not arise in
+BaseCraft), plus LayoutAccess (records through the layout: 0, 1, 2). The app hands scripts FileName, FilePath, FileSize,
 QuickFindText, WindowContentWidth/Height, ScreenWidth/Height, ScreenScaleFactor and
 ActiveModifierKeys (`script::HostInfo`). `Get ( PrivilegeSetName )` compiles to
 CurrentPrivilegeSetName's token.

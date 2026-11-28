@@ -643,6 +643,7 @@ dependencies = [
  "cbc",
  "des",
  "getrandom 0.4.3",
+ "js-sys",
  "md-5",
  "pbkdf2",
  "psm",
@@ -651,6 +652,7 @@ dependencies = [
  "sha1",
  "sha2",
  "stacker",
+ "sys-locale",
  "web-time",
 ]
 
@@ -3136,7 +3138,6 @@ dependencies = [
  "engine",
  "fmp12",
  "image",
- "web-time",
 ]
 
 [[package]]

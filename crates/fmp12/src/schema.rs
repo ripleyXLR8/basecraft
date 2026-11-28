@@ -566,6 +566,31 @@ pub fn records(file: &File, table: &Table) -> Result<Records, Error> {
         .collect())
 }
 
+/// Record key 252 of table `table`'s records, by record id: the number of
+/// committed modifications, a length-prefixed big-endian integer (`01 03`
+/// = 3). Records without it have never been modified (FORMAT.md §13).
+pub fn modification_counts(file: &File, table: u32) -> Result<BTreeMap<u32, u32>, Error> {
+    let mut counts = BTreeMap::new();
+    file.walk(|path, c| {
+        // (A table occurrence element `D0 hi lo` is 3 bytes long.)
+        let ([tp, _, _], Chunk::Kv { key: 252, data }) = (path, c) else {
+            return;
+        };
+        if tp.len() > 2 {
+            return;
+        }
+        if let (Some([t, 5, r]), Some((n, digits))) =
+            (int_path(path).as_deref(), data.split_first())
+            && *t == table
+            && digits.len() == *n as usize
+            && digits.len() <= 4
+        {
+            counts.insert(*r, digits.iter().fold(0u32, |a, b| a << 8 | *b as u32));
+        }
+    })?;
+    Ok(counts)
+}
+
 /// Values of the table's global fields, by value key (as a record's):
 /// FileMaker keeps them once per table at `[T].[8]`, stored like a
 /// record's values (FORMAT.md §13, "Global fields").

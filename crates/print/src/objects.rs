@@ -65,14 +65,9 @@ fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// Today as a day number (UTC date).
+/// Today as a day number (the computer's local date, as FileMaker).
 fn today() -> Option<i64> {
-    let secs = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    // 1970-01-01 as a FileMaker day number.
-    Some(calc::value::day_number(1970, 1, 1) + secs.div_euclid(86_400))
+    calc::functions::builtin_get("CurrentDate")?.to_date()
 }
 
 /// Whether condition `k` holds for the object's `value`.

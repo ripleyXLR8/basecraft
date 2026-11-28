@@ -309,13 +309,14 @@ fn user_name() -> String {
         .unwrap_or_default()
 }
 
-/// Clock and platform flags. The clock is UTC: the engine has no time zone
-/// data.
-// ponytail: CurrentDate/Time are UTC; hosts should answer them through
-// Context::get with local time.
+/// Clock and platform flags. CurrentDate, CurrentTime, CurrentTimestamp
+/// and CurrentHostTimestamp (a local file's host is this computer) are in
+/// the computer's local time, as in FileMaker; the UTC milliseconds and
+/// microseconds are UTC.
 pub fn builtin_get(flag: &str) -> Option<Value> {
     let micros = now_utc_micros();
-    let secs = num::int((micros / 1_000_000) as i64);
+    let local = micros / 1_000_000 + super::system::utc_offset_secs() as i128;
+    let secs = num::int(local as i64);
     Some(match flag {
         "CurrentDate" => Value::Date(value::ts_date(&secs)),
         "CurrentTime" => Value::Time(value::ts_time(&secs)),

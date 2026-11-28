@@ -412,7 +412,22 @@ pub(crate) fn entry_kv(e: &Entry) -> Option<(u32, Vec<u8>)> {
 }
 
 pub(crate) fn spelled(p: &[u32]) -> Vec<Vec<u8>> {
-    p.iter().map(|x| path_elem(*x)).collect()
+    let node = p.len() > 5 && p[..2] == [4, 5] && p[3] == 5;
+    p.iter()
+        .enumerate()
+        .map(|(i, x)| match *x {
+            x if !node || i < 5 || x < 0x80 => path_elem(x),
+            // Sub-nodes of a layout object node, as FileMaker spells them:
+            // `.[138]` conditions and `.[141]` hide condition in one byte,
+            // indexed slots (conditions `128 + i`, a web viewer's `128`)
+            // as `00 i`.
+            x @ (138 | 141) if i == 5 => vec![x as u8],
+            x => {
+                let v = x - 0x80;
+                vec![(v >> 8) as u8 & 0x7F, v as u8]
+            }
+        })
+        .collect()
 }
 
 /// A Kv entry, `00 k` for an empty value as FileMaker writes it.
@@ -711,12 +726,16 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         let calc_entries = |id: u64, sub: &[u32], tokens: &[u8]| -> Vec<Entry> {
             let p: Vec<u32> = [4, 5, l, 5, id as u32].iter().chain(sub).copied().collect();
             let compiled = crate::calc::compiled(tokens).unwrap_or_else(|_| tokens.to_vec());
-            vec![
+            // FileMaker marks every level of a sub-node (`.[128]` and
+            // `.[128].[5]`); without them the file checks as damaged.
+            let mut out: Vec<Entry> = (6..p.len()).map(|n| marker(&p[..n])).collect();
+            out.extend([
                 marker(&p),
                 kv_entry(&p, 4, vec![1, 0]),
                 kv_entry(&p, 5, tokens.to_vec()),
                 kv_entry(&p, 6, compiled),
-            ]
+            ]);
+            out
         };
         // Calculations and conditions of an object (all of them for a new one).
         let node_entries = |n: &LayoutObject, o: Option<&LayoutObject>| -> Vec<Entry> {
@@ -734,7 +753,9 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                     continue;
                 }
                 if let Some(t) = new_calc {
-                    out.extend(calc_entries(n.id, &[sub], t));
+                    // A web viewer's address is one level down (`.[128].[5]`).
+                    let path: &[u32] = if sub == 128 { &[128, 5] } else { &[sub] };
+                    out.extend(calc_entries(n.id, path, t));
                 }
             }
             if o.is_none_or(|o| o.format != n.format)
@@ -1027,6 +1048,8 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         entries.extend(add);
     }
     write::sort(&mut entries);
+    // Node markers written twice (a sub-node's levels) once.
+    entries.dedup_by(|a, b| a.item == [0x80] && a.path == b.path && a.item == b.item);
     let out = write::build(&file.bytes()[..crate::SECTOR], &entries);
     if renamed.is_empty() {
         return Ok(out);

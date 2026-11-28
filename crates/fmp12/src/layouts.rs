@@ -319,7 +319,7 @@ pub struct LayoutObject {
     pub format: Option<crate::formats::Format>,
     /// Conditional formatting, in order (node `.[138]`).
     pub conditions: Vec<Condition>,
-    /// Web viewer address calculation (node `.[128]`).
+    /// Web viewer address calculation (node `.[128].[5]`).
     pub url: Option<Vec<u8>>,
     /// External object (field 11): type (`WEBV`, `CHRT`) and options.
     pub external: Option<(u64, u64)>,
@@ -529,7 +529,7 @@ impl LayoutObject {
         self.placeholder = calc(&[6]);
         self.hide = calc(&[141]);
         if self.external.is_some_and(|e| e.0 == WEB_VIEWER) {
-            self.url = calc(&[128]);
+            self.url = calc(&[128, 5]);
         }
         let keys = r.keys.get(&id);
         self.format = keys

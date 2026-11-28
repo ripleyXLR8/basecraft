@@ -817,7 +817,7 @@ navigation. The break field of a sub-summary (field 6) is
   (a text literal is `13 len text 00`, §11): `.[2]` button, popover
   button or segment label (a popover's title; a tab panel's label),
   `.[3]` tooltip (of any object), `.[6]` placeholder text of a field,
-  `.[141]` "Hide object when", `.[128]` a web viewer's address (a
+  `.[141]` "Hide object when", `.[128].[5]` a web viewer's address (a
   chart's title, see Charts); `.[138]` conditional formats (below);
   `.[17]` button step parameters. A static button label is node key 1
   plus styled text runs in `.[1]`.

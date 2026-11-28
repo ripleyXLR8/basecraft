@@ -32,6 +32,10 @@ print = { version = "0.1.0", path = "../print" }
 rfd = "0.18.0"
 script = { version = "0.1.0", path = "../script" }
 
+# File › Open Remote… (FileMaker Data API); no sockets in the web build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+remote = { version = "0.1.0", path = "../remote" }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"

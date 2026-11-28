@@ -1474,13 +1474,38 @@ in a French file).
 | `[9]` | layouts, scripts, value lists: key = catalog byte (`04` layouts, `11` scripts, `21` value lists), alone for the default of every item or followed by the item's id; value = one byte `0xD0 \| records << 2 \| access` (layouts: records through the layout in bits 2–3) |
 
 `[23].[2].[1].[8]` indexes the sets by digest (a node named by the
-16-byte digest holding one empty key, the set id).
+16-byte digest holding one empty key per set id; a copied set shares its
+original's node, opened once: a second node marker is a damaged block
+for FMDeveloperTool).
 
 ### Extended privileges `[23].[3].[5].[E]`
 
-Key 16 keyword (`fmapp`, `fmwebdirect`, `fmreauthenticate10`…), 3
-description, 2 `01 xx` (xx enters the digest; 2 when absent), 4 digest,
-`[5]` one empty key per privilege set that has it.
+Key 16 keyword (`fmapp`, `fmwebdirect`, `fmrest`, `fmodata`,
+`fmreauthenticate10`…), 3 description (absent for the built-in ones,
+which FileMaker shows in its own language), 2 `01 xx`, 4 digest, `[5]`
+one empty key per privilege set that has it.
+
+**Key 2 switches the set list on.** FileMaker reads `[5]` only when key 2
+is `01 01`; with `01 02` or no key 2 the privilege has no set, whatever
+`[5]` holds. The second byte enters the digest (2 when the key is
+absent). Evidence: `fmreauthenticate10` in every starter template
+(`01 01`, sets 1–3); FMDeveloperTool's Save as XML of a BaseCraft file
+listed no `PrivilegeSetReference` for an `fmrest` whose `[5]` held set 4
+until key 2 `01 01` was added (and none again with `01 02`); FileMaker
+Server writes `01 01` itself (below). BaseCraft writes `01 01` with the
+list and drops key 2 when no set is left.
+
+**FileMaker Server adds `fmapp` when hosting.** A file in which no set
+has a network extended privilege is opened by FileMaker Server 26 only
+after it adds `fmapp` to [Full Access] (Event.log 655: « peut désormais
+être partagée après l'ajout du privilège étendu [fmapp] à l'ensemble de
+privilèges [Accès intégral] »). It writes key 2 `01 01`, `[5]` set 1 and
+the digest BaseCraft computes (`c1f11bd3…` for set 1), plus keys 252
+(`01 01`) and 31873–31875 of its own. A file where a set already has
+`fmrest` is opened unchanged. FileMaker Server also refuses a file whose
+accounts have no password (Event.log 1017). The Data API logs in only
+accounts whose set has `fmrest`: error 9 for Admin ([Full Access]
+without it), 802 for every account while no set of the file has it.
 
 ### Digests (key 4)
 

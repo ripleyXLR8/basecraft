@@ -21,6 +21,11 @@ allow = [
 # The list is a policy, not an inventory: allowed licences no crate uses yet
 # are fine.
 unused-allowed-license = "allow"
+# Mozilla's root certificates, used by the Data API client (crates/remote)
+# to check FileMaker Server's TLS certificate. A permissive data licence.
+exceptions = [
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
 
 [bans]
 multiple-versions = "warn"

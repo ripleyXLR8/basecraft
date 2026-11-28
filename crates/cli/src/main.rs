@@ -33,9 +33,14 @@
 //! A protected file (one that does not log in by itself) opens with
 //! `--account NAME --password PW` anywhere on the line (or the password in
 //! `BASECRAFT_PASSWORD`).
+//!
+//! `--remote https://host/Database --account A --password-env VAR` runs
+//! `info`, `records`, `find`, `new`, `set`, `delete` and `run-script` on a
+//! file hosted by FileMaker Server, through its Data API (`hosted.rs`).
 
 use std::io::{BufRead, Write};
 
+mod hosted;
 mod io;
 mod mcp;
 mod schema;
@@ -573,6 +578,11 @@ fn session(d: &mut Doc) -> Res<Json> {
 fn main_inner() -> Res<Json> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let login = take_login(&mut args)?;
+    // A file hosted by FileMaker Server (`hosted.rs`).
+    if let Some(c) = hosted::conn(&mut args, login.as_ref())? {
+        let (cmd, rest) = args.split_first().ok_or("usage: basecraft-cli <command> --remote https://host/Database --account A --password-env VAR …")?;
+        return hosted::run(&c, cmd, rest);
+    }
     if args.first().map(String::as_str) == Some("mcp") {
         mcp::serve(args.get(1).map(String::as_str), login.as_ref())?;
         std::process::exit(0);

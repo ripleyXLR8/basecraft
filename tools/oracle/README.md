@@ -123,3 +123,32 @@ The script copies the file into the VM over SSH (`127.0.0.1:2222`, key
 would only report when opening them. Several agents can use it at the same
 time, unlike FileMaker Pro. Ports forwarded to the host: 2222 SSH, 8443
 HTTPS (Admin Console, Data API, OData), 5003 FileMaker, 16000 admin.
+
+**Hosting a file** (no Admin Console login needed): copy it into
+`/opt/FileMaker/FileMaker Server/Data/Databases/`, `chown fmserver:fmsadmin`,
+`sudo systemctl restart fmshelper`; it opens by itself (see
+`Logs/Event.log`). The server refuses a file whose accounts have no
+password, and adds `fmapp` to [Full Access] in a file where no set has a
+network extended privilege (FORMAT.md §15). The Data API needs `fmrest` on
+the account's set.
+
+**Data API test file.** `remote_fixture.sh out.fmp12 [basecraft-cli]`
+builds `BCRemote.fmp12` with basecraft-cli only: Contacts (Name, City, Age,
+Photo; three records; every field on its layout), script Echo, set "API
+Access" with `fmrest`/`fmodata`, accounts `api` and Admin (password from
+`FMS_TEST_PASSWORD`, default `test123`: this local test file only). Host it
+as above, upload a picture to record 1's Photo
+(`POST …/layouts/Contacts/records/1/containers/Photo/1`, form field
+`upload`), then:
+
+```sh
+BASECRAFT_FMS_URL=https://127.0.0.1:8443 BASECRAFT_FMS_ACCOUNT=api \
+BASECRAFT_FMS_PASSWORD=… BASECRAFT_FMS_INSECURE=1 \
+cargo test -p remote --test server -- --nocapture     # also -p basecraft open_remote
+```
+
+FMDeveloperTool reports the fixture's script catalog as damaged
+(`fmp12::scripts_save` adding the first script to a file without
+scripts); FileMaker Server hosts it and runs Echo all the same.
+`cargo run -p remote --example fixture -- in out --no-script` leaves the
+script out.

@@ -195,6 +195,92 @@ fn admin_of(s: &Security) -> security::Session {
     s.login("Admin", "").unwrap()
 }
 
+/// Extended privileges as FileMaker lays them out (`fmreauthenticate10` in
+/// every template; `fmrest` read back by FMDeveloperTool's Save as XML):
+/// key 02 `01 01` switches the `[5]` set list on, and its second byte
+/// enters the digest. Without key 02 FileMaker ignores the list.
+#[test]
+fn extended_privilege_bytes() {
+    use md5::{Digest, Md5};
+    let file = blank();
+    let s = Security::load(&file).unwrap();
+    let admin = s.login("Admin", "").unwrap();
+    let mut new = s.clone();
+    let mut api = new.sets[2].clone();
+    api.name = "API Access".into();
+    let vid = new.add_set(api);
+    let rest = new
+        .extended
+        .iter_mut()
+        .find(|e| e.keyword == "fmrest")
+        .unwrap();
+    rest.sets.insert(vid);
+    let rid = rest.id;
+    let f2 = fmp12::File::from_bytes(security::save(&file, &admin, &new).unwrap()).unwrap();
+    assert!(Security::check(&f2).unwrap().is_empty());
+
+    let base: Vec<Vec<u8>> = vec![vec![23], vec![3], vec![5], vec![rid as u8]];
+    let es = fmp12::write::entries(&f2).unwrap();
+    let at = |p: &[Vec<u8>]| -> Vec<Vec<u8>> {
+        es.iter()
+            .filter(|e| e.path == p)
+            .map(|e| e.item.clone())
+            .collect()
+    };
+    // The copy has its original's digest: one index node holds both ids
+    // (two node markers there were a damaged block for FMDeveloperTool).
+    let mut nodes: Vec<_> = es
+        .iter()
+        .filter(|e| e.path.len() == 5 && e.path[..4] == [vec![23], vec![2], vec![1], vec![8]])
+        .filter(|e| e.item == [0x80])
+        .map(|e| e.path.clone())
+        .collect();
+    let n = nodes.len();
+    nodes.dedup();
+    assert_eq!(nodes.len(), n, "one marker per digest node");
+    let own = at(&base);
+    assert!(
+        own.contains(&vec![0x02, 0x02, 0x01, 0x01]),
+        "key 02 = 01 01"
+    );
+    let list = at(&[base.clone(), vec![vec![5]]].concat());
+    assert!(list.contains(&vec![0x00, vid as u8]), "{list:?}");
+    let mut h = Md5::new();
+    let kw: Vec<u8> = "fmrest".encode_utf16().flat_map(u16::to_be_bytes).collect();
+    h.update(kw);
+    h.update([1, 2, 1, vid as u8]);
+    let mut digest = vec![0x06, 0x04, 0x10];
+    digest.extend(h.finalize());
+    assert!(own.contains(&digest), "digest");
+    let s2 = Security::load(&f2).unwrap();
+    assert!(
+        s2.extended
+            .iter()
+            .any(|e| e.id == rid && e.sets.contains(&vid))
+    );
+
+    // A list without key 02 (what BaseCraft wrote before) is no list.
+    let mut raw = fmp12::write::entries(&f2).unwrap();
+    raw.retain(|e| !(e.path == base && e.item.starts_with(&[0x02, 0x02])));
+    let f3 =
+        fmp12::File::from_bytes(fmp12::write::build(&f2.bytes()[..fmp12::SECTOR], &raw)).unwrap();
+    let s3 = Security::load(&f3).unwrap();
+    assert!(s3.extended.iter().all(|e| e.id != rid || e.sets.is_empty()));
+
+    // Taking the set off again drops key 02.
+    let mut back = s2.clone();
+    for e in &mut back.extended {
+        e.sets.remove(&vid);
+    }
+    let f4 = fmp12::File::from_bytes(security::save(&f2, &admin_of(&s2), &back).unwrap()).unwrap();
+    assert!(Security::check(&f4).unwrap().is_empty());
+    let es4 = fmp12::write::entries(&f4).unwrap();
+    assert!(
+        !es4.iter()
+            .any(|e| e.path == base && e.item.starts_with(&[0x02, 0x02]))
+    );
+}
+
 #[test]
 fn password_vectors() {
     // Admin of blank.fmp12: the empty password.

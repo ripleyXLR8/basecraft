@@ -178,6 +178,8 @@ fn db(people: &[(&str, &str, &str)]) -> Database {
         data_type: def(dt).data_type(),
         calc: None,
         auto_calc: None,
+        validation_calc: None,
+        range: None,
         context: 0,
         def: Def {
             name: name.into(),
@@ -606,6 +608,42 @@ fn sort_omit_and_show_all() {
         let (_, _, h) = run(vec![script(1, steps.clone())], "");
         assert_eq!(h.names(), *want, "{name}");
     }
+}
+
+/// Calculations in a script see the window's found set and sort order
+/// (GetNthRecord, `Get ( SortState )`), which a Sort step records.
+#[test]
+fn calculations_see_the_found_set() {
+    struct Names;
+    impl fmp12::calc::Resolve for Names {
+        fn occurrences(&self) -> Vec<(u32, String)> {
+            vec![(T, "People".into())]
+        }
+        fn fields(&self, _: u32) -> Vec<(u32, String)> {
+            vec![(NAME, "Name".into()), (AGE, "Age".into())]
+        }
+    }
+    let calc = |s: &str| Calc(fmp12::calc::compile(s, 0, &Names).unwrap().tokens);
+    let sort = step(
+        id::SORT,
+        StepParams::Sort {
+            dialog: false,
+            restore: true,
+            keys: vec![(field(NAME), SortOrder::Descending)],
+        },
+    );
+    let report = step(
+        id::EXIT_SCRIPT,
+        StepParams::ExitScript(Some(calc(
+            "GetNthRecord ( People::Name ; 1 ) & \"|\" & Get ( FoundCount ) & \"|\" & Get ( SortState )",
+        ))),
+    );
+    let (r, _, h) = run(
+        vec![script(1, vec![plain(id::OMIT_RECORD), sort, report])],
+        "",
+    );
+    assert_eq!(r, "Dee|3|1");
+    assert_eq!(h.win.sort, [NAME]);
 }
 
 #[test]
@@ -1112,7 +1150,9 @@ fn commit_enforces_validation() {
         ],
     )]);
     let o = e.perform(&mut h, 1, None);
-    assert_eq!(o.result.to_text(), "509/506/511/0");
+    // A script's commit does not check value lists or maximum characters
+    // (FileMaker 26, tools/oracle/validation_check.ps1): only not empty.
+    assert_eq!(o.result.to_text(), "509/0/0/0");
     assert_eq!(
         h.db.validation_message(T, 4, CITY).as_deref(),
         Some("Pick a city")

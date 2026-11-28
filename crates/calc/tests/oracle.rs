@@ -41,8 +41,8 @@ fn filemaker_oracle() {
         let want_err = cols.next().unwrap_or("0");
         n += 1;
         let mut ctx = calc::MemoryContext::default();
-        let (got, err) = match calc::evaluate(src, &mut ctx) {
-            Ok(v) => (v.to_text(), 0),
+        let (got, err) = match calc::evaluate_with_code(src, &mut ctx) {
+            Ok((v, code)) => (v.to_text(), code),
             Err(e) => ("?".to_string(), e.code),
         };
         let err_ok = err.to_string() == want_err || (want_err == "?" && err != 0);
@@ -51,6 +51,9 @@ fn filemaker_oracle() {
         }
         if known {
             still_differ += 1;
+            println!(
+                "known: {src}\n    FileMaker {want:?} ({want_err})\n    calc      {got:?} ({err})"
+            );
         } else {
             failures.push(format!(
                 "{src}\n    FileMaker {want:?} (error {want_err})\n    calc      {got:?} (error {err})"

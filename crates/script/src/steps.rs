@@ -676,10 +676,12 @@ impl Engine {
                 let (table, _, _) = Self::context(host);
                 let mut found = host.window().found.clone();
                 sort(host.db(), table, &mut found, &[(f, o)]);
+                let fields = crate::sort_fields(host.db(), table, std::iter::once(f));
                 let w = host.window();
                 w.found = found;
                 w.current = 0;
                 w.sorted = true;
+                w.sort = fields;
                 Ok(Flow::Next)
             })(),
             // Transactions: every table as it was at Open Transaction.
@@ -880,6 +882,7 @@ impl Engine {
             w.current = related[0];
         }
         w.sorted = false;
+        w.sort.clear();
         w.mode = Mode::Browse;
         Ok(Flow::Next)
     }
@@ -971,6 +974,7 @@ impl Engine {
         w.found = hits;
         w.current = 0;
         w.sorted = false;
+        w.sort.clear();
         if w.found.is_empty() {
             return Err(error::NO_MATCH);
         }

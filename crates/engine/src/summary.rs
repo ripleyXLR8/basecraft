@@ -130,7 +130,15 @@ fn plain(
     let sum = |v: &[Num]| v.iter().fold(num::int(0), |a, b| a + b);
     let vals = values(group);
     match s.op {
-        SummaryOp::Total => Value::Number(num::fix(sum(&nums(group)))),
+        // Without any value the total is empty, not 0 (FileMaker 26).
+        SummaryOp::Total => {
+            let n = nums(group);
+            if n.is_empty() {
+                Value::empty()
+            } else {
+                Value::Number(num::fix(sum(&n)))
+            }
+        }
         SummaryOp::Count => Value::Number(num::int(vals.len() as i64)),
         SummaryOp::Average => {
             // Weighted: sum(x × w) / sum(w) over the records with both.
@@ -317,6 +325,57 @@ mod tests {
 
     /// The file of `tools/oracle/summary_demo.sh`, and the values FileMaker
     /// Pro 26 showed in its Table view (unsorted, then sorted by Region),
+    /// The FileMaker 26 run of tools/oracle/validation_check.ps1 (records
+    /// x 1, x 2, y (no amount), "" 5; Total and Count of the amount):
+    /// unsorted GetSummary by G is empty; sorted by G, the empty group's is
+    /// 5, x's 3, y's empty total and 0 count; GetNthRecord follows the sort.
+    #[test]
+    fn get_summary_matches_filemaker() {
+        use crate::tests::{field, summary_field};
+        use fmp12::schema::SummaryOp;
+        let (g, a) = (1, 2);
+        let mut db = sample();
+        let mut t = crate::Table::new(T, "Tasks", vec![field(g, "G", 1, 1), field(a, "A", 1, 2)]);
+        for (gv, av) in [("x", "1"), ("x", "2"), ("y", ""), ("", "5")] {
+            let r = t.new_record();
+            t.records[r].values = [(g, gv), (a, av)]
+                .into_iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| (k, v.to_string()))
+                .collect();
+        }
+        db.tables[0] = t;
+        summary_field(&mut db, SummaryOp::Total, a);
+        summary_field(&mut db, SummaryOp::Count, a);
+        db.tables[0].fields[2].name = "T".into();
+        db.tables[0].fields[3].name = "CNT".into();
+        let ev = |found: &[usize], sort: &[u32], r: usize, src: &str| {
+            let scope = crate::Scope {
+                found: Some(crate::FoundSet {
+                    table: T,
+                    records: found,
+                    sort,
+                }),
+                self_value: None,
+            };
+            db.eval_source_in(src, T, T, Some(r), &scope)
+                .map_or_else(|e| format!("error {}", e.code), |v| v.to_text())
+        };
+        let all = [0, 1, 2, 3];
+        let u1 =
+            "GetSummary ( T ; G ) & \"/\" & GetSummary ( T ; T ) & \"/\" & Get ( RecordNumber )";
+        assert_eq!(ev(&all, &[], 3, u1), "/8/4");
+        let mut sorted = all.to_vec();
+        crate::sort(&db, T, &mut sorted, &[(g, crate::Order::Ascending)]);
+        assert_eq!(sorted, [3, 0, 1, 2]);
+        let s1 = "GetSummary ( T ; G ) & \"/\" & GetSummary ( CNT ; G ) & \"/\" & G & \"/\" & GetNthRecord ( A ; 2 )";
+        assert_eq!(ev(&sorted, &[g], 3, s1), "5/1//1");
+        let s2 = "GetSummary ( T ; G ) & \"/\" & T & \"/\" & Get ( RecordNumber )";
+        assert_eq!(ev(&sorted, &[g], 0, s2), "3/8/2");
+        let s3 = "GetSummary ( T ; G ) & \"/\" & GetSummary ( CNT ; G ) & \"/\" & G";
+        assert_eq!(ev(&sorted, &[g], 2, s3), "/0/y");
+    }
+
     /// GetSummary by Region giving the sub-summary values.
     #[test]
     fn summary_options_match_filemaker() {
@@ -469,8 +528,59 @@ mod tests {
             check(s(frac_sub), Some(1.0), "GetSummary FracSub");
             check(s(sdp), Some(sp), "GetSummary SDP");
         }
-        // The calculation engine's GetSummary sorts by the break field.
+        // In a calculation: over the window's found set, by the break
+        // field only when sorted by it (empty otherwise, as in FileMaker).
         let v = db.eval_source("GetSummary ( RunTotR ; Region )", T, T, Some(4));
-        check(v, Some(20.0), "GetSummary in a calculation");
+        check(v, None, "GetSummary unsorted");
+        let scope = crate::Scope {
+            found: Some(crate::FoundSet {
+                table: T,
+                records: &found,
+                sort: &sort,
+            }),
+            self_value: None,
+        };
+        let ev = |src: &str, r: usize| {
+            db.eval_source_in(src, T, T, Some(r), &scope)
+                .unwrap_or_else(|e| Value::text(format!("error {}", e.code)))
+        };
+        check(
+            ev("GetSummary ( RunTotR ; Region )", 4),
+            Some(20.0),
+            "by Region",
+        );
+        check(
+            ev("GetSummary ( RunTot ; RunTot )", 4),
+            Some(120.0),
+            "grand",
+        );
+        // Record 4 (B15) is the 5th of the sorted found set.
+        check(ev("Get ( RecordNumber )", 4), Some(5.0), "RecordNumber");
+        check(ev("RunTot", 4), Some(80.0), "running total");
+        check(
+            ev("GetNthRecord ( Amount ; 2 )", 4),
+            Some(30.0),
+            "GetNthRecord",
+        );
+        let few = [6, 0];
+        let scope = crate::Scope {
+            found: Some(crate::FoundSet {
+                table: T,
+                records: &few,
+                sort: &[],
+            }),
+            self_value: None,
+        };
+        let ev = |src: &str| db.eval_source_in(src, T, T, Some(0), &scope);
+        assert_eq!(ev("Get ( FoundCount )").unwrap().to_text(), "2");
+        assert_eq!(ev("Get ( TotalRecordCount )").unwrap().to_text(), "7");
+        assert_eq!(
+            ev("GetSummary ( RunTot ; RunTot )").unwrap().to_text(),
+            "30"
+        );
+        assert_eq!(
+            ev("GetRecordIDsFromFoundSet ( 0 )").unwrap().to_text(),
+            "7\r1"
+        );
     }
 }

@@ -402,3 +402,62 @@ fn first_script_of_a_blank_file_marks_its_nodes() {
     }
     assert_eq!(scripts(&out).unwrap()[0].name, "Nouveau script");
 }
+
+/// A script of 140 steps: step node 128 and up is spelled `80 xx`, its
+/// parameters `00 xx`, and the step record says `03 02 80 xx` (length 3,
+/// a path integer of 2 bytes), as FileMaker 26 writes them; `[S].[5]`
+/// key 0 is the count as an id (`02 80 0C`). With `03 01 80 00` FileMaker
+/// Server's XML export showed no parameters from step 129 on.
+/// `BASECRAFT_STEPS140=<out.fmp12>` keeps the file (checked with
+/// `tools/oracle/fms_check.sh`).
+#[test]
+fn scripts_of_128_steps_and_more_keep_their_parameters() {
+    let blank = fmp12::File::from_bytes(include_bytes!("../assets/blank.fmp12").to_vec()).unwrap();
+    let names = fmp12::calc::FileNames::load(&blank).unwrap();
+    let steps: Vec<Step> = (1..=140)
+        .map(|i| {
+            let mut s = Step::new(id::SET_VARIABLE);
+            s.params = StepParams::SetVariable {
+                name: format!("$v{i}"),
+                value: Some(Calc(
+                    fmp12::calc::compile(&i.to_string(), 0, &names)
+                        .unwrap()
+                        .tokens,
+                )),
+                repetition: None,
+            };
+            s
+        })
+        .collect();
+    let list = vec![Script {
+        id: 1,
+        name: "Long".into(),
+        options: 8,
+        steps,
+    }];
+    let bytes = save_scripts(&blank, &list).unwrap();
+    if let Some(p) = std::env::var_os("BASECRAFT_STEPS140") {
+        std::fs::write(p, &bytes).unwrap();
+    }
+    let out = fmp12::File::from_bytes(bytes).unwrap();
+    let back = &scripts(&out).unwrap()[0];
+    assert_eq!(back.steps.len(), 140);
+    for (i, s) in back.steps.iter().enumerate() {
+        let StepParams::SetVariable { name, value, .. } = &s.params else {
+            panic!("step {i}: {:?}", s.params)
+        };
+        assert_eq!(name, &format!("$v{}", i + 1));
+        assert!(value.is_some(), "step {i}");
+    }
+    assert_eq!(back.steps[126].raw[..4], [2, 1, 0x7F, 0]);
+    assert_eq!(back.steps[127].raw[..4], [3, 2, 0x80, 0]);
+    assert_eq!(back.steps[139].raw[..4], [3, 2, 0x80, 0x0C]);
+    let es = write::entries(&out).unwrap();
+    let count = es
+        .iter()
+        .find(|e| {
+            e.path == [vec![0x11], vec![5], vec![1], vec![5]] && e.item.starts_with(&[0x06, 0])
+        })
+        .unwrap();
+    assert_eq!(count.item, [0x06, 0, 3, 2, 0x80, 0x0C]);
+}

@@ -240,10 +240,19 @@ fn to_slot(to: u32) -> Vec<u8> {
     out
 }
 
-/// `len 01 path-int`: an object id slot.
+/// `len n path-int`: an object id slot, `n` the path integer's length
+/// (`02 01 7F` = 127, `03 02 80 00` = 128, as FileMaker 26 writes them).
 fn id_slot(v: u32) -> Vec<u8> {
+    let r = id_ref(v);
+    let mut out = vec![r.len() as u8];
+    out.extend(r);
+    out
+}
+
+/// `n path-int`: an object id, `n` the path integer's length.
+fn id_ref(v: u32) -> Vec<u8> {
     let e = path_elem(v);
-    let mut out = vec![1 + e.len() as u8, 1];
+    let mut out = vec![e.len() as u8];
     out.extend(e);
     out
 }
@@ -663,7 +672,8 @@ pub fn step_entries(script: &Script) -> (Vec<Entry>, u32) {
     }
     if !steps.is_empty() {
         out.push(marker(&[17, 5, s, 5]));
-        out.push(kv_entry(&[17, 5, s, 5], 0, len_int(last as u64)));
+        // The step count as an id (`02 80 0C` = 140), not a len-int.
+        out.push(kv_entry(&[17, 5, s, 5], 0, id_ref(last)));
     }
     (out, last)
 }

@@ -196,6 +196,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r["content"], "Turing\r\nLovelace\r\n");
+        // eval runs in the found set of --find/--sort (Get flags answered).
+        let r = run(
+            &mut d,
+            "eval",
+            &args(&[
+                "Get ( RecordNumber ) & \"/\" & Get ( FoundCount ) & \" \" & GetNthRecord ( ${Last Name} ; 2 )",
+                "--table",
+                "Contacts",
+                "--sort",
+                "Last Name:desc",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(r["result"], "1/2 Lovelace");
         let pdf = dir.join("out.pdf");
         let r = run(
             &mut d,

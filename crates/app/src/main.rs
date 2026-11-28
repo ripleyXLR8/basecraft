@@ -320,8 +320,17 @@ impl App {
                     wins: windows::State::new(),
                     ..Default::default()
                 };
-                // The first window opens on the first layout: its layout
-                // triggers, then the file's OnFirstWindowOpen.
+                // The first window opens on File Options' "Switch to
+                // layout" (else the first layout): its layout triggers,
+                // then the file's OnFirstWindowOpen.
+                if let Some(d) = self.doc.as_ref()
+                    && let Some(i) = d
+                        .triggers
+                        .open_layout
+                        .and_then(|id| d.layouts.iter().position(|l| l.id == id))
+                {
+                    self.layout = i;
+                }
                 self.fire(event::LAYOUT_ENTER);
                 self.fire(event::MODE_ENTER);
                 self.fire(event::RECORD_LOAD);
@@ -469,6 +478,17 @@ impl App {
                     engine::Rule::Unique => tr("must contain a unique value.").to_string(),
                     engine::Rule::Existing => tr("must contain an existing value.").to_string(),
                     engine::Rule::Numeric => tr("must contain a number.").to_string(),
+                    engine::Rule::Date => {
+                        tr("must contain a date with a four-digit year.").to_string()
+                    }
+                    engine::Rule::Time => tr("must contain a time of day.").to_string(),
+                    engine::Rule::Range => {
+                        let (lo, hi) = f.and_then(|f| f.range.clone()).unwrap_or_default();
+                        format!("{} {lo} – {hi}", tr("must contain a value in the range"))
+                    }
+                    engine::Rule::Calculation => {
+                        tr("does not pass its validation calculation.").to_string()
+                    }
                     engine::Rule::ValueList => {
                         tr("must contain a value from the value list.").to_string()
                     }

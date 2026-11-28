@@ -507,7 +507,10 @@ fn dates_and_times() {
         ("GetAsDate ( 738900 )", "1/15/2024"),
         ("GetAsDate ( \"x\" )", "?"),
         ("GetAsTime ( \"13:05\" )", "13:05:00"),
-        ("GetAsTime ( \"1:05:09 pm\" )", "13:05:09"),
+        // Read with AM/PM: shown in the 12-hour form (oracle).
+        ("GetAsTime ( \"1:05:09 pm\" )", "1:05:09 PM"),
+        ("GetAsTime ( \"1:05:09 pm\" ) + 60", "13:06:09"),
+        ("Hour ( GetAsTime ( \"1:05:09 pm\" ) )", "13"),
         ("GetAsTime ( 3661 )", "1:01:01"),
         (
             "GetAsTimestamp ( \"1/15/2024 13:05:09\" )",

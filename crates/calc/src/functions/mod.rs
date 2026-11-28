@@ -39,7 +39,8 @@ pub struct Func {
     pub imp: Imp,
 }
 
-const N: usize = usize::MAX;
+/// No maximum number of parameters.
+pub const N: usize = usize::MAX;
 
 const fn e(name: &'static str, min: usize, max: usize, f: EagerFn) -> Func {
     Func {
@@ -551,7 +552,12 @@ fn evaluate(ev: &mut Evaluator, a: &[Expr]) -> R {
         return Ok(Value::empty());
     }
     let ctx = &*ev.ctx;
-    let expr = crate::parser::parse_with(&src, &|n| ctx.custom_function(n).is_some())?;
+    // Text that does not parse evaluates to "?" (not empty), the error
+    // left for EvaluationError: IsEmpty ( Evaluate ( "1 +" ) ) is 0.
+    let expr = match crate::parser::parse_with(&src, &|n| ctx.custom_function(n).is_some()) {
+        Ok(e) => e,
+        Err(e) => return absorb(ev, e.into()).map(|_| Value::text("?")),
+    };
     if ev.evaluate_depth >= 32 {
         return Err(EvalError::generic("Evaluate is nested too deeply"));
     }
@@ -567,11 +573,25 @@ fn evaluate(ev: &mut Evaluator, a: &[Expr]) -> R {
 /// The error code of its argument; a While or recursion limit is not
 /// caught (FileMaker returns "?").
 fn evaluation_error(ev: &mut Evaluator, a: &[Expr]) -> R {
-    match ev.eval(&a[0]) {
-        Ok(_) => Ok(Value::int(0)),
+    let outer = ev.sticky.take();
+    let r = ev.eval(&a[0]);
+    let inner = std::mem::replace(&mut ev.sticky, outer);
+    match r {
+        Ok(_) => Ok(Value::int(inner.map_or(0, |e| e.code as i64))),
         Err(e) if fatal(&e) => Err(e),
         Err(e) => Ok(Value::int(e.code as i64)),
     }
+}
+
+/// Records an error a function absorbs (the first one wins): FileMaker
+/// goes on with "?" for the failed value. Missing fields and tables (what
+/// FileMaker finds before evaluating) and the limits are not absorbed.
+fn absorb(ev: &mut Evaluator, e: EvalError) -> R {
+    if fatal(&e) || matches!(e.code, code::FIELD_MISSING | code::TABLE_MISSING) {
+        return Err(e);
+    }
+    ev.sticky.get_or_insert(e);
+    Ok(Value::empty())
 }
 
 const WHILE_LIMIT: &str = "While exceeded its iteration limit";
@@ -581,17 +601,27 @@ fn fatal(e: &EvalError) -> bool {
     e.message == WHILE_LIMIT || e.message == crate::eval::CUSTOM_LIMIT
 }
 
+/// A failed value is "?", not empty (`IsEmpty ( 1/0 )` is 0, error 15);
+/// a missing field is empty.
 fn is_empty(ev: &mut Evaluator, a: &[Expr]) -> R {
     match ev.eval(&a[0]) {
-        Err(e) if fatal(&e) => Err(e),
-        r => Ok(Value::bool(r.map_or(true, |v| v.is_empty()))),
+        Ok(v) => Ok(Value::bool(v.is_empty())),
+        Err(e) if matches!(e.code, code::FIELD_MISSING | code::TABLE_MISSING) => {
+            Ok(Value::bool(true))
+        }
+        Err(e) => absorb(ev, e).map(|_| Value::bool(false)),
     }
 }
 
+/// Invalid when the value fails or carries an error ([`absorb`]); the
+/// error stays here.
 fn is_valid(ev: &mut Evaluator, a: &[Expr]) -> R {
-    match ev.eval(&a[0]) {
+    let outer = ev.sticky.take();
+    let r = ev.eval(&a[0]);
+    let inner = std::mem::replace(&mut ev.sticky, outer);
+    match r {
         Err(e) if fatal(&e) => Err(e),
-        r => Ok(Value::bool(r.is_ok())),
+        r => Ok(Value::bool(r.is_ok() && inner.is_none())),
     }
 }
 
@@ -787,11 +817,24 @@ fn field_alone(a: &[Expr]) -> Result<(), EvalError> {
     }
 }
 
+/// The values of an aggregate's arguments. One that fails is left out,
+/// its error kept for EvaluationError (`Sum ( 1 ; 1/0 )` is 1, error 15).
 fn values(ev: &mut Evaluator, a: &[Expr]) -> Result<Vec<Value>, EvalError> {
+    Ok(values_or_errors(ev, a)?.into_iter().flatten().collect())
+}
+
+/// [`values`] with `None` for each argument that failed.
+fn values_or_errors(ev: &mut Evaluator, a: &[Expr]) -> Result<Vec<Option<Value>>, EvalError> {
     field_alone(a)?;
     let mut out = Vec::new();
     for e in a {
-        out.extend(expand(ev, e)?);
+        match expand(ev, e) {
+            Ok(v) => out.extend(v.into_iter().map(Some)),
+            Err(e) => {
+                absorb(ev, e)?;
+                out.push(None);
+            }
+        }
     }
     Ok(out)
 }
@@ -901,12 +944,13 @@ fn variancep(ev: &mut Evaluator, a: &[Expr]) -> R {
     variance_like(ev, a, false, false)
 }
 
+/// An argument that fails is listed as "?" (`List ( 1 ; 1/0 ; 2 )`).
 fn list(ev: &mut Evaluator, a: &[Expr]) -> R {
-    let vals = values(ev, a)?;
+    let vals = values_or_errors(ev, a)?;
     let parts: Vec<String> = vals
         .iter()
+        .map(|v| v.as_ref().map_or_else(|| "?".into(), Value::to_text))
         .filter(|v| !v.is_empty())
-        .map(Value::to_text)
         .collect();
     Ok(Value::Text(parts.join("\r")))
 }

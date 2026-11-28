@@ -459,4 +459,61 @@ mod tests {
         assert_eq!(popover_of(&l, &l.objects[1]), Some(1));
         assert_eq!(popover_of(&l, &l.objects[2]), None);
     }
+
+    struct NoNames;
+    impl fmp12::calc::Resolve for NoNames {
+        fn occurrences(&self) -> Vec<(u32, String)> {
+            Vec::new()
+        }
+        fn fields(&self, _: u32) -> Vec<(u32, String)> {
+            Vec::new()
+        }
+    }
+
+    /// A formula condition sees the object's value as `Self`: `Self > 10`
+    /// formats a field showing 12, not one showing 5; same for "hide
+    /// object when" on a text object.
+    #[test]
+    fn self_in_object_calculations() {
+        use fmp12::layouts::{Condition, op};
+        use fmp12::pb::{Field, MsgBuf};
+        let file =
+            fmp12::File::from_bytes(include_bytes!("../../fmp12/assets/blank.fmp12").to_vec())
+                .unwrap();
+        let db = engine::Database::load(&file).unwrap();
+        let compile = |s: &str| fmp12::calc::compile(s, 0, &NoNames).unwrap().tokens;
+        let mut style = MsgBuf::default();
+        style.set(1, Field::Bytes(b"color: red".to_vec()));
+        let k = Condition {
+            op: op::FORMULA,
+            calc: Some(compile("Self > 10")),
+            ..Default::default()
+        };
+        let o = LayoutObject {
+            kind: kind::FIELD,
+            conditions: vec![Condition {
+                format: k.with_style(&style.encode()),
+                ..k
+            }],
+            ..Default::default()
+        };
+        let c = print::objects::Context {
+            table: 0,
+            to: 0,
+            record: None,
+        };
+        let styled = |v: i64| {
+            print::objects::conditional_style(&db, &o, &calc::Value::int(v), c) != o.style_raw
+        };
+        assert!(styled(12));
+        assert!(!styled(5));
+        let text = |t: &str| LayoutObject {
+            kind: kind::TEXT,
+            text: Some(t.into()),
+            hide: Some(compile("Self = \"secret\"")),
+            ..Default::default()
+        };
+        assert!(print::objects::hidden(&db, &text("secret"), c));
+        assert!(!print::objects::hidden(&db, &text("public"), c));
+    }
 }

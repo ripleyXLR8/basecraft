@@ -19,6 +19,7 @@ use fmp12::layouts::Layout;
 mod browse;
 mod chart;
 mod container;
+mod controls;
 #[cfg(test)]
 mod coverage_tests;
 mod custom_functions;
@@ -2018,7 +2019,18 @@ fn draw_field(
             );
             let s = request.entry(field).or_default();
             let id = ui.scope_id().with(("find", o.id, field));
-            if ui.put(inner, lk.edit(s).id(id)).has_focus() {
+            // Checkbox and radio button sets stay sets in a find request.
+            if let (3 | 4, Some(vl)) = (o.display, o.value_list) {
+                let values = doc.db.value_list_values(vl);
+                if let Some(v) = ui
+                    .push_id(id, |ui| {
+                        controls::value_set(ui, lk, inner, o.display, &values, s)
+                    })
+                    .inner
+                {
+                    *s = v;
+                }
+            } else if ui.put(inner, lk.edit(s).id(id)).has_focus() {
                 toolbar::set_focus(
                     ui.ctx(),
                     toolbar::Focus {
@@ -2050,6 +2062,11 @@ fn draw_field(
         // Calculations, and fields the privileges make read-only.
         (Mode::Browse, Some(rec)) if is_calc || !doc.db.can_edit_field(t, rec, field) => {
             let value = doc.db.value_rep(t, rec, field, rep);
+            if controls::concealed(o) {
+                let n = value.to_text().chars().count();
+                lk.paint_text(painter, r, &"\u{2022}".repeat(n));
+                return;
+            }
             match objects::formatted(doc, o, &value) {
                 Some((s, color)) => {
                     let mut l2 = lk.clone();
@@ -2071,7 +2088,7 @@ fn draw_field(
                 .map(|l| doc.db.eval_tokens(l, t, 0, Some(rec)).to_text());
             // Data formats show while the field is not being edited.
             let edit_id = ui.scope_id().with(("field", o.id, rec, rep));
-            let shown = if ui.memory(|m| m.has_focus(edit_id)) {
+            let shown = if ui.memory(|m| m.has_focus(edit_id)) || controls::concealed(o) {
                 None
             } else {
                 objects::formatted(doc, o, &doc.db.value_rep(t, rec, field, rep))
@@ -2081,10 +2098,14 @@ fn draw_field(
                 ui.memory_mut(|m| m.request_focus(edit_id));
             }
             // Pop-up menus and drop-down lists offer their value list.
+            // So do checkbox sets and radio button sets.
             let choices = match (o.display, o.value_list) {
-                (1 | 2, Some(vl)) => Some(doc.db.value_list_values(vl)),
+                (1..=4, Some(vl)) => Some(doc.db.value_list_values(vl)),
                 _ => None,
             };
+            // A drop-down calendar writes the day in the file's date format.
+            let calendar = (o.display == 6).then(|| doc.db.locale.clone());
+            let cal_id = edit_id.with("calendar");
             // Edit boxes set to auto-complete offer the values entered in
             // other records while the field is being edited (or the list
             // is under the pointer, so that a click can reach it).
@@ -2107,19 +2128,27 @@ fn draw_field(
                 match choices {
                     Some(values) => {
                         let mut picked = None;
-                        ui.put(inner, |ui: &mut egui::Ui| {
-                            egui::ComboBox::from_id_salt(("vl", o.id, rec, rep))
-                                .selected_text(s.as_str())
-                                .width(inner.width())
-                                .show_ui(ui, |ui| {
-                                    for v in &values {
-                                        if ui.selectable_label(s == v, v).clicked() {
-                                            picked = Some(v.clone());
-                                        }
-                                    }
+                        if o.display >= 3 {
+                            picked = ui
+                                .push_id(edit_id, |ui| {
+                                    controls::value_set(ui, lk, inner, o.display, &values, s)
                                 })
-                                .response
-                        });
+                                .inner;
+                        } else {
+                            ui.put(inner, |ui: &mut egui::Ui| {
+                                egui::ComboBox::from_id_salt(("vl", o.id, rec, rep))
+                                    .selected_text(s.as_str())
+                                    .width(inner.width())
+                                    .show_ui(ui, |ui| {
+                                        for v in &values {
+                                            if ui.selectable_label(s == v, v).clicked() {
+                                                picked = Some(v.clone());
+                                            }
+                                        }
+                                    })
+                                    .response
+                            });
+                        }
                         if let Some(v) = picked {
                             editing::record(
                                 ui.ctx(),
@@ -2162,8 +2191,61 @@ fn draw_field(
                                 }
                                 click
                             }
-                            None => ui.put(inner, lk.edit(s).id(edit_id)),
+                            None => ui.put(
+                                inner,
+                                lk.edit(s).id(edit_id).password(controls::concealed(o)),
+                            ),
                         };
+                        // Drop-down calendar: the icon (Inspector "Include
+                        // icon…", bit 0x400) and the month below the field
+                        // while it is active.
+                        let mut cal_over = false;
+                        if let Some(loc) = &calendar {
+                            let icon = o.field_flags & fmp12::layouts::field_flags::ARROW != 0;
+                            if icon
+                                && ui
+                                    .interact(
+                                        controls::calendar_icon(painter, inner, lk.color),
+                                        cal_id.with("icon"),
+                                        egui::Sense::click(),
+                                    )
+                                    .clicked()
+                            {
+                                ui.memory_mut(|m| m.request_focus(edit_id));
+                            }
+                            if r.has_focus()
+                                || ui.data(|d| d.get_temp::<bool>(cal_id)).unwrap_or(false)
+                            {
+                                let day = engine::typed_in(s, fmp12::schema::DataType::Date, loc)
+                                    .to_date();
+                                let (pick, over) = controls::calendar(ui, cal_id, inner, day);
+                                cal_over = over;
+                                if let Some(d) = pick {
+                                    let v = engine::stored_text(&calc::Value::Date(d), loc);
+                                    editing::record(
+                                        ui.ctx(),
+                                        editing::Edit {
+                                            table: t,
+                                            record: rec,
+                                            key,
+                                            before: s.clone(),
+                                            after: v.clone(),
+                                        },
+                                    );
+                                    // The edit is recorded: leaving the field does not again.
+                                    ui.data_mut(|d| {
+                                        d.insert_temp(edit_id.with("before"), v.clone())
+                                    });
+                                    *s = v;
+                                    changed = true;
+                                    left = true;
+                                    cal_over = false;
+                                    events.push((o.id, event::OBJECT_MODIFY));
+                                    ui.memory_mut(|m| m.surrender_focus(edit_id));
+                                }
+                            }
+                            ui.data_mut(|d| d.insert_temp(cal_id, cal_over));
+                        }
                         if let Some(tip) = &tip {
                             r.clone().on_hover_text(tip.as_str());
                         }

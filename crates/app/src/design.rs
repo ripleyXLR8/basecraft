@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
-use fmp12::layouts::{Bounds, Layout, LayoutObject, Part, anchor, part};
+use fmp12::layouts::{Bounds, Layout, LayoutObject, Part, anchor, field_flags, part};
 use fmp12::theme::{self, Length, NORMAL, ObjectStyle, PropsExt, Rgba, SELF, TEXT, Unit, prop};
 
 use crate::Doc;
@@ -46,14 +46,16 @@ fn new_style(object_type: u8) -> Vec<u8> {
 }
 
 /// Field control styles: display value (object field 8.5), style type.
-/// Radio button sets (4, 65) were checked in FileMaker's XML.
-pub(crate) const CONTROLS: [(u64, u32, &str); 6] = [
+/// Radio button sets (4, 65) were checked in FileMaker's XML; a concealed
+/// edit box is an edit box with ield_flags::CONCEALED.
+pub(crate) const CONTROLS: [(u64, u32, &str); 7] = [
     (0, 61, "Edit box"),
     (1, 62, "Drop-down list"),
     (2, 63, "Pop-up menu"),
     (3, 64, "Checkbox set"),
     (4, 65, "Radio button set"),
     (6, 66, "Drop-down calendar"),
+    (0, 61, "Concealed edit box"),
 ];
 
 /// Part kinds the Part Setup dialog adds, in FileMaker's order.
@@ -2881,7 +2883,13 @@ impl Designer {
         }
         ui.separator();
         ui.label(tr("Control style"));
-        let cur = CONTROLS.iter().position(|c| c.0 == o.display);
+        // The concealed edit box (last) is an edit box with a flag.
+        let last = CONTROLS.len() - 1;
+        let cur = if crate::controls::concealed(&o) {
+            Some(last)
+        } else {
+            CONTROLS[..last].iter().position(|c| c.0 == o.display)
+        };
         let mut d = cur;
         egui::ComboBox::from_id_salt("data_display")
             .selected_text(cur.map_or("…", |i| tr(CONTROLS[i].2)))
@@ -2903,6 +2911,10 @@ impl Designer {
             {
                 x.display = display;
                 x.style_raw = theme::with_object_type(&x.style_raw, ty);
+                x.field_flags &= !field_flags::CONCEALED;
+                if i == last {
+                    x.field_flags |= field_flags::CONCEALED;
+                }
             }
         }
         if o.display != 0 && o.display != 6 {

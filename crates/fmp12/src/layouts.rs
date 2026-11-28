@@ -101,11 +101,16 @@ pub mod slide {
 /// `FieldObj flags`; the templates' edit boxes have `0x1200E0`). Each was
 /// set in FileMaker's Inspector › Data and read back.
 pub mod field_flags {
-    /// Drop-down list: "Include arrow icon to show and hide list".
+    /// Drop-down list: "Include arrow icon to show and hide list"; drop-down
+    /// calendar: "Include icon to show and hide calendar" (FileMaker 26 drew
+    /// no icon once it was cleared on a template copy).
     pub const ARROW: u64 = 0x400;
     /// Edit box: "Auto-complete using previously entered values"; drop-down
     /// list: "Auto-complete using value list".
     pub const AUTO_COMPLETE: u64 = 0x800;
+    /// Edit box: the "Concealed edit box" control style (FileMaker 26 drew
+    /// bullets once it was set on a template copy's edit box).
+    pub const CONCEALED: u64 = 0x200000;
     /// "Include field for Quick Find" unchecked (Inspector › Data › Behavior).
     pub const NO_QUICK_FIND: u64 = 0x8000;
 }

@@ -126,16 +126,18 @@ fn layout_object_coverage() {
 }
 
 /// Field control styles: the Inspector's list (`design::CONTROLS`) offers
-/// them; partial = set in Layout mode but drawn as an edit box in Browse.
-const PARTIAL_CONTROLS: [&str; 3] = ["Checkbox Set", "Radio Button Set", "Drop-down Calendar"];
+/// them and Browse mode draws them; partial = drawn without some of their
+/// options (checkbox and radio button sets: no "Other…" item, no "Allow
+/// editing").
+const PARTIAL_CONTROLS: [&str; 2] = ["Checkbox Set", "Radio Button Set"];
 
 #[test]
 fn control_style_coverage() {
     let (mut done, mut partial, mut missing) = (Vec::new(), Vec::new(), Vec::new());
-    for (id, name) in entries(CONTROLS) {
-        let offered = id
-            .parse::<u64>()
-            .is_ok_and(|d| crate::design::CONTROLS.iter().any(|c| c.0 == d));
+    for (_, name) in entries(CONTROLS) {
+        let offered = crate::design::CONTROLS
+            .iter()
+            .any(|c| c.2.eq_ignore_ascii_case(name));
         match (offered, PARTIAL_CONTROLS.contains(&name)) {
             (true, false) => done.push(name),
             (true, true) => partial.push(name),
@@ -145,7 +147,7 @@ fn control_style_coverage() {
     println!("IMPLEMENTED {}: {}", done.len(), done.join(", "));
     println!("PARTIAL {}: {}", partial.len(), partial.join(", "));
     println!("MISSING {}: {}", missing.len(), missing.join(", "));
-    assert_eq!((done.len(), partial.len(), missing.len()), (3, 3, 1));
+    assert_eq!((done.len(), partial.len(), missing.len()), (5, 2, 0));
 }
 
 /// An error code is raised when its number appears in an error position of

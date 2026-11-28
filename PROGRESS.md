@@ -233,7 +233,7 @@ Every step now runs; none is left to `Host::other`.
 | Inspector › Position: name, left/top/right/bottom/width/height in points, autosizing anchors, lock, slide left, slide up, hide when printing (object option bits, decoded in FileMaker) | ✅ |
 | Inspector › Styles: theme, named styles of the object's type, clear local changes | ✅ |
 | Inspector › Appearance: fill, line (style none/solid/dashed/dotted/double, colour, width), corner radius; text font (font catalog), size, bold, italic, underline, strikethrough, colour, alignment (left, centre, right, justify) — written as local `.self` properties FileMaker reads (XML `LocalCSS`) | ✅ verified in FileMaker |
-| Inspector › Data: field, control style (edit box, drop-down list, pop-up menu, checkbox set, radio button set, drop-down calendar), value list; portal occurrence, first row, rows | ✅ |
+| Inspector › Data: field, control style (edit box, drop-down list, pop-up menu, checkbox set, radio button set, drop-down calendar, concealed edit box), value list; portal occurrence, first row, rows | ✅ |
 | Inspector › Data: data formatting (object node key 13, `fmp12::formats`): number (as entered, general, decimal, currency, percent, Boolean; fixed decimals, thousands, system separators, currency symbol leading or trailing, negative style and colour, hide zero), date (predefined formats, custom elements and separators, day and month styles), time (custom hours/minutes/seconds, separator, styles, AM/PM), container format number | ✅ offsets and meanings checked against FileMaker's rendering |
 | Inspector › Data: placeholder text, "Hide object when" (and in Find mode); Position: tooltip; sliding "only objects directly above" and "also resize enclosing part" | ✅ option bits decoded in FileMaker's Inspector |
 | Format › Conditional Formatting…: formula or "Value is" tests (FileMaker's 20 operators, written with the `Self` formula FileMaker stores), text colour, fill, bold, italic, underline | ✅ |
@@ -383,7 +383,7 @@ Engine API for the app (not wired in `crates/app` yet):
 | Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |
 | Related fields outside portals (first related record) | ✅ |
 | Pop-up menus and drop-down lists from value lists (custom and field-based) | ✅ |
-| Checkboxes, radio buttons, calendars | ⏳ |
+| Checkbox sets and radio button sets (one per value-list value, in columns; Browse and Find modes; undo, OnObjectModify), drop-down calendar (month popup, icon bit 0x400, the day written in the file's date format), concealed edit box (bullets) | ✅ `ui_tests::control_styles_in_browse_and_find`; no "Other…" item, "Allow editing" ignored |
 | Data formats (numbers, dates, times, timestamps) shown as FileMaker shows them, in Browse, Preview and PDF (`print::format`) | ✅ |
 | Conditional formatting, "Hide object when", placeholder text, tooltips | ✅ |
 | Popovers (open and close), slide controls (dots, swipe), button bars (active segment, segment actions), web viewers (address in a box, "Open in Browser…" after a confirmation; no browser engine) | ✅ |

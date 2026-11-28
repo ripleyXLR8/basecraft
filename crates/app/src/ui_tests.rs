@@ -1378,3 +1378,131 @@ fn convert_csv_makes_a_file() {
     assert_eq!(t.records.len(), 2);
     assert_eq!(app.view, View::Table);
 }
+
+/// A file with a checkbox set, a radio button set, a drop-down calendar
+/// and a concealed edit box on one layout, one record.
+fn controls_app() -> App {
+    use fmp12::schema::DataType;
+    use fmp12::schema_edit::FieldSpec;
+    use fmp12::valuelists::Source;
+    let mut file =
+        fmp12::File::from_bytes(fmp12::schema_edit::new_file("Things").unwrap()).unwrap();
+    let mut db = Database::load(&file).unwrap();
+    let t = db.tables[0].id;
+    let mut fields = Vec::new();
+    for (n, dt) in [
+        ("Colors", DataType::Text),
+        ("Size", DataType::Text),
+        ("Due", DataType::Date),
+        ("Secret", DataType::Text),
+    ] {
+        fields.push(db.add_field(&mut file, t, &FieldSpec::new(n, dt)).unwrap());
+    }
+    let colors = Source::Custom("Red\rGreen\rBlue".into());
+    let colors = db.add_value_list(&mut file, "Colors", &colors).unwrap();
+    let sizes = Source::Custom("S\rM\rL".into());
+    let sizes = db.add_value_list(&mut file, "Sizes", &sizes).unwrap();
+    let r = db.new_record(t).unwrap();
+    let march = calc::Value::Date(calc::value::day_number(2026, 3, 1));
+    db.set_values(
+        t,
+        r,
+        &[
+            (fields[0], "Blue".into()),
+            (fields[2], engine::stored_text(&march, &db.locale)),
+            (fields[3], "hunter2".into()),
+        ],
+    );
+    let file = fmp12::File::from_bytes(db.save(&file).unwrap()).unwrap();
+    let mut layouts = fmp12::layouts::layouts(&file).unwrap();
+    let lay = layouts.iter_mut().find(|l| l.name == "Things").unwrap();
+    let to = lay.table_occurrence & 0xFFF;
+    let top = lay.parts.iter().find(|p| p.kind == 4).unwrap().top + 10.0;
+    let arrow = fmp12::layouts::field_flags::ARROW;
+    let specs = [
+        (3, Some(colors), 40.0, 0),
+        (4, Some(sizes), 22.0, 0),
+        (6, None, 22.0, arrow),
+        (0, None, 22.0, fmp12::layouts::field_flags::CONCEALED),
+    ];
+    for (n, (f, (display, vl, h, flags))) in fields.into_iter().zip(specs).enumerate() {
+        let left = 10.0 + 200.0 * n as f64;
+        lay.objects.push(fmp12::layouts::LayoutObject {
+            id: 100 + n as u64,
+            kind: 1,
+            bounds: fmp12::layouts::Bounds {
+                top,
+                left,
+                bottom: top + h,
+                right: left + 180.0,
+            },
+            field: Some((0x104000 | to, f as u64, 1)),
+            display,
+            value_list: vl,
+            field_flags: flags,
+            ..Default::default()
+        });
+    }
+    let bytes = fmp12::save::save_layouts(&file, &layouts).unwrap();
+    let mut app = App::default();
+    app.open("Things".into(), bytes);
+    let d = app.doc.as_ref().unwrap();
+    app.layout = d.layouts.iter().position(|l| l.name == "Things").unwrap();
+    app
+}
+
+fn thing(h: &Harness<'_, App>, field: &str) -> String {
+    let db = &h.state().doc.as_ref().unwrap().db;
+    let t = &db.tables[0];
+    db.value(t.id, 0, t.field_by_name(field).unwrap().id)
+        .to_text()
+}
+
+/// Checkbox and radio button sets toggle and pick their value list's
+/// values; the drop-down calendar writes the picked day; a concealed edit
+/// box shows bullets.
+#[test]
+fn control_styles_in_browse_and_find() {
+    let mut h = harness_for(controls_app());
+    h.run_steps(3);
+    shot(&mut h, "controls_browse");
+    assert!(h.query_by_label("hunter2").is_none());
+    h.get_by_label("Red").click();
+    h.run_steps(2);
+    assert_eq!(thing(&h, "Colors"), "Red\rBlue");
+    h.get_by_label("Blue").click();
+    h.run_steps(2);
+    assert_eq!(thing(&h, "Colors"), "Red");
+    h.get_by_label("M").click();
+    h.run_steps(2);
+    assert_eq!(thing(&h, "Size"), "M");
+    h.get_by_label("L").click();
+    h.run_steps(2);
+    assert_eq!(thing(&h, "Size"), "L");
+    // Edit › Undo takes the last pick back.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(2);
+    assert_eq!(thing(&h, "Size"), "M");
+    // The calendar opens on the field's month: March 2026.
+    click_input(&mut h, 0);
+    h.get_by_label("March 2026");
+    shot(&mut h, "controls_calendar");
+    h.get_by_label("15").click();
+    h.run_steps(3);
+    let due = calc::value::parse_date(&thing(&h, "Due"));
+    assert_eq!(due, Some(calc::value::day_number(2026, 3, 15)));
+    assert!(h.query_by_label("March 2026").is_none());
+    // Find mode: the sets stay sets and fill the request.
+    h.state_mut().mode = Some(Mode::Find);
+    h.run_steps(2);
+    h.get_by_label("Green").click();
+    h.run_steps(2);
+    let colors = {
+        let t = &h.state().doc.as_ref().unwrap().db.tables[0];
+        t.field_by_name("Colors").unwrap().id
+    };
+    assert_eq!(
+        h.state().request.get(&colors).map(String::as_str),
+        Some("Green")
+    );
+}

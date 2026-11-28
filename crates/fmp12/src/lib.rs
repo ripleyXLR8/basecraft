@@ -14,6 +14,7 @@ pub mod containers;
 pub mod custom_functions;
 pub mod formats;
 pub mod graph;
+pub mod index;
 pub mod layouts;
 pub mod pb;
 pub mod save;

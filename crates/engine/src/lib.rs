@@ -51,7 +51,8 @@ pub struct Record {
     pub values: BTreeMap<u32, String>,
     /// `Get ( RecordModificationCount )`: commits of changes since the
     /// record was created (the file's record key 252, FORMAT.md §13).
-    // ponytail: kept in memory; a save keeps the file's previous count.
+    /// Written back on save (`Database::save`; an edited record counts at
+    /// least one commit more than the file had).
     pub modifications: u32,
 }
 
@@ -668,7 +669,17 @@ impl Database {
             }
             data.insert(t.id, recs);
         }
-        let bytes = fmp12::save::save_records(original, &data)?;
+        let counts = self
+            .tables
+            .iter()
+            .map(|t| {
+                (
+                    t.id,
+                    t.records.iter().map(|r| (r.id, r.modifications)).collect(),
+                )
+            })
+            .collect();
+        let bytes = fmp12::save::save_records_counted(original, &data, &counts)?;
         let globals = self
             .tables
             .iter()

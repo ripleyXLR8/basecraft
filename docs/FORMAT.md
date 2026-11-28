@@ -174,7 +174,7 @@ not 6 bytes of data.
 | 19–1D | KvLong | klen u8, key, then a fixed-size value of (op==19)+2×(op−19) bytes |
 | 1E | KvLong | klen u8, key, len u8, value |
 | 1F | KvLong | klen u8, key, len u16, value |
-| 20 | Push | 1 byte, or `FE` + 8 bytes |
+| 20 | Push | 1 byte, or `FE` + 8 bytes (8-byte elements, but field index keys use `38 08`, §13) |
 | 28 | Push | 2 bytes |
 | 30 | Push | 3 bytes |
 | 38 | Push | len u8, bytes |
@@ -1578,7 +1578,12 @@ characters with SQn and anything else with SQU; re-encoding all the records
 FileMaker wrote gives its exact bytes (`tests/records.rs`).
 
 Other record keys: **252** = number of modifications (length-prefixed
-integer, `01 01`, `01 02`, written from the second editing session on).
+integer, `01 01`, `01 02`, written from the second editing session on),
+`Get ( RecordModificationCount )`. BaseCraft writes it on save: an edited
+record gets the count the app kept (one per commit) or at least the
+file's count + 1, a new record none (0). Checked in FileMaker Pro 26: a
+record created by one BaseCraft save and edited by two more shows 2, an
+untouched one 0.
 Calculation results of stored calculation fields are stored like any value
 (`Units In | Out` = `25`); FileMaker does not recompute them when it opens a
 file, so a writer must store them.
@@ -1757,17 +1762,47 @@ observed.
 * `[F]` key 17 and `[F].[1].[key]` = **word index**, same layout, built
   when a find needs it (the field then shows "All" indexing).
 
+Keys, read from the indexes FileMaker Pro 26 built for records a script
+created in a French file (`crates/fmp12/src/index.rs`):
+
+* empty value: `01` (every record without a value is listed there, in the
+  value index only);
+* text: `01` + primary weights of the line (`Café — crème` = `01 123D 120F
+  12A3 126B 020A 022C 020A 123D …`; `ß` = `1410 1410`; inner spaces kept,
+  two spaces give `020A 020A`); `Line¶two` gives two keys;
+* word index: `01` + weights of each word, words split as Unicode word
+  boundaries (UAX #29) split them: `x1,yE+12y` → `x1`, `yE`, `12y`;
+  `ABC-12` → `ABC`, `12`; a record without words has no entry;
+* number: u16 BE `0x8000 + number of integer digits` (leading zeros
+  dropped: `,001` → `80 00`), then the digits as nibbles *digit + 1*,
+  padded with a 0 nibble: `3` = `80 01 40`, `10` = `80 02 21`,
+  `0,001` = `80 00 11 20`, `0` = `80 00`. A negative number is the
+  complement of its absolute value's key with a 0 nibble after the digits:
+  `-7` = `7F FE 7F`, `-2,5` = `7F FE C9 FF`;
+* date: `(0x2000 + year) << 10 | month << 6 | day` on 3 bytes, then
+  `80 00`: 2024-01-02 = `9F A0 42 80 00`, 0001-01-01 = `80 04 41 80 00`.
+
+`[F]` key 16 counts the value index (10 keys, 11 entries for 10 records,
+one of them two lines), key 17 the word index. FileMaker pushes an 8-byte
+key as `38 08` (not `20 FE` as elsewhere, §2): a `20 FE` push there is a
+bad block for FileMaker Server's consistency check.
+
 FileMaker **trusts** a stored index: with a stale one, a related record we
 added did not show in a portal (the match field's index did not list it).
 A *missing* index on a field marked indexed is read as empty (the portal
 showed nothing). But a field marked unindexed with automatic indexing on
 (option byte 8, bits 3/5/7 clear, bit 6 clear) gets its index **rebuilt
 on demand**, and FileMaker marks it indexed again (Minimal for the portal,
-All after a find). So `save_records` removes `[T].[1].[F]` of every field
-whose values changed (all fields when a record is added or deleted) and
-clears its index bits. Fields with automatic indexing off keep their stale
-index (not handled). Writing exact index keys would need FileMaker's
-collation table for every index language.
+All after a find). `save_records` writes again the index of every changed
+field (all fields when a record is added or deleted) whose keys it knows:
+text, number and date fields, English or French index language, no
+repetitions, plain number spellings, dates with a four-digit year, lines
+and words up to 100 characters with no outer spaces. FileMaker Server's XML
+export of a file saved that way shows the same `index` attributes as the
+file FileMaker wrote, and its consistency check passes. Any other changed
+index is removed and its index bits cleared (rebuilt on demand, XML
+`index="None"`, `autoIndex="True"`). Fields with automatic indexing off
+keep their stale index (not handled).
 
 A table that never had records has no records node `[T].[5]`. When
 BaseCraft writes the first records it writes the node marker too: without
@@ -1845,9 +1880,15 @@ occurrences and their relationships.
 file FileMaker created (File › Create › Blank), opened and closed once,
 then emptied of its default fields with BaseCraft's own code and given
 BaseCraft's plain theme (`examples/mkblank.rs`). A theme whose compiled
-styles hold only a few default rules (background, borders, text colour
-and size) is enough for FileMaker; one with no rules opens too, but
-draws layouts grey.
+styles hold only a few default rules (background, borders, font, text
+colour and size) is enough for FileMaker; one with no rules opens too,
+but draws layouts grey. Text needs a box: FileMaker Pro 26 draws **no
+text** in a text object (or edit box) whose type's `.text` element
+(element 3) has no `height`; the Claris themes give it `height: 100%;
+box-sizing: border-box` (button: `width` too), and so does the plain
+theme since this was found (`.self` font-family, line-height and
+text-align alone did not help; checked in Browse and Layout modes with
+`BASECRAFT_BLANK_DEMO=<out> cargo test -p basecraft blank_demo_file`).
 
 ### Occurrences, relationships and value lists
 

@@ -140,3 +140,28 @@ fn universal_touch_matches_css() {
     let bg = ut.resolve(&ObjectStyle::of_layout(list), SELF, NORMAL);
     assert!(bg.color(prop::BACKGROUND_COLOR).is_some());
 }
+
+/// BaseCraft's own theme (new files): FileMaker Pro 26 draws no text in a
+/// text object whose `.text` element has no height; the `.text` rule
+/// `height: 100%` makes text, edit boxes and buttons show (checked in
+/// FileMaker, Browse and Layout modes).
+#[test]
+fn plain_theme_gives_text_a_box() {
+    let file = fmp12::File::from_bytes(fmp12::schema_edit::new_file("T").unwrap()).unwrap();
+    let themes = theme::themes(&file).unwrap();
+    assert_eq!(themes[0].id, "org.basecraft.theme.plain");
+    let fonts = theme::fonts(&file).unwrap();
+    for ty in [61, 70, 80] {
+        let s = ObjectStyle {
+            object_type: ty,
+            ..Default::default()
+        };
+        let text = themes[0].resolve(&s, theme::TEXT, NORMAL);
+        let h = text.length(110).unwrap();
+        assert_eq!((h.value, h.unit), (100.0, Unit::Percent), "type {ty}");
+        let p = themes[0].resolve(&s, SELF, NORMAL);
+        let family = p.enum_value(prop::FONT_FAMILY).unwrap() as u32 + 128;
+        assert!(fonts.contains_key(&family), "type {ty}");
+        assert_eq!(p.color(prop::COLOR).unwrap().hex(), "#000000");
+    }
+}

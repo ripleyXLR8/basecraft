@@ -232,9 +232,25 @@ fn item_int_key(item: &[u8]) -> Option<u32> {
 /// `[T].[1].[F]` of every field whose values changed is removed and the
 /// field marked unindexed: FileMaker trusts a stored index (relationships,
 /// value lists, finds) but builds a missing one on demand for a field with
-/// automatic indexing (FORMAT.md §13).
+/// automatic indexing (FORMAT.md §13). Each edited record's modification
+/// count (record key 252) goes up by one, as for one commit.
 pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8>, Error> {
+    save_records_counted(file, data, &BTreeMap::new())
+}
+
+/// [`save_records`] with the modification counts the caller kept (table
+/// id → record id → `Get ( RecordModificationCount )`, commits since the
+/// record was created). An edited record gets at least its previous count
+/// plus one (a save is at least one commit); a new record gets its count,
+/// none when 0 (FileMaker writes key 252 from the first commit after the
+/// one that created the record).
+pub fn save_records_counted(
+    file: &File,
+    data: &BTreeMap<u32, Records>,
+    counts: &BTreeMap<u32, BTreeMap<u32, u32>>,
+) -> Result<Vec<u8>, Error> {
     let tables = schema::tables(file)?;
+    let loc = schema::locale(file)?;
     let mut entries = write::entries(file)?;
     for (&t, new) in data {
         let Some(table) = tables.iter().find(|x| x.id == t) else {
@@ -277,15 +293,30 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                 })
                 .collect()
         };
+        // Indexes whose keys are known are written as FileMaker would; the
+        // others are dropped and marked for FileMaker to rebuild.
+        let rebuilt: BTreeMap<u32, crate::index::FieldIndex> = fields
+            .iter()
+            .filter_map(|f| {
+                Some((
+                    *f,
+                    crate::index::build(*f, table.fields.get(f)?, &new, &loc)?,
+                ))
+            })
+            .collect();
         // ponytail: with automatic indexing off, the stale index is kept;
         // FileMaker would not rebuild it.
         let fields: BTreeSet<u32> = fields
             .into_iter()
+            .filter(|f| !rebuilt.contains_key(f))
             .filter(|f| table.fields.get(f).is_some_and(|d| d.auto_index()))
             .collect();
         let last = last_record_id(file, t)?.max(new.keys().copied().max().unwrap_or(0));
+        let old_counts = schema::modification_counts(file, t)?;
+        let given = counts.get(&t);
         let tp = path_elem(t);
-        // Drop what is regenerated; keep non-field keys (e.g. 252) of edited records.
+        // Drop what is regenerated; keep other non-field keys of edited
+        // records (key 252, the modification count, is written below).
         let mut kept_meta: BTreeMap<u32, Vec<Entry>> = BTreeMap::new();
         entries.retain(|e| {
             // Compare spelled elements: a TO reference `D0 00 02` also reads as 130.
@@ -297,10 +328,14 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                     // [T] key 0: last record id.
                     (1, _) => key != Some(0),
                     // [T].[1].[F]…: index of a changed field.
-                    (2.., Some(1)) => !int(2).is_some_and(|f| fields.contains(&f)),
+                    (2.., Some(1)) => {
+                        !int(2).is_some_and(|f| fields.contains(&f) || rebuilt.contains_key(&f))
+                    }
                     // [T].[5].[R]…: a changed record.
                     (3.., Some(5)) if let Some(r) = int(2).filter(|r| changed.contains(r)) => {
-                        let meta = e.path.len() == 3 && key.is_some() && value_key.is_none();
+                        let meta = e.path.len() == 3
+                            && key.is_some_and(|k| k != 252)
+                            && value_key.is_none();
                         if meta && new.contains_key(&r) {
                             kept_meta.entry(r).or_default().push(e.clone());
                         }
@@ -332,6 +367,35 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                 let mut data = data.to_vec();
                 data[8] &= !0b1010_1000;
                 e.item = write::encode(&Item::Kv { key: 2, data });
+            }
+        }
+        // Rebuilt indexes: `[F].[0]` values, `[F].[1]` words, key 16 / 17.
+        for (f, ix) in &rebuilt {
+            let fp = vec![tp.clone(), vec![1], path_elem(*f)];
+            let marker = |path: Vec<Vec<u8>>| Entry {
+                path,
+                item: vec![0x80],
+            };
+            if !entries
+                .iter()
+                .any(|e| e.path[..] == fp[..2] && e.item == [0x80])
+            {
+                entries.push(marker(fp[..2].to_vec()));
+            }
+            entries.push(marker(fp.clone()));
+            let parts = [(0u8, 16, Some(&ix.values)), (1, 17, ix.words.as_ref())];
+            for (sub, key, p) in parts {
+                let Some(p) = p else { continue };
+                let node = [fp.clone(), vec![vec![sub]]].concat();
+                entries.push(marker(node.clone()));
+                for (k, ids) in p {
+                    let kp = [node.clone(), vec![k.clone()]].concat();
+                    entries.push(marker(kp.clone()));
+                    if let Some(item) = id_set(ids) {
+                        entries.push(Entry { path: kp, item });
+                    }
+                }
+                entries.push(kv(fp.clone(), key, crate::index::stats(p)));
             }
         }
         // Change counter and last record id.
@@ -389,6 +453,15 @@ pub fn save_records(file: &File, data: &BTreeMap<u32, Records>) -> Result<Vec<u8
                 }
             }
             entries.extend(kept_meta.remove(r).unwrap_or_default());
+            let kept = given.and_then(|c| c.get(r)).copied().unwrap_or(0);
+            let count = if old.contains_key(r) {
+                kept.max(old_counts.get(r).copied().unwrap_or(0) + 1)
+            } else {
+                kept
+            };
+            if count > 0 {
+                entries.push(kv(rec.clone(), 252, len_int(count as u64)));
+            }
         }
     }
     write::sort(&mut entries);

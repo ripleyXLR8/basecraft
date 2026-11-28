@@ -70,11 +70,29 @@ fn pt(id: u64, v: f64) -> Vec<u8> {
     .concat()
 }
 
+/// One rule (element, :normal) with `props`.
+fn rule(element: u64, props: &[Vec<u8>]) -> Vec<u8> {
+    let body: Vec<u8> = props.iter().flat_map(|p| msg(1, p)).collect();
+    msg(1, &[uint(1, element), uint(2, 1), msg(3, &body)].concat())
+}
+
 /// Default style of `object_type`: one rule (.self, :normal) with `props`.
 fn style(object_type: u64, props: &[Vec<u8>]) -> Vec<u8> {
-    let body: Vec<u8> = props.iter().flat_map(|p| msg(1, p)).collect();
-    let rule = [uint(1, 1), uint(2, 1), msg(3, &body)].concat();
-    msg(1, &[uint(1, object_type), msg(2, &msg(1, &rule))].concat())
+    styled(object_type, &[rule(1, props)])
+}
+
+/// Default style of `object_type` with several rules.
+fn styled(object_type: u64, rules: &[Vec<u8>]) -> Vec<u8> {
+    msg(1, &[uint(1, object_type), msg(2, &rules.concat())].concat())
+}
+
+/// Property {1: id, 6: length with `unit`}.
+fn len(id: u64, v: f64, unit: u64) -> Vec<u8> {
+    [
+        uint(1, id),
+        msg(6, &[f64f(1, v), uint(2, unit), uint(3, 0)].concat()),
+    ]
+    .concat()
 }
 
 /// Compiled styles of the plain theme.
@@ -85,19 +103,42 @@ fn plain_styles() -> Vec<u8> {
         .chain((24..28).map(|i| enumv(i, 5)))
         .chain((28..32).map(|i| pt(i, 1.0)))
         .collect();
-    let text = vec![colour(70, 0.0, 0.0, 0.0), pt(69, 12.0)];
+    // Font (first font of `[25]`), style, size, colour, line height, left.
+    let text = vec![
+        enumv(64, 0),
+        enumv(67, 1),
+        pt(69, 12.0),
+        colour(70, 0.0, 0.0, 0.0),
+        len(72, 1.0, 9),
+        enumv(74, 1),
+    ];
+    // `.text` box: full height (width too for buttons), border-box.
+    let text_box = rule(3, &[len(110, 100.0, 1), enumv(123, 1)]);
+    let button_box = rule(3, &[len(109, 100.0, 1), len(110, 100.0, 1), enumv(123, 1)]);
+    let button = [
+        vec![colour(7, l, l, l)],
+        text.clone(),
+        vec![enumv(74, 2), enumv(611, 1)],
+    ]
+    .concat();
     [
         style(20, &[colour(7, w, w, w)]),
         style(34, &[colour(7, w, w, w)]),
         style(32, &[colour(7, l, l, l)]),
         style(38, &[colour(7, l, l, l)]),
         style(40, &[colour(7, l, l, l)]),
-        style(
+        styled(
             61,
-            &[vec![colour(7, w, w, w)], border, text.clone()].concat(),
+            &[
+                rule(
+                    1,
+                    &[vec![colour(7, w, w, w)], border, text.clone()].concat(),
+                ),
+                text_box.clone(),
+            ],
         ),
-        style(70, &text),
-        style(80, &[vec![colour(7, l, l, l)], text.clone()].concat()),
+        styled(70, &[rule(1, &text), text_box]),
+        styled(80, &[rule(1, &button), button_box]),
     ]
     .concat()
 }
@@ -156,7 +197,8 @@ fn main() {
     let file = fmp12::File::from_bytes(bytes).unwrap();
     let mut ed = Editor::open(&file).unwrap();
     let names = ed.names();
-    for t in &names.tables {
+    // Only FileMaker's new table; other files just get the theme.
+    for t in names.tables.iter().filter(|t| t.name == "Blank") {
         for f in t.fields.keys() {
             ed.delete_field(t.id, *f).unwrap();
         }

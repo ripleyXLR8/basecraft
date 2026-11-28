@@ -59,7 +59,7 @@ decompiled.
    headers in Preview and PDF), SystemLocaleElements / FileLocaleElements, CustomMenuSetName
    (custom menu sets are not decoded), WindowStyle, WindowUUID, PersistentID (error 1225
    where FileMaker answers). The active-field flags see only fields a script entered, and
-   RecordModificationCount is kept in memory (a save keeps the file's previous count). The
+   RecordModificationCount is written back on save (a record changed without a commit counts one). The
    other missing flags belong to servers, FileMaker Go or plug-ins.
 5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
@@ -111,8 +111,8 @@ ActiveRepetitionNumber, ActiveLayoutObjectName (empty / 0 with no active field, 
 fields and objects a script entered: the app's own focus is not passed to the engine);
 ModifiedFields (only a record a script opened); ActiveModifierKeys (no Caps Lock);
 RecordModificationCount (the file's record key 252, then each commit of a changed existing
-record in the app or a script; kept in memory, not written on save; Replace Field Contents,
-Relookup and imports do not count). LastErrorDetail is set by Revert Transaction, a
+record in the app or a script; written back on save, where a record changed without such a
+commit (Replace Field Contents, Relookup, imports) counts one). LastErrorDetail is set by Revert Transaction, a
 failed transaction, Insert from URL and Execute FileMaker Data API.
 
 Missing (36): PageNumber, PrinterName, ScreenDepth, HighContrastState, SystemAppearance,

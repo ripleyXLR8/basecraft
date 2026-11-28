@@ -160,6 +160,7 @@ fn get_coverage() {
         scale: Some(1.0),
         modifier_keys: Some(0),
         quick_find: String::new(),
+        record_open: 0,
     };
     let mut h = TestHost {
         db,
@@ -1089,4 +1090,89 @@ fn dialog_steps() {
     // Open Help has no privilege rule: 3.
     assert_eq!(err(&mut h, 32), "3");
     assert_eq!(err(&mut h, sid::OPEN_SETTINGS), "0");
+}
+
+/// GetLayoutObjectAttribute for named objects of the current layout
+/// (Claris help): type, bounds, source, content, focus, nesting.
+#[test]
+fn layout_object_attributes() {
+    let mut h = TestHost::new(PEOPLE);
+    with_fields(&mut h);
+    let objects = &mut h.db.layouts[0].objects;
+    objects[0].bounds = fmp12::layouts::Bounds {
+        top: 10.0,
+        left: 20.0,
+        bottom: 30.0,
+        right: 120.0,
+    };
+    objects[0].parent = Some(9);
+    objects.push(fmp12::layouts::LayoutObject {
+        id: 9,
+        kind: 8,
+        name: "box".into(),
+        bounds: fmp12::layouts::Bounds {
+            top: 100.0,
+            left: 50.0,
+            bottom: 200.0,
+            right: 300.0,
+        },
+        ..Default::default()
+    });
+    h.win.left = 5.0;
+    h.win.top = 7.0;
+    let a = |h: &mut TestHost, name: &str, at: &str| {
+        let c = calc(
+            h,
+            &format!("GetLayoutObjectAttribute ( \"{name}\" ; \"{at}\" )"),
+        );
+        Engine::new(Vec::new()).evaluate(h, &c).unwrap().to_text()
+    };
+    assert_eq!(a(&mut h, "Name", "objectType"), "field");
+    assert_eq!(a(&mut h, "box", "objectType"), "group");
+    // The window's origin, plus the group's, plus the field's.
+    assert_eq!(a(&mut h, "Name", "bounds"), "75 117 175 137 0");
+    assert_eq!(a(&mut h, "Name", "width"), "100");
+    assert_eq!(a(&mut h, "Name", "source"), "People::Name");
+    let first = h.db.tables[0].records[h.win.found[0]].values[&NAME].clone();
+    assert_eq!(a(&mut h, "Name", "content"), first);
+    assert_eq!(a(&mut h, "Name", "enclosingObject"), "box");
+    assert_eq!(a(&mut h, "box", "containedObjects"), "Name");
+    assert_eq!(a(&mut h, "Name", "hasFocus"), "0");
+    h.win.field = Some(FieldRef {
+        to: T,
+        field: NAME,
+        repetition: 1,
+    });
+    assert_eq!(a(&mut h, "Name", "hasFocus"), "1");
+    assert_eq!(a(&mut h, "box", "containsFocus"), "1");
+    assert_eq!(a(&mut h, "Age", "isObjectHidden"), "0");
+    assert_eq!(a(&mut h, "nope", "content"), "");
+}
+
+/// Get ( RecordOpenState ) and Get ( RecordOpenCount ): a record a
+/// script changes or creates, and the app's open record handed to a
+/// script (an OnRecordCommit script runs while it is open).
+#[test]
+fn record_open_state() {
+    let mut h = TestHost::new(PEOPLE);
+    let flags = "Get ( RecordOpenState ) & Get ( RecordOpenCount )";
+    let steps = vec![
+        var_c(&h, "$a", flags),
+        set_field(NAME, "\"Zoe\""),
+        var_c(&h, "$b", flags),
+        plain(id::COMMIT),
+        var_c(&h, "$c", flags),
+        plain(id::NEW_RECORD),
+        exit_c(&h, &format!("$a & $b & $c & {flags}")),
+    ];
+    let (_, o) = go(&mut h, steps);
+    assert_eq!(o.result.to_text(), "00210011");
+    // The app's modified record, then a new one, then none.
+    let mut e = Engine::new(Vec::new());
+    let c = calc(&h, flags);
+    for (open, want) in [(2, "21"), (1, "11"), (0, "00")] {
+        h.win.host.record_open = open;
+        let st = step(id::EXIT_SCRIPT, StepParams::ExitScript(Some(c.clone())));
+        assert_eq!(e.run_step(&mut h, &st).result.to_text(), want);
+    }
 }

@@ -643,6 +643,7 @@ dependencies = [
  "cbc",
  "des",
  "getrandom 0.4.3",
+ "image",
  "js-sys",
  "md-5",
  "pbkdf2",

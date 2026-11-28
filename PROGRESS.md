@@ -107,7 +107,9 @@ unsorted, without one), RecordAccess from the privilege set (2 edit, 1 view, 0 n
 RecordModificationCount (the file's record key 252, then +1 for each commit that changed an
 existing record, in the app or a script; kept in memory: a save keeps the file's previous
 count, and Replace Field Contents, Relookup and imports do not count), and outside a script LastError, ErrorCaptureState,
-RecordOpenState, RecordOpenCount, TransactionOpenState and WindowMode (0),
+RecordOpenState, RecordOpenCount, TransactionOpenState and WindowMode (0) (in a script,
+RecordOpenState and RecordOpenCount see the record it opened, or the app's record being
+edited when it started: 1 new, 2 modified, also in OnRecordCommit),
 AllowAbortState (1), ScriptName, ScriptParameter, ScriptResult, LastErrorDetail and
 LastErrorLocation (empty), AccountGroupName (empty for FileMaker accounts); a script answers
 them from its own state first (LastErrorDetail: Revert Transaction's custom message, else,
@@ -147,12 +149,14 @@ as known differences (see below), 7 of them platform-dependent. Before this roun
 | Errors FileMaker absorbs (`Evaluator::sticky`, `calc::evaluate_with_code`): a value comes back and EvaluationError still reports the error. Aggregates skip a failed argument (`Sum ( 1 ; 1/0 )` = 1, error 15), List shows it as `?`, IsEmpty of an error is 0, IsValid is 0, Evaluate of text that does not parse is `?`, an unknown TextEncode/TextDecode encoding gives `?` with error 4 | ✅ oracle |
 | Dates and times shown as read (`Value::Shown`): GetAsDate/GetAsTimestamp keep a `.` or `-` separator, GetAsTime shows AM/PM text and timestamps in the 12-hour form (`1 PM` without minutes typed); arithmetic and comparisons see the plain value, fields store it | ✅ oracle |
 | Parse errors of an empty last parameter (1202 past the maximum, accepted by Case and other functions without one), `x::` (106) | ✅ oracle |
-| ExecuteSQL / ExecuteSQLe: SELECT with INNER / LEFT [OUTER] JOIN … ON and comma joins, `t.*`, `AS` names, WHERE, GROUP BY, HAVING, COUNT(*) / COUNT([DISTINCT] e) / SUM / AVG / MIN / MAX, ORDER BY columns, positions, names or aggregates, DISTINCT, OFFSET/FETCH, `?` arguments, `?` on any error (an ungrouped column, an ambiguous or unknown one), over `Context::rows` | 🚧 no functions (UPPER, CAST…), arithmetic, subqueries or system tables |
+| ExecuteSQL / ExecuteSQLe: SELECT with INNER / LEFT [OUTER] JOIN … ON and comma joins, `t.*`, `AS` names, WHERE, GROUP BY, HAVING, COUNT(*) / COUNT([DISTINCT] e) / SUM / AVG / MIN / MAX, ORDER BY columns, positions, names or aggregates, DISTINCT, OFFSET/FETCH, `?` arguments, `?` on any error (an ungrouped column, an ambiguous or unknown one), over `Context::rows`; `+ - * /` and `||` (text joins, date ± days), CASE (simple and searched), CAST, the Claris SQL Reference's string, number and date functions (UPPER, LOWER, TRIM, LTRIM, RTRIM, LEFT, RIGHT, SUBSTR/SUBSTRING, LENGTH, POSITION, COALESCE, NULLIF, ROUND, ABS, MOD, CHR, YEAR…, CURRENT_DATE/TIME/TIMESTAMP, CURRENT_USER), `( SELECT … )` and `IN ( SELECT … )`, the FileMaker_Tables, FileMaker_Fields, FileMaker_BaseTables and FileMaker_BaseTableFields system tables (`sql_functions_and_system_tables`) | 🚧 no correlated subqueries or EXISTS, ModCount NULL, no FileMaker_ValueLists; not checked against FileMaker |
 | Japanese: kana width and script, KanjiNumeral, NumToJText, YearName, MonthNameJ, TrimAll types | ✅ oracle |
 | CryptGenerateSignature / CryptVerifySignature (RSA PKCS #1 v1.5, plain and DES-EDE3/AES-encrypted PEM keys) | ✅ matches OpenSSL |
 | CryptEncrypt / CryptDecrypt (+Base64): PBKDF2 + AES-128-GCM with SHA-256 digest, own byte layout | 🚧 not FileMaker-compatible |
 | Embeddings (CosineSimilarity, Add/Subtract/NormalizeEmbedding, GetEmbeddingAsText/File), container size/attributes, path conversion | ✅ |
-| Location, sensors, Live Text, AI models, persistent data, layout-object attributes: `Context::host_function`, "not available" (error 3) by default | ✅ |
+| Location, sensors, Live Text, AI models: `Context::host_function`, "not available" (error 3) or empty as FileMaker on a desktop | ✅ |
+| GetPersistentData / ListPersistentDataIDs over Configure Persistent Data (name + instance id, typed values, creation order, "?" when missing, Delete of a missing entry 10), GetLayoutObjectAttribute (objectType, bounds and edges, source, content, hasFocus, containsFocus, isFrontPanel, isActive, isObjectHidden, enclosingObject, containedObjects) for the window's layout: answered by the script engine (`script::hostfns`) | ✅ 🔸 from Claris help, not checked against FileMaker; persistent data in memory only; GetLayoutObjectAttribute empty outside scripts |
+| GetThumbnail: PNG, JPEG, BMP scaled down to fit (proportions kept, never enlarged) | ✅ |
 | Custom functions: parameters, recursion, `Get` inside, wrong parameter count (1201, 1202), the 50,000-call limit of one calculation ("?", not caught by EvaluationError; an Evaluate counts its own) | ✅ matches FileMaker Pro 26 (`custom_functions_match_filemaker`, `custom_function_call_limit`) |
 | File-locale date/number formats | ⏳ |
 
@@ -412,7 +416,7 @@ Engine API for the app (not wired in `crates/app` yet):
 | Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |
 | Related fields outside portals (first related record) | ✅ |
 | Pop-up menus and drop-down lists from value lists (custom and field-based) | ✅ |
-| Checkbox sets and radio button sets (one per value-list value, in columns; Browse and Find modes; undo, OnObjectModify), drop-down calendar (month popup, icon bit 0x400, the day written in the file's date format), concealed edit box (bullets) | ✅ `ui_tests::control_styles_in_browse_and_find`; no "Other…" item, "Allow editing" ignored |
+| Checkbox sets and radio button sets (one per value-list value, in columns; Browse and Find modes; undo, OnObjectModify), drop-down calendar (month popup, icon bit 0x400, the day written in the file's date format), concealed edit box (bullets) | ✅ `ui_tests::control_styles_in_browse_and_find`; no "Other…" item, "Allow editing" ignored (their option bits are unknown: the local templates have a single checkbox set, options `0x20`) |
 | Data formats (numbers, dates, times, timestamps) shown as FileMaker shows them, in Browse, Preview and PDF (`print::format`) | ✅ |
 | Conditional formatting, "Hide object when", placeholder text, tooltips | ✅ |
 | Popovers (open and close), slide controls (dots, swipe), button bars (active segment, segment actions), web viewers (address in a box, "Open in Browser…" after a confirmation; no browser engine) | ✅ |

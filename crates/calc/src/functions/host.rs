@@ -11,15 +11,16 @@ use crate::value::{Container, Value};
 
 /// Functions FileMaker Pro on a desktop answers with empty text, not an
 /// error, when there is nothing to report (oracle on Windows).
+/// GetAddonInfo with no add-on installed is assumed empty (not checked).
 const EMPTY_BY_DEFAULT: [&str; 8] = [
     "Location",
     "LocationValues",
     "RangeBeacons",
     "Furigana",
-    "GetThumbnail",
     "GetAVPlayerAttribute",
     "ListPersistentDataIDs",
     "GetLayoutObjectAttribute",
+    "GetAddonInfo",
 ];
 
 fn host(ev: &mut Evaluator, name: &str, a: &[Value]) -> R {
@@ -53,12 +54,7 @@ host_fns! {
     get_live_text_as_json => "GetLiveTextAsJSON",
     read_qr_code => "ReadQRCode",
     get_text_from_pdf => "GetTextFromPDF",
-    get_thumbnail => "GetThumbnail",
     get_av_player_attribute => "GetAVPlayerAttribute",
-    get_addon_info => "GetAddonInfo",
-    get_persistent_data => "GetPersistentData",
-    list_persistent_data_ids => "ListPersistentDataIDs",
-    get_layout_object_attribute => "GetLayoutObjectAttribute",
     get_layout_object_owner_info => "GetLayoutObjectOwnerInfo",
     get_embedding => "GetEmbedding",
     get_token_count => "GetTokenCount",
@@ -66,6 +62,25 @@ host_fns! {
     predict_from_model => "PredictFromModel",
     get_model_attributes => "GetModelAttributes",
     get_rag_space_info => "GetRAGSpaceInfo",
+}
+
+// Answered by the script host (`script::Engine`, in scripts and the Data
+// Viewer); outside a script they keep the defaults above.
+
+pub fn get_addon_info(ev: &mut Evaluator, a: &[Value]) -> R {
+    host(ev, "GetAddonInfo", a)
+}
+
+pub fn get_persistent_data(ev: &mut Evaluator, a: &[Value]) -> R {
+    host(ev, "GetPersistentData", a)
+}
+
+pub fn list_persistent_data_ids(ev: &mut Evaluator, a: &[Value]) -> R {
+    host(ev, "ListPersistentDataIDs", a)
+}
+
+pub fn get_layout_object_attribute(ev: &mut Evaluator, a: &[Value]) -> R {
+    host(ev, "GetLayoutObjectAttribute", a)
 }
 
 // ---- embeddings ----------------------------------------------------------------
@@ -373,6 +388,45 @@ fn attribute(c: &Container, attr: &str) -> Value {
         _ => Value::empty(),
     }
 }
+/// GetThumbnail ( field ; width ; height ): the picture scaled down to fit
+/// (proportions kept, never enlarged), in its own format and name. Not a
+/// picture: empty (FileMaker 26 for empty text).
+// ponytail: a file path in `field` is not read (calc has no file system);
+// GIF pictures come back unscaled.
+pub fn get_thumbnail(_: &mut Evaluator, a: &[Value]) -> R {
+    let Value::Container(c) = &a[0] else {
+        return Ok(Value::empty());
+    };
+    let Some((w, h)) = image_size(&c.data) else {
+        return Ok(Value::empty());
+    };
+    let (mw, mh) = (int(a, 1)?.max(1) as u32, int(a, 2)?.max(1) as u32);
+    if w <= mw && h <= mh {
+        return Ok(a[0].clone());
+    }
+    Ok(thumbnail(&c.data, mw, mh).map_or_else(
+        || a[0].clone(),
+        |data| Value::Container(Container { data, ..c.clone() }),
+    ))
+}
+
+fn thumbnail(data: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    use image::ImageFormat as F;
+    let format = image::guess_format(data).ok()?;
+    let small =
+        image::load_from_memory(data)
+            .ok()?
+            .resize(w, h, image::imageops::FilterType::Triangle);
+    let small = match format {
+        F::Jpeg => image::DynamicImage::ImageRgb8(small.to_rgb8()),
+        F::Png | F::Bmp => small,
+        _ => return None,
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    small.write_to(&mut out, format).ok()?;
+    Some(out.into_inner())
+}
+
 /// VerifyContainer: 1 for embedded data, empty for an empty field.
 // ponytail: external storage is not modelled, so there is no checksum to
 // compare; embedded data always verifies.
@@ -524,6 +578,37 @@ mod tests {
         assert_eq!(attribute(&r, "filename").to_text(), "blue.jpg");
         assert_eq!(attribute(&r, "storageType").to_text(), "File Reference");
         assert_eq!(attribute(&r, "internalSize").to_text(), "28");
+    }
+
+    #[test]
+    fn thumbnails_keep_proportions() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(40, 20)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let pic = crate::Value::Container(Container {
+            name: "wide.png".into(),
+            data: png.into_inner(),
+            ..Default::default()
+        });
+        let mut ctx = crate::MemoryContext::default();
+        let mut ev = crate::eval::Evaluator::new(&mut ctx);
+        let thumb = |ev: &mut crate::eval::Evaluator, w, h| {
+            let args = [pic.clone(), crate::Value::int(w), crate::Value::int(h)];
+            match super::get_thumbnail(ev, &args).unwrap() {
+                crate::Value::Container(c) => (image_size(&c.data).unwrap(), c.name),
+                v => panic!("{v:?}"),
+            }
+        };
+        assert_eq!(thumb(&mut ev, 10, 10), ((10, 5), "wide.png".into()));
+        // Never enlarged.
+        assert_eq!(thumb(&mut ev, 100, 100).0, (40, 20));
+        let text = [
+            crate::Value::text(""),
+            crate::Value::int(1),
+            crate::Value::int(1),
+        ];
+        assert!(super::get_thumbnail(&mut ev, &text).unwrap().is_empty());
     }
 
     #[test]

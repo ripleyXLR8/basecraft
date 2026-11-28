@@ -9,14 +9,23 @@
 //! `BETWEEN`, `IS [NOT] NULL`, `AND`, `OR`, `NOT`, `?` parameters and
 //! `DATE 'yyyy-mm-dd'` / `TIME` / `TIMESTAMP` literals. Text comparisons are
 //! case-sensitive and an empty value is NULL, as in FileMaker's SQL.
-// ponytail: no arithmetic or functions in expressions, no subqueries, no
-// FileMaker_Tables / FileMaker_Fields system tables; add when files use them.
+//! Expressions: `+ - * /` (`+` and `||` join text; `-` joins text moving
+//! the left side's trailing blanks to the end; date ± days), `CASE`,
+//! `CAST ( e AS type )`, the scalar functions in [`FUNCS`] and [`NOW`]
+//! (Claris SQL Reference), `( SELECT … )` and `IN ( SELECT … )`
+//! subqueries, and the system tables FileMaker_Tables, FileMaker_Fields,
+//! FileMaker_BaseTables and FileMaker_BaseTableFields.
+// ponytail: subqueries run once (no correlated subqueries, no EXISTS);
+// ModCount is NULL (BaseCraft does not count design changes); no
+// FileMaker_ValueLists. Add when files use them.
 
 use super::txt;
 use crate::error::{EvalError, code};
 use crate::eval::{Evaluator, R};
 use crate::num;
+use crate::schema::Rows;
 use crate::value::{self, Value, civil};
+use bigdecimal::ToPrimitive;
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,11 +94,11 @@ fn lex(s: &str) -> Result<Vec<Tok>, EvalError> {
             i += 1;
         } else {
             let two: String = c[i..(i + 2).min(c.len())].iter().collect();
-            let sym = ["<>", "!=", "<=", ">="]
+            let sym = ["<>", "!=", "<=", ">=", "||"]
                 .into_iter()
                 .find(|s| *s == two)
                 .or_else(|| {
-                    ["=", "<", ">", "(", ")", ",", "*", "."]
+                    ["=", "<", ">", "(", ")", ",", "*", ".", "+", "-", "/"]
                         .into_iter()
                         .find(|s| s.starts_with(ch))
                 })
@@ -127,8 +136,17 @@ enum Ex {
     And(Box<Ex>, Box<Ex>),
     Or(Box<Ex>, Box<Ex>),
     Not(Box<Ex>),
+    /// A scalar function or operator (upper-case name; `CAST` has the
+    /// type as a second, literal argument).
+    Func(String, Vec<Ex>),
+    /// `CASE [input] WHEN … THEN … [ELSE …] END`.
+    Case(Option<Box<Ex>>, Vec<(Ex, Ex)>, Option<Box<Ex>>),
+    /// A subquery, run before the query: its first value, or every value
+    /// of its first column in an IN list.
+    Select(Box<Query>),
 }
 
+#[derive(Debug, Clone)]
 enum Item {
     /// `*` or `t.*`.
     All(Option<String>),
@@ -138,6 +156,7 @@ enum Item {
 
 /// A table of the FROM clause: its name, the name it goes by, and how it
 /// joins the tables before it (LEFT, ON condition; none: a cross join).
+#[derive(Debug, Clone)]
 struct From {
     name: String,
     alias: String,
@@ -145,6 +164,7 @@ struct From {
     on: Option<Ex>,
 }
 
+#[derive(Debug, Clone)]
 struct Query {
     distinct: bool,
     items: Vec<Item>,
@@ -172,6 +192,11 @@ struct P<'a> {
 impl P<'_> {
     fn peek(&self) -> Option<&Tok> {
         self.t.get(self.i)
+    }
+
+    /// The next word is `k` (not taken).
+    fn at(&self, k: &str) -> bool {
+        matches!(self.peek(), Some(Tok::Word(w)) if w.eq_ignore_ascii_case(k))
     }
 
     fn kw(&mut self, k: &str) -> bool {
@@ -351,7 +376,7 @@ impl P<'_> {
             loop {
                 let key = match self.peek() {
                     Some(Tok::Num(_)) => Ex::Lit(Value::int(self.number()? as i64)),
-                    _ => self.operand()?,
+                    _ => self.sum()?,
                 };
                 let desc = self.kw("DESC");
                 if !desc {
@@ -378,9 +403,6 @@ impl P<'_> {
             });
             let _ = self.kw("ROWS") || self.kw("ROW");
             self.expect_kw("ONLY")?;
-        }
-        if self.i < self.t.len() {
-            return Err(err("unexpected text after the query"));
         }
         Ok(Query {
             distinct,
@@ -419,12 +441,12 @@ impl P<'_> {
     }
 
     fn cmp(&mut self) -> Result<Ex, EvalError> {
-        let l = self.operand()?;
+        let l = self.sum()?;
         if let Some(Tok::Sym(s)) = self.peek().cloned()
             && ["=", "<>", "!=", "<", "<=", ">", ">="].contains(&s)
         {
             self.i += 1;
-            let r = self.operand()?;
+            let r = self.sum()?;
             return Ok(Ex::Cmp(s, Box::new(l), Box::new(r)));
         }
         if self.kw("IS") {
@@ -434,21 +456,26 @@ impl P<'_> {
         }
         let neg = self.kw("NOT");
         if self.kw("LIKE") {
-            return Ok(Ex::Like(Box::new(l), Box::new(self.operand()?), neg));
+            return Ok(Ex::Like(Box::new(l), Box::new(self.sum()?), neg));
         }
         if self.kw("IN") {
             self.expect("(")?;
-            let mut items = vec![self.operand()?];
-            while self.sym(",") {
-                items.push(self.operand()?);
+            let mut items = vec![];
+            if self.at("SELECT") {
+                items.push(Ex::Select(Box::new(self.query()?)));
+            } else {
+                items.push(self.sum()?);
+                while self.sym(",") {
+                    items.push(self.sum()?);
+                }
             }
             self.expect(")")?;
             return Ok(Ex::In(Box::new(l), items, neg));
         }
         if self.kw("BETWEEN") {
-            let lo = self.operand()?;
+            let lo = self.sum()?;
             self.expect_kw("AND")?;
-            let hi = self.operand()?;
+            let hi = self.sum()?;
             return Ok(Ex::Between(Box::new(l), Box::new(lo), Box::new(hi), neg));
         }
         if neg {
@@ -481,14 +508,134 @@ impl P<'_> {
         Ok(Some(Ex::Agg(f, Some(Box::new(e)), distinct)))
     }
 
+    /// `+`, `-` and `||`, left to right.
+    fn sum(&mut self) -> Result<Ex, EvalError> {
+        let mut l = self.term()?;
+        loop {
+            let op = match self.peek() {
+                Some(Tok::Sym(s @ ("+" | "-" | "||"))) => *s,
+                _ => return Ok(l),
+            };
+            self.i += 1;
+            l = Ex::Func(op.into(), vec![l, self.term()?]);
+        }
+    }
+
+    fn term(&mut self) -> Result<Ex, EvalError> {
+        let mut l = self.unary()?;
+        loop {
+            let op = match self.peek() {
+                Some(Tok::Sym(s @ ("*" | "/"))) => *s,
+                _ => return Ok(l),
+            };
+            self.i += 1;
+            l = Ex::Func(op.into(), vec![l, self.unary()?]);
+        }
+    }
+
+    fn unary(&mut self) -> Result<Ex, EvalError> {
+        if self.sym("-") {
+            return Ok(Ex::Func("NEG".into(), vec![self.unary()?]));
+        }
+        self.sym("+");
+        self.operand()
+    }
+
+    /// `CASE [input] WHEN … THEN … {WHEN … THEN …} [ELSE …] END`.
+    fn case(&mut self) -> Result<Ex, EvalError> {
+        let input = if self.at("WHEN") {
+            None
+        } else {
+            Some(Box::new(self.sum()?))
+        };
+        let mut arms = vec![];
+        while self.kw("WHEN") {
+            let w = self.or()?;
+            self.expect_kw("THEN")?;
+            arms.push((w, self.or()?));
+        }
+        if arms.is_empty() {
+            return Err(err("WHEN expected"));
+        }
+        let other = if self.kw("ELSE") {
+            Some(Box::new(self.or()?))
+        } else {
+            None
+        };
+        self.expect_kw("END")?;
+        Ok(Ex::Case(input, arms, other))
+    }
+
+    /// A scalar function after its name and `(`.
+    fn call(&mut self, name: String) -> Result<Ex, EvalError> {
+        if !FUNCS.contains(&name.as_str()) && !NOW.contains(&name.as_str()) {
+            return Err(err(format!("unknown function {name}")));
+        }
+        let mut args = vec![];
+        match name.as_str() {
+            "CAST" => {
+                args.push(self.or()?);
+                self.expect_kw("AS")?;
+                let ty = self.name()?.to_ascii_uppercase();
+                // VARCHAR(20), DECIMAL(10,2): the size changes nothing here.
+                if self.sym("(") {
+                    while !self.sym(")") {
+                        if self.peek().is_none() {
+                            return Err(err(") expected"));
+                        }
+                        self.i += 1;
+                    }
+                }
+                args.push(Ex::Lit(Value::Text(ty)));
+            }
+            // POSITION ( needle IN text ), or with a comma.
+            "POSITION" => {
+                args.push(self.sum()?);
+                if !self.kw("IN") {
+                    self.expect(",")?;
+                }
+                args.push(self.sum()?);
+            }
+            _ if self.peek() == Some(&Tok::Sym(")")) => {}
+            _ => loop {
+                args.push(self.or()?);
+                if !self.sym(",") {
+                    break;
+                }
+            },
+        }
+        self.expect(")")?;
+        Ok(Ex::Func(name, args))
+    }
+
     fn operand(&mut self) -> Result<Ex, EvalError> {
         if self.sym("(") {
+            if self.at("SELECT") {
+                let q = self.query()?;
+                self.expect(")")?;
+                return Ok(Ex::Select(Box::new(q)));
+            }
             let e = self.or()?;
             self.expect(")")?;
             return Ok(e);
         }
         if let Some(a) = self.aggregate()? {
             return Ok(a);
+        }
+        if let Some(Tok::Word(w)) = self.peek().cloned() {
+            let up = w.to_ascii_uppercase();
+            if up == "CASE" {
+                self.i += 1;
+                return self.case();
+            }
+            if self.t.get(self.i + 1) == Some(&Tok::Sym("(")) {
+                self.i += 2;
+                return self.call(up);
+            }
+            if NOW.contains(&up.as_str()) {
+                self.i += 1;
+                return Ok(Ex::Func(up, vec![]));
+            }
         }
         let t = self
             .t
@@ -533,6 +680,67 @@ impl P<'_> {
         }
     }
 }
+
+/// Scalar functions (Claris SQL Reference: functions that return character
+/// strings, numbers and dates, conditional functions), evaluated by [`func`].
+const FUNCS: [&str; 40] = [
+    "CAST",
+    "POSITION",
+    "UPPER",
+    "LOWER",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "LEFT",
+    "RIGHT",
+    "SUBSTR",
+    "SUBSTRING",
+    "LENGTH",
+    "CHAR_LENGTH",
+    "CHARACTER_LENGTH",
+    "COALESCE",
+    "NULLIF",
+    "ROUND",
+    "ABS",
+    "SIGN",
+    "INT",
+    "FLOOR",
+    "CEIL",
+    "CEILING",
+    "MOD",
+    "SQRT",
+    "CHR",
+    "SPACE",
+    "STRVAL",
+    "NUMVAL",
+    "DATEVAL",
+    "TIMESTAMPVAL",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "DAYOFWEEK",
+    "DAYNAME",
+    "MONTHNAME",
+];
+
+/// Functions of the clock and the session, with or without `()`; read
+/// once per query ([`resolve`]).
+const NOW: [&str; 11] = [
+    "CURRENT_DATE",
+    "CURDATE",
+    "TODAY",
+    "CURRENT_TIME",
+    "CURTIME",
+    "CURRENT_TIMESTAMP",
+    "CURTIMESTAMP",
+    "CURRENT_USER",
+    "USER",
+    "USERNAME",
+    "PI",
+];
 
 /// SQL date literal: `YYYY-MM-DD`, or the file's date format.
 fn sql_date(s: &str) -> Option<i64> {
@@ -647,24 +855,88 @@ impl Schema<'_> {
 
     /// `e` with its columns resolved.
     fn bind(&self, e: &Ex) -> Result<Ex, EvalError> {
-        let b = |x: &Ex| self.bind(x).map(Box::new);
-        Ok(match e {
-            Ex::Col(q, n) => Ex::Idx(self.col(q.as_deref(), n)?),
-            Ex::Idx(_) | Ex::Lit(_) => e.clone(),
-            Ex::Agg(f, a, d) => Ex::Agg(*f, a.as_deref().map(b).transpose()?, *d),
-            Ex::Cmp(op, x, y) => Ex::Cmp(op, b(x)?, b(y)?),
-            Ex::Like(x, y, n) => Ex::Like(b(x)?, b(y)?, *n),
-            Ex::In(x, v, n) => Ex::In(
-                b(x)?,
-                v.iter().map(|i| self.bind(i)).collect::<Result<_, _>>()?,
+        match e {
+            Ex::Col(q, n) => Ok(Ex::Idx(self.col(q.as_deref(), n)?)),
+            _ => map(e, &mut |x| self.bind(x)),
+        }
+    }
+}
+
+type Mapper<'a> = dyn FnMut(&Ex) -> Result<Ex, EvalError> + 'a;
+
+/// `e` with `f` applied to each sub-expression.
+fn map(e: &Ex, f: &mut Mapper) -> Result<Ex, EvalError> {
+    let mut b = |x: &Ex| f(x).map(Box::new);
+    Ok(match e {
+        Ex::Col(..) | Ex::Idx(_) | Ex::Lit(_) | Ex::Select(_) => e.clone(),
+        Ex::Agg(a, x, d) => Ex::Agg(*a, x.as_deref().map(&mut b).transpose()?, *d),
+        Ex::Cmp(op, x, y) => Ex::Cmp(op, b(x)?, b(y)?),
+        Ex::Like(x, y, n) => Ex::Like(b(x)?, b(y)?, *n),
+        Ex::In(x, v, n) => {
+            let x = b(x)?;
+            Ex::In(
+                x,
+                v.iter()
+                    .map(|i| b(i).map(|i| *i))
+                    .collect::<Result<_, _>>()?,
                 *n,
-            ),
-            Ex::Between(x, l, h, n) => Ex::Between(b(x)?, b(l)?, b(h)?, *n),
-            Ex::Null(x, n) => Ex::Null(b(x)?, *n),
-            Ex::And(x, y) => Ex::And(b(x)?, b(y)?),
-            Ex::Or(x, y) => Ex::Or(b(x)?, b(y)?),
-            Ex::Not(x) => Ex::Not(b(x)?),
-        })
+            )
+        }
+        Ex::Between(x, l, h, n) => Ex::Between(b(x)?, b(l)?, b(h)?, *n),
+        Ex::Null(x, n) => Ex::Null(b(x)?, *n),
+        Ex::And(x, y) => Ex::And(b(x)?, b(y)?),
+        Ex::Or(x, y) => Ex::Or(b(x)?, b(y)?),
+        Ex::Not(x) => Ex::Not(b(x)?),
+        Ex::Func(n, v) => Ex::Func(
+            n.clone(),
+            v.iter()
+                .map(|i| b(i).map(|i| *i))
+                .collect::<Result<_, _>>()?,
+        ),
+        Ex::Case(i, arms, o) => {
+            let i = i.as_deref().map(&mut b).transpose()?;
+            let arms = arms
+                .iter()
+                .map(|(w, t)| Ok((*b(w)?, *b(t)?)))
+                .collect::<Result<_, EvalError>>()?;
+            Ex::Case(i, arms, o.as_deref().map(&mut b).transpose()?)
+        }
+    })
+}
+
+/// `e` with its subqueries run and the clock and session functions read.
+fn resolve(ev: &mut Evaluator, e: &Ex) -> Result<Ex, EvalError> {
+    let first = |rows: Vec<Row>| rows.into_iter().filter_map(|r| r.into_iter().next());
+    match e {
+        Ex::Select(q) => Ok(Ex::Lit(
+            first(select(ev, q)?).next().unwrap_or_else(Value::empty),
+        )),
+        Ex::In(x, items, n) => {
+            let mut v = vec![];
+            for i in items {
+                match i {
+                    Ex::Select(q) => v.extend(first(select(ev, q)?).map(Ex::Lit)),
+                    i => v.push(resolve(ev, i)?),
+                }
+            }
+            Ok(Ex::In(Box::new(resolve(ev, x)?), v, *n))
+        }
+        Ex::Func(n, a) if a.is_empty() && NOW.contains(&n.as_str()) => {
+            let mut get = |f: &str| {
+                ev.ctx
+                    .get(f)
+                    .or_else(|| super::builtin_get(f))
+                    .unwrap_or_else(Value::empty)
+            };
+            Ok(Ex::Lit(match n.as_str() {
+                "CURRENT_DATE" | "CURDATE" | "TODAY" => get("CurrentDate"),
+                "CURRENT_TIME" | "CURTIME" => get("CurrentTime"),
+                "CURRENT_TIMESTAMP" | "CURTIMESTAMP" => get("CurrentTimestamp"),
+                "PI" => Value::Number(num::pi(15)),
+                _ => get("AccountName"),
+            }))
+        }
+        _ => map(e, &mut |x| resolve(ev, x)),
     }
 }
 
@@ -685,6 +957,14 @@ fn aggregates(e: &Ex, cols: &mut Vec<usize>) -> bool {
             .fold(aggregates(x, cols), |a, i| aggregates(i, cols) | a),
         Ex::Between(x, l, h, _) => aggregates(x, cols) | aggregates(l, cols) | aggregates(h, cols),
         Ex::Null(x, _) | Ex::Not(x) => aggregates(x, cols),
+        Ex::Func(_, v) => v.iter().fold(false, |a, i| aggregates(i, cols) | a),
+        Ex::Case(i, arms, o) => i
+            .as_deref()
+            .into_iter()
+            .chain(arms.iter().flat_map(|(w, t)| [w, t]))
+            .chain(o.as_deref())
+            .fold(false, |a, x| aggregates(x, cols) | a),
+        Ex::Select(_) => false,
     }
 }
 
@@ -732,8 +1012,220 @@ fn value(e: &Ex, g: &[&Row]) -> Value {
                 }
             }
         }
-        Ex::Col(..) => Value::empty(),
+        Ex::Func(n, args) => {
+            let v: Vec<Value> = args.iter().map(|x| value(x, g)).collect();
+            func(n, &v)
+        }
+        Ex::Case(input, arms, other) => {
+            let input = input.as_ref().map(|i| value(i, g));
+            for (w, then) in arms {
+                let hit = match &input {
+                    Some(x) => {
+                        let y = value(w, g);
+                        !is_null(x) && !is_null(&y) && sql_cmp(x, &y).is_eq()
+                    }
+                    None => test(w, g),
+                };
+                if hit {
+                    return value(then, g);
+                }
+            }
+            other.as_ref().map_or_else(Value::empty, |o| value(o, g))
+        }
+        Ex::Col(..) | Ex::Select(_) => Value::empty(),
         _ => Value::bool(test(e, g)),
+    }
+}
+
+/// A number from SQL text (`'12.5'`), or any non-text value's number.
+fn number(v: &Value) -> Option<num::Num> {
+    match v {
+        Value::Text(s) => num::parse(s.trim()),
+        v => v.to_num(),
+    }
+}
+
+fn date_of(v: &Value) -> Option<i64> {
+    match v {
+        Value::Date(d) => Some(*d),
+        Value::Timestamp(t) => Some(value::ts_date(t)),
+        Value::Text(s) => sql_date(s),
+        _ => None,
+    }
+}
+
+fn time_of(v: &Value) -> Option<num::Num> {
+    match v {
+        Value::Time(t) => Some(t.clone()),
+        Value::Timestamp(t) => Some(value::ts_time(t)),
+        Value::Text(s) => value::parse_time(s),
+        _ => None,
+    }
+}
+
+/// CAST ( v AS ty ); a value that does not convert is NULL.
+fn cast(v: &Value, ty: &str) -> Option<Value> {
+    Some(match ty {
+        "VARCHAR" | "CHAR" | "CHARACTER" | "NVARCHAR" | "LONGVARCHAR" | "TEXT" => {
+            Value::Text(sql_text(v))
+        }
+        "INT" | "INTEGER" | "SMALLINT" | "BIGINT" | "TINYINT" => {
+            Value::Number(num::trunc(&number(v)?, 0))
+        }
+        "NUMERIC" | "DECIMAL" | "DOUBLE" | "FLOAT" | "REAL" | "NUMBER" => Value::Number(number(v)?),
+        "DATE" => Value::Date(date_of(v)?),
+        "TIME" => Value::Time(time_of(v)?),
+        "TIMESTAMP" => Value::Timestamp(match v {
+            Value::Timestamp(t) => t.clone(),
+            Value::Date(d) => value::make_ts(*d, &num::int(0)),
+            Value::Text(s) => sql_timestamp(s)?,
+            _ => return None,
+        }),
+        _ => return None,
+    })
+}
+
+/// `+ - * /` and unary minus. Text joins (`-` moves the left side's
+/// trailing blanks to the end); a date plus or minus days is a date, and
+/// two dates differ by a number of days.
+fn arith(op: &str, a: &Value, b: &Value) -> Option<Value> {
+    let text = |v: &Value| matches!(v, Value::Text(_) | Value::Json { .. });
+    let days = |v: &Value| number(v).and_then(|n| n.to_i64());
+    if op == "NEG" {
+        return Some(Value::Number(-number(a)?));
+    }
+    if text(a) || text(b) {
+        let (l, r) = (sql_text(a), sql_text(b));
+        return match op {
+            "+" => Some(Value::Text(l + &r)),
+            "-" => {
+                let t = l.trim_end_matches(' ');
+                Some(Value::Text(format!("{t}{r}{}", &l[t.len()..])))
+            }
+            _ => arith(op, &Value::Number(number(a)?), &Value::Number(number(b)?)),
+        };
+    }
+    match (op, a, b) {
+        ("+", Value::Date(d), n) | ("+", n, Value::Date(d)) => {
+            return Some(Value::Date(d + days(n)?));
+        }
+        ("-", Value::Date(x), Value::Date(y)) => return Some(Value::int(x - y)),
+        ("-", Value::Date(d), n) => return Some(Value::Date(d - days(n)?)),
+        _ => {}
+    }
+    let (x, y) = (a.to_num()?, b.to_num()?);
+    Some(Value::Number(match op {
+        "+" => num::add(&x, &y),
+        "-" => num::sub(&x, &y),
+        "*" => num::mul(&x, &y),
+        _ => num::div(&x, &y, num::DEFAULT_SCALE)?,
+    }))
+}
+
+/// A scalar function of [`FUNCS`] or an operator; NULL in, NULL out
+/// (except COALESCE and NULLIF).
+fn func(name: &str, v: &[Value]) -> Value {
+    let arg = |i: usize| v.get(i).cloned().unwrap_or_else(Value::empty);
+    match name {
+        "COALESCE" => {
+            return v
+                .iter()
+                .find(|x| !is_null(x))
+                .cloned()
+                .unwrap_or_else(Value::empty);
+        }
+        "NULLIF" => {
+            let (a, b) = (arg(0), arg(1));
+            let same = !is_null(&a) && !is_null(&b) && sql_cmp(&a, &b).is_eq();
+            return if same { Value::empty() } else { a };
+        }
+        _ if v.iter().any(is_null) => return Value::empty(),
+        _ => {}
+    }
+    scalar(name, v, &arg).unwrap_or_else(Value::empty)
+}
+
+fn scalar(name: &str, v: &[Value], arg: &dyn Fn(usize) -> Value) -> Option<Value> {
+    let text = |i: usize| sql_text(&arg(i));
+    let chars = |i: usize| text(i).chars().collect::<Vec<char>>();
+    let n = |i: usize| number(&arg(i));
+    let count = |i: usize| n(i).and_then(|x| num::trunc(&x, 0).to_i64());
+    let on_num = |f: &dyn Fn(num::Num) -> Option<num::Num>| n(0).and_then(f).map(Value::Number);
+    let int = |x: i64| Some(Value::int(x));
+    let t = |s: String| Some(Value::Text(s));
+    match name {
+        "+" | "-" | "*" | "/" | "NEG" => arith(name, &arg(0), &arg(1)),
+        "||" => t(text(0) + &text(1)),
+        "UPPER" => t(text(0).to_uppercase()),
+        "LOWER" => t(text(0).to_lowercase()),
+        "TRIM" => t(text(0).trim_matches(' ').into()),
+        "LTRIM" => t(text(0).trim_start_matches(' ').into()),
+        "RTRIM" => t(text(0).trim_end_matches(' ').into()),
+        "LEFT" => t(chars(0).iter().take(count(1)?.max(0) as usize).collect()),
+        "RIGHT" => {
+            let c = chars(0);
+            let k = (count(1)?.max(0) as usize).min(c.len());
+            t(c[c.len() - k..].iter().collect())
+        }
+        "SUBSTR" | "SUBSTRING" => {
+            let len = match v.len() {
+                2 => usize::MAX,
+                _ => count(2)?.max(0) as usize,
+            };
+            let start = (count(1)?.max(1) - 1) as usize;
+            t(chars(0).iter().skip(start).take(len).collect())
+        }
+        "LENGTH" | "CHAR_LENGTH" | "CHARACTER_LENGTH" => int(chars(0).len() as i64),
+        "POSITION" => {
+            let (needle, hay) = (text(0), text(1));
+            int(hay
+                .find(&needle)
+                .map_or(0, |b| hay[..b].chars().count() + 1) as i64)
+        }
+        "CAST" => cast(&arg(0), &text(1)),
+        "ROUND" => {
+            let places = if v.len() > 1 { count(1)? } else { 0 };
+            on_num(&|x| Some(num::round(&x, places)))
+        }
+        "ABS" => on_num(&|x| Some(x.abs())),
+        "SIGN" => on_num(&|x| Some(num::int(x.cmp(&num::int(0)) as i64))),
+        "INT" => on_num(&|x| Some(num::trunc(&x, 0))),
+        "FLOOR" => on_num(&|x| Some(num::floor(&x))),
+        "CEIL" | "CEILING" => on_num(&|x| Some(num::ceil(&x))),
+        "SQRT" => on_num(&|x| num::sqrt(&x, 15)),
+        "MOD" => {
+            let (x, y) = (n(0)?, n(1)?);
+            let q = num::trunc(&num::div(&x, &y, num::DEFAULT_SCALE)?, 0);
+            Some(Value::Number(num::sub(&x, &num::mul(&q, &y))))
+        }
+        "CHR" => t(char::from_u32(u32::try_from(count(0)?).ok()?)?.to_string()),
+        "SPACE" => t(" ".repeat(count(0)?.clamp(0, 1_000_000) as usize)),
+        "STRVAL" => t(text(0)),
+        "NUMVAL" => n(0).map(Value::Number),
+        "DATEVAL" => cast(&arg(0), "DATE"),
+        "TIMESTAMPVAL" => cast(&arg(0), "TIMESTAMP"),
+        "YEAR" | "MONTH" | "DAY" | "DAYOFWEEK" | "DAYNAME" | "MONTHNAME" => {
+            let d = date_of(&arg(0))?;
+            let (y, m, dd) = civil(d);
+            let dow = value::day_of_week(d);
+            match name {
+                "YEAR" => int(y),
+                "MONTH" => int(m),
+                "DAY" => int(dd),
+                "DAYOFWEEK" => int(dow),
+                "DAYNAME" => t(super::datetime::DAYS[(dow - 1) as usize].into()),
+                _ => t(super::datetime::MONTHS[(m - 1) as usize].into()),
+            }
+        }
+        "HOUR" | "MINUTE" | "SECOND" => {
+            let secs = num::floor(&time_of(&arg(0))?).to_i64()?;
+            int(match name {
+                "HOUR" => secs / 3600,
+                "MINUTE" => secs / 60 % 60,
+                _ => secs % 60,
+            })
+        }
+        _ => None,
     }
 }
 
@@ -776,7 +1268,13 @@ fn test(e: &Ex, g: &[&Row]) -> bool {
                 && both(a, hi).is_some_and(Ordering::is_le);
             inside != *neg
         }
-        Ex::Col(..) | Ex::Idx(_) | Ex::Lit(_) | Ex::Agg(..) => value(e, g).truth(),
+        Ex::Col(..)
+        | Ex::Idx(_)
+        | Ex::Lit(_)
+        | Ex::Agg(..)
+        | Ex::Func(..)
+        | Ex::Case(..)
+        | Ex::Select(_) => value(e, g).truth(),
     }
 }
 
@@ -790,6 +1288,155 @@ fn null_first(x: &Value, y: &Value) -> Ordering {
     }
 }
 
+/// The rows of a FROM table: a system table, else the host's.
+fn table_rows(ev: &mut Evaluator, name: &str) -> Result<Rows, EvalError> {
+    let up = name.to_ascii_uppercase();
+    let system = [
+        "FILEMAKER_TABLES",
+        "FILEMAKER_FIELDS",
+        "FILEMAKER_BASETABLES",
+        "FILEMAKER_BASETABLEFIELDS",
+    ];
+    let (true, Some(s)) = (system.contains(&up.as_str()), ev.ctx.schema("")) else {
+        return ev.ctx.rows(name);
+    };
+    let file = ev
+        .ctx
+        .get("FileName")
+        .map(|v| v.to_text())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| s.file.clone());
+    let cols = |c: &[&str]| c.iter().map(|c| c.to_string()).collect();
+    let text = |s: &str| Value::text(s);
+    let id = |n: u64| Value::int(n as i64);
+    // TableName or BaseTableName, then the field's columns.
+    let field_row = |table: &str, f: &crate::schema::Field| {
+        use crate::schema::{DataType as D, Storage as S};
+        let ty = match f.data_type {
+            D::Text => "varchar",
+            D::Number => "decimal",
+            D::Date => "date",
+            D::Time => "time",
+            D::Timestamp => "timestamp",
+            D::Container => "binary",
+        };
+        let ty = if f.storage == S::Global {
+            format!("global {ty}")
+        } else {
+            ty.to_string()
+        };
+        let class = match f.storage {
+            S::Summary => "Summary",
+            S::StoredCalc | S::UnstoredCalc => "Calculated",
+            _ => "Normal",
+        };
+        vec![
+            text(table),
+            text(&f.name),
+            Value::Text(ty),
+            id(f.id),
+            text(class),
+            Value::int(f.repetitions.max(1) as i64),
+            Value::empty(),
+        ]
+    };
+    let base = |name: &str| s.base_tables.iter().find(|b| b.name == name);
+    let fields = [
+        "FieldName",
+        "FieldType",
+        "FieldId",
+        "FieldClass",
+        "FieldReps",
+        "ModCount",
+    ];
+    Ok(match up.as_str() {
+        "FILEMAKER_TABLES" => Rows {
+            columns: cols(&[
+                "TableName",
+                "TableId",
+                "BaseTableName",
+                "BaseFileName",
+                "ModCount",
+            ]),
+            rows: s
+                .occurrences
+                .iter()
+                .map(|o| {
+                    let f = if o.source.is_empty() {
+                        &file
+                    } else {
+                        &o.source
+                    };
+                    vec![
+                        text(&o.name),
+                        id(o.id),
+                        text(&o.base_table),
+                        text(f),
+                        Value::empty(),
+                    ]
+                })
+                .collect(),
+        },
+        "FILEMAKER_FIELDS" => Rows {
+            columns: cols(&[&["TableName"][..], &fields].concat()),
+            rows: s
+                .occurrences
+                .iter()
+                .flat_map(|o| {
+                    base(&o.base_table)
+                        .into_iter()
+                        .flat_map(|b| b.fields.iter().map(|f| field_row(&o.name, f)))
+                })
+                .collect(),
+        },
+        "FILEMAKER_BASETABLES" => Rows {
+            columns: cols(&["BaseTableName", "BaseTableId", "Source", "ModCount"]),
+            rows: s
+                .base_tables
+                .iter()
+                .map(|b| vec![text(&b.name), id(b.id), text("<Internal>"), Value::empty()])
+                .collect(),
+        },
+        _ => Rows {
+            columns: cols(&[&["BaseTableName"][..], &fields].concat()),
+            rows: s
+                .base_tables
+                .iter()
+                .flat_map(|b| b.fields.iter().map(|f| field_row(&b.name, f)))
+                .collect(),
+        },
+    })
+}
+
+/// `q` with its subqueries run and its clock functions read.
+fn resolve_query(ev: &mut Evaluator, q: &Query) -> Result<Query, EvalError> {
+    let mut q = q.clone();
+    let mut r = |e: &mut Ex| -> Result<(), EvalError> {
+        *e = resolve(ev, e)?;
+        Ok(())
+    };
+    for i in &mut q.items {
+        if let Item::Ex(e, _) = i {
+            r(e)?;
+        }
+    }
+    for f in &mut q.from {
+        if let Some(e) = &mut f.on {
+            r(e)?;
+        }
+    }
+    for e in q
+        .filter
+        .iter_mut()
+        .chain(q.having.iter_mut())
+        .chain(q.group.iter_mut())
+        .chain(q.order.iter_mut().map(|(e, _)| e))
+    {
+        r(e)?;
+    }
+    Ok(q)
+}
+
 fn run(ev: &mut Evaluator, a: &[Value]) -> Result<String, EvalError> {
     let mut p = P {
         t: lex(&txt(a, 0))?,
@@ -798,9 +1445,30 @@ fn run(ev: &mut Evaluator, a: &[Value]) -> Result<String, EvalError> {
         next_param: 0,
     };
     let q = p.query()?;
+    if p.i < p.t.len() {
+        return Err(err("unexpected text after the query"));
+    }
+    let fs = match txt(a, 1) {
+        s if s.is_empty() => ",".to_string(),
+        s => s,
+    };
+    let rs = match txt(a, 2) {
+        s if s.is_empty() => "\r".to_string(),
+        s => s,
+    };
+    Ok(select(ev, &q)?
+        .iter()
+        .map(|r| r.iter().map(sql_text).collect::<Vec<_>>().join(&fs))
+        .collect::<Vec<_>>()
+        .join(&rs))
+}
+
+/// The rows a query selects, in order.
+fn select(ev: &mut Evaluator, q: &Query) -> Result<Vec<Row>, EvalError> {
+    let q = &resolve_query(ev, q)?;
     let mut tables = vec![];
     for f in &q.from {
-        let mut rows = ev.ctx.rows(&f.name)?;
+        let mut rows = table_rows(ev, &f.name)?;
         // Short rows from the host read as NULL.
         let width = rows.columns.len();
         rows.rows
@@ -957,31 +1625,19 @@ fn run(ev: &mut Evaluator, a: &[Value]) -> Result<String, EvalError> {
         }
         Ordering::Equal
     });
-    let fs = match txt(a, 1) {
-        s if s.is_empty() => ",".to_string(),
-        s => s,
-    };
-    let rs = match txt(a, 2) {
-        s if s.is_empty() => "\r".to_string(),
-        s => s,
-    };
-    let mut out: Vec<String> = vec![];
+    let mut out: Vec<Row> = vec![];
+    let mut seen = std::collections::HashSet::new();
     for i in idx {
-        let line = outs
-            .iter()
-            .map(|(e, _)| sql_text(&value(e, &groups[i])))
-            .collect::<Vec<_>>()
-            .join(&fs);
-        if !q.distinct || !out.contains(&line) {
-            out.push(line);
+        let row: Row = outs.iter().map(|(e, _)| value(e, &groups[i])).collect();
+        if !q.distinct || seen.insert(row.iter().map(sql_text).collect::<Vec<_>>()) {
+            out.push(row);
         }
     }
-    let out: Vec<String> = out
+    Ok(out
         .into_iter()
         .skip(q.offset)
         .take(q.limit.unwrap_or(usize::MAX))
-        .collect();
-    Ok(out.join(&rs))
+        .collect())
 }
 
 /// ExecuteSQL ( query ; fieldSeparator ; rowSeparator { ; arguments... } ).

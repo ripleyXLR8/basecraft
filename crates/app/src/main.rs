@@ -19,6 +19,7 @@ use fmp12::layouts::Layout;
 mod browse;
 mod chart;
 mod container;
+mod custom_functions;
 mod debugger;
 mod design;
 mod i18n;
@@ -189,6 +190,10 @@ impl App {
                 self.open(name, b);
                 if let Some(d) = self.doc.as_mut() {
                     d.path = Some(p.to_path_buf());
+                    // Container files kept in open external storage.
+                    if let Some(dir) = p.parent() {
+                        d.db.read_external_containers(dir);
+                    }
                 }
                 if let Some(l) = self.security.login.as_mut() {
                     l.path = Some(p.to_path_buf());
@@ -332,6 +337,12 @@ impl App {
             };
             let Some(t) = target else { return };
             if let Err(e) = std::fs::write(&t, &bytes) {
+                self.error = Some(e.to_string());
+                return;
+            }
+            if let Some(dir) = t.parent()
+                && let Err(e) = d.db.write_external_containers(dir)
+            {
                 self.error = Some(e.to_string());
                 return;
             }
@@ -994,6 +1005,16 @@ impl App {
                     {
                         ui.close();
                         self.open_security();
+                    }
+                    if ui
+                        .add_enabled(
+                            on,
+                            egui::Button::new(custom_functions::t("Custom Functions…")),
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        self.open_custom_functions(ui.ctx());
                     }
                 });
                 ui.separator();
@@ -2207,6 +2228,7 @@ impl eframe::App for App {
         self.records_dialogs(&ctx);
         self.m5_frame(&ctx);
         self.security_dialogs(&ctx);
+        self.custom_functions_dialog(&ctx);
         for (o, ev) in std::mem::take(&mut self.obj_events) {
             if ev == event::OBJECT_ENTER {
                 self.m8.focus = Some(o);

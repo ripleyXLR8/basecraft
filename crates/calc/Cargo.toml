@@ -45,3 +45,6 @@ workspace = true
 # on wasm, where its assembly does not build (calls nest less deep there).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 stacker = "0.1.25"
+# Pinned: psm 0.1.24+ builds with ar_archive_writer, whose licence
+# (Apache-2.0 WITH LLVM-exception) deny.toml does not list.
+psm = "=0.1.23"

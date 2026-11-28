@@ -4,17 +4,17 @@
 //! for all four, as before.
 //!
 //! Where FileMaker keeps their options was read from steps FileMaker 26
-//! wrote (`step_params_m5.xml` and the reverse-oracle exports, FORMAT.md
+//! wrote (pasted, then read back in its XML export and the file; FORMAT.md
 //! §8): Insert from URL's URL at parameter 0 and cURL options at 1, its
 //! target like Insert Text's (`[160]` key 1 or the inline field), option
-//! bits `0x1000` select, `0x80` no dialog, `0x1000_0000` verify SSL
-//! certificates; Save Records as JSONL `0x1000` format for fine-tuning,
-//! `0x200` create folders; Save a Copy as XML `0x100` details for
-//! analysis tools; Execute FileMaker Data API `0x1000` select. The other
-//! slots (the Data API request at parameter 0, the JSONL prompts at 1–3
-//! and its completion field inline, the output files at `[128]` key 130)
-//! follow the neighbouring steps and are not checked against a step
-//! FileMaker wrote.
+//! bits `0x1000` select, `0x80` no dialog, `0x100` do not encode the URL,
+//! `0x1000_0000` verify SSL certificates; Execute FileMaker Data API the
+//! request at 0, `0x1000` select, the same targets; Save Records as JSONL
+//! `0x1000` format for fine-tuning (prompts at 2 system, 3 user, 4
+//! assistant), `0x1` with a completion field (inline), `0x200` create
+//! folders; Save a Copy as XML `0x100` details for analysis tools, `0x200`
+//! each object's binary data, `0x8000` options as JSON (parameter 1;
+//! parameter 0 is the window). Output files: `[128]` key 130.
 
 use super::*;
 
@@ -56,6 +56,10 @@ mod native {
     const SELECT: u32 = 0x1000;
     const VERIFY_SSL: u32 = 0x1000_0000;
     const FINE_TUNING: u32 = 0x1000;
+    /// Save Records as JSONL: the inline field is the completion field.
+    const COMPLETION: u32 = 0x1;
+    /// Insert from URL: "Do not automatically encode URL".
+    const NO_ENCODE: u32 = 0x100;
     const CREATE_FOLDERS: u32 = 0x200;
 
     impl Engine {
@@ -171,6 +175,11 @@ mod native {
             // `$var` values of the options (`-d @$data`, `-b $cookies`…).
             let globals = &self.globals;
             let read = |name: &str| variable(globals, frame, name);
+            let url = if s.options & NO_ENCODE != 0 {
+                url
+            } else {
+                curl::encode_url(&url)
+            };
             let (req, result) = curl::request(&url, &o, s.options & VERIFY_SSL != 0, &read);
             let req = req?;
             let outcome = curl::exchange(&req, &o);
@@ -229,7 +238,7 @@ mod native {
         ) -> Result<Vec<u8>, u32> {
             use serde_json::json;
             let (table, layout_to, _) = Self::context(host);
-            let completion = s.inline_field();
+            let completion = s.inline_field().filter(|_| s.options & COMPLETION != 0);
             let to = completion.map_or(layout_to, |f| f.to);
             let tid = host.db().table_of(to).ok_or(error::FIELD_MISSING)?.id;
             let w = host.window().clone();
@@ -263,9 +272,9 @@ mod native {
                             None => None,
                         })
                     };
-                    let system = text(self, host, 1)?;
-                    let user = text(self, host, 2)?.unwrap_or_default();
-                    let assistant = text(self, host, 3)?.unwrap_or_default();
+                    let system = text(self, host, 2)?;
+                    let user = text(self, host, 3)?.unwrap_or_default();
+                    let assistant = text(self, host, 4)?.unwrap_or_default();
                     if let Some(sys) = system.filter(|x| !x.is_empty()) {
                         messages.push(json!({"content": sys, "role": "system"}));
                     }

@@ -15,7 +15,8 @@ pub(crate) fn concealed(o: &fmp12::layouts::LayoutObject) -> bool {
 /// out in columns filling `r`: as many rows as fit in its height, then the
 /// next column. Returns the field's new text when the user clicks one.
 // ponytail: column-major order and an even column width are not checked
-// against FileMaker; "Other…" and "Allow editing" are not drawn.
+// against FileMaker; "Other…" (`field_flags::OTHER`) and "Allow editing"
+// (`field_flags::EDIT_VALUES`, pop-ups and drop-downs only) are not drawn.
 pub(crate) fn value_set(
     ui: &mut egui::Ui,
     lk: &Look,

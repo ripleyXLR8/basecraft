@@ -227,7 +227,7 @@ fn nav(a: &WebAction, w: &Want) -> Option<Nav> {
         WebAction::Reload => Nav::Reload,
         WebAction::Forward => Nav::Forward,
         WebAction::Back => Nav::Back,
-        WebAction::Go(u) => Nav::Load(resolve(u, w.flags & web::ENCODE_URL != 0)),
+        WebAction::Go(u) => Nav::Load(resolve(u, w.flags & web::NO_ENCODE_URL == 0)),
         WebAction::Js {
             function,
             parameters,

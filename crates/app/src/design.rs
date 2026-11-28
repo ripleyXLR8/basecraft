@@ -41,6 +41,12 @@ const LOCAL_613: [u8; 17] = [
     0x00,
 ];
 
+/// The data formats FileMaker 26 gives a field object it places: the
+/// file's own (FORMAT.md §10, "Data formatting").
+fn new_field_format(doc: &Doc) -> fmp12::formats::Format {
+    fmp12::formats::Format::for_new_object(&doc.db.locale.formats)
+}
+
 fn new_style(object_type: u8) -> Vec<u8> {
     let mut s = LOCAL_613.to_vec();
     s.extend([0x18, object_type]);
@@ -3291,7 +3297,7 @@ impl Designer {
                 to,
                 rows,
                 fields,
-            } => self.insert_portal(rect, to, rows, &fields),
+            } => self.insert_portal(doc, rect, to, rows, &fields),
             Dialog::TabControl { rect, tabs } => {
                 let names: Vec<String> = tabs
                     .lines()
@@ -3352,6 +3358,7 @@ impl Designer {
             bounds: rect,
             style_raw: new_style(61),
             field: Some((0x104000 | to as u64, f as u64, 1)),
+            format: Some(new_field_format(doc)),
             ..Default::default()
         }));
         for id in &ids {
@@ -3362,7 +3369,7 @@ impl Designer {
 
     /// A portal on `to` over `rect`, `rows` rows, with `fields` side by
     /// side in its first row.
-    pub fn insert_portal(&mut self, rect: Bounds, to: u32, rows: u32, fields: &[u32]) {
+    pub fn insert_portal(&mut self, doc: &Doc, rect: Bounds, to: u32, rows: u32, fields: &[u32]) {
         self.checkpoint();
         let pid = self.add(LayoutObject {
             kind: kind::PORTAL,
@@ -3390,6 +3397,7 @@ impl Designer {
                     },
                     style_raw: new_style(61),
                     field: Some((0x104000 | to as u64, *f as u64, 1)),
+                    format: Some(new_field_format(doc)),
                     parent: Some(pid),
                     ..Default::default()
                 },
@@ -4041,7 +4049,7 @@ mod tests {
             bottom: b,
             right: r,
         };
-        ds.insert_portal(rect(100.0, 700.0, 220.0, 1000.0), pto, 4, &fields);
+        ds.insert_portal(&d, rect(100.0, 700.0, 220.0, 1000.0), pto, 4, &fields);
         let portal = *ds.sel.iter().next().unwrap();
         ds.insert_tab_control(
             rect(240.0, 700.0, 400.0, 1000.0),
@@ -4312,7 +4320,7 @@ mod tests {
                 .take(2)
                 .map(|f| f.id)
                 .collect();
-        ds.insert_portal(b(y + 170.0, 20.0, y + 302.0, 420.0), pto, 3, &pf);
+        ds.insert_portal(&d, b(y + 170.0, 20.0, y + 302.0, 420.0), pto, 3, &pf);
         // Tab control with two panels and a field on the first.
         ds.insert_tab_control(
             b(y + 320.0, 20.0, y + 470.0, 420.0),

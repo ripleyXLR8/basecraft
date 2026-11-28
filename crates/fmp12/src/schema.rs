@@ -690,6 +690,9 @@ pub struct Locale {
     /// Suffixes of 12-hour times, e.g. " AM"; empty for a 24-hour locale.
     pub am: String,
     pub pm: String,
+    /// The file's data formats (`[2]` key 134; empty when the file has
+    /// none): what FileMaker gives a new field object (`formats::Format::for_new_object`).
+    pub formats: Vec<u8>,
 }
 
 impl Default for Locale {
@@ -705,6 +708,7 @@ impl Default for Locale {
             date_order: DateOrder::Mdy,
             am: " AM".into(),
             pm: " PM".into(),
+            formats: Vec::new(),
         }
     }
 }
@@ -737,16 +741,21 @@ pub fn parse_locale(b: &[u8]) -> Option<Locale> {
         },
         am,
         pm,
+        formats: Vec::new(),
     })
 }
 
 /// The file's locale, or English (US) when the block is missing.
 pub fn locale(file: &File) -> Result<Locale, Error> {
     let mut out = None;
-    file.walk(|path, c| {
-        if let (Some([2]), Chunk::Kv { key: 13, data }) = (int_path(path).as_deref(), c) {
-            out = parse_locale(data);
-        }
+    let mut formats = Vec::new();
+    file.walk(|path, c| match (int_path(path).as_deref(), c) {
+        (Some([2]), Chunk::Kv { key: 13, data }) => out = parse_locale(data),
+        (Some([2]), Chunk::Kv { key: 134, data }) => formats = data.to_vec(),
+        _ => {}
     })?;
-    Ok(out.unwrap_or_default())
+    Ok(Locale {
+        formats,
+        ..out.unwrap_or_default()
+    })
 }

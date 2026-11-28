@@ -659,17 +659,19 @@ impl Engine {
                 ))
             })(),
             // Set Web Viewer ([128] object name, [129] URL) and Perform
-            // JavaScript in Web Viewer: the host acts on the web viewer
-            // named on the window's layout.
+            // JavaScript in Web Viewer ([128] object name, [129] function
+            // name, [128] key 3 the parameter count, the parameters at
+            // [138 + i]): the host acts on the web viewer named on the
+            // window's layout. Read from steps FileMaker 26 wrote (FORMAT.md §8).
             SET_WEB_VIEWER | PERFORM_JAVASCRIPT => (|| {
-                let mut texts = Vec::new();
-                let mut i = 0;
-                while let Some(c) = p.calc(i) {
-                    texts.push(self.eval(host, frame, &c)?.to_text());
-                    i += 1;
-                }
-                let mut texts = texts.into_iter();
-                let name = texts.next().unwrap_or_default();
+                let mut text = |e: &mut Self, h: &mut dyn Host, i: u32| -> Result<String, u32> {
+                    Ok(match p.calc(i) {
+                        Some(c) => e.eval(h, frame, &c)?.to_text(),
+                        None => String::new(),
+                    })
+                };
+                let name = text(self, host, 0)?;
+                let second = text(self, host, 1)?;
                 let layout = host.window().layout;
                 let found = host
                     .db()
@@ -680,13 +682,17 @@ impl Engine {
                 if !found {
                     return Err(error::OBJECT_MISSING);
                 }
-                // 🔸 Only "5 go to URL" was observed; the other codes follow
-                // the order of FileMaker's Action menu. Perform JavaScript's
-                // [129] function name and [130…] parameters are assumed.
+                // Bytes 22–23: 1 Reset, 2 Reload, 3 Go Forward, 4 Go Back,
+                // 5 Go to URL (FileMaker 26's XML export names each).
                 let action = if s.id == PERFORM_JAVASCRIPT {
+                    let n = js_parameter_count(p);
+                    let mut parameters = Vec::new();
+                    for i in 0..n {
+                        parameters.push(text(self, host, 10 + i)?);
+                    }
                     WebAction::Js {
-                        function: texts.next().unwrap_or_default(),
-                        parameters: texts.collect(),
+                        function: second,
+                        parameters,
                     }
                 } else {
                     match s.arg {
@@ -694,7 +700,7 @@ impl Engine {
                         2 => WebAction::Reload,
                         3 => WebAction::Forward,
                         4 => WebAction::Back,
-                        5 => WebAction::Go(texts.next().unwrap_or_default()),
+                        5 => WebAction::Go(second),
                         _ => return Ok(Flow::Next),
                     }
                 };
@@ -777,18 +783,18 @@ impl Engine {
                 self.transaction.take().ok_or(err::COMMAND_INVALID)?;
                 Ok(Flow::Next)
             })(),
-            // ponytail: the stored condition, error code and message are
-            // read as parameters 0, 1, 2 (their dialog's order), not checked
-            // against a FileMaker-written step.
+            // Revert Transaction: `0x100` with a condition ([128]), `0x200`
+            // with an error code ([129]) and its message ([130]), as FileMaker
+            // 26 writes them; a slot without its bit does not count.
             REVERT_TRANSACTION => (|| {
                 if self.transaction.is_none() {
                     return Err(error::UNAVAILABLE);
                 }
-                let cond = p.calc(0);
+                let cond = p.calc(0).filter(|_| o & 0x100 != 0);
                 if cond.is_some() && !self.truth(host, frame, &cond)? {
                     return Ok(Flow::Next);
                 }
-                let code = match p.calc(1) {
+                let code = match p.calc(1).filter(|_| o & 0x200 != 0) {
                     Some(c) => self.eval(host, frame, &c)?.to_text().trim().parse().ok(),
                     None => None,
                 }
@@ -1237,6 +1243,15 @@ fn apply_geometry(w: &mut Window, [h, wd, t, l]: [Option<f64>; 4]) {
 pub(crate) fn has_params(p: &fmp12::scripts::RawParams) -> bool {
     p.kv.keys()
         .any(|(path, _)| path.first().is_some_and(|x| *x >= 128))
+}
+
+/// Perform JavaScript in Web Viewer's parameter count: `[128]` key 3, a
+/// big-endian u32 (FileMaker 26 writes `00 00 00 03` for three
+/// parameters, at `[138]`, `[139]`, `[140]`). Capped at 100.
+pub(crate) fn js_parameter_count(p: &fmp12::scripts::RawParams) -> u32 {
+    p.get(&[128], 3)
+        .map_or(0, |b| b.iter().fold(0u32, |n, x| (n << 8) | *x as u32))
+        .min(100)
 }
 
 /// A step that only the application can do and that goes on when done.

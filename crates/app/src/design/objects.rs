@@ -72,7 +72,8 @@ const CHART_KINDS: [(Kind, &str); 10] = [
     (Kind::Scatter, "Scatter"),
 ];
 
-/// Web Viewer Setup's options (FORMAT.md §10, [`ly::web`]).
+/// Web Viewer Setup's options (FORMAT.md §10, [`ly::web`]); the URL one is
+/// on when its bit is clear.
 const WEB_OPTIONS: [(u64, &str); 6] = [
     (
         ly::web::INTERACTION,
@@ -85,7 +86,7 @@ const WEB_OPTIONS: [(u64, &str); 6] = [
     (ly::web::FIND_MODE, "Display content in Find mode"),
     (ly::web::PROGRESS_BAR, "Display progress bar"),
     (ly::web::STATUS, "Display status messages"),
-    (ly::web::ENCODE_URL, "Automatically encode URL"),
+    (ly::web::NO_ENCODE_URL, "Automatically encode URL"),
 ];
 
 impl ChartEdit {
@@ -609,7 +610,7 @@ impl Designer {
                 self.calc_field(ui, doc, o.id, "url", |o| o.url.as_ref(), |o, t| o.url = t);
                 let flags = o.external.map_or(0, |e| e.1);
                 for (bit, name) in WEB_OPTIONS {
-                    let mut on = flags & bit != 0;
+                    let mut on = (flags & bit != 0) != (bit == ly::web::NO_ENCODE_URL);
                     if ui.checkbox(&mut on, tr(name)).changed() {
                         self.touch("web_options");
                         if let Some(x) = self.object_mut(o.id)

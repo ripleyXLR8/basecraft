@@ -323,6 +323,9 @@ impl Engine {
                 Ok(Flow::Next)
             })(),
             EXPORT_FIELD => (|| {
+                if let Some(r) = self.export_field_stored(host, frame, s) {
+                    return r;
+                }
                 let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
                 let text = self.field_value(host, f).ok_or(error::RECORD_MISSING)?;
                 ui(UiRequest::ExportField {
@@ -374,8 +377,13 @@ impl Engine {
                 delete_records(host, table, &all);
                 Ok(Flow::Next)
             })(),
-            IMPORT_RECORDS => ui(UiRequest::Import { dialog }),
-            EXPORT_RECORDS => ui(UiRequest::Export { dialog }),
+            // With a stored file and no dialog they run as stored.
+            IMPORT_RECORDS => self
+                .import_stored(host, frame, s)
+                .unwrap_or_else(|| ui(UiRequest::Import { dialog })),
+            EXPORT_RECORDS => self
+                .export_stored(host, frame, s)
+                .unwrap_or_else(|| ui(UiRequest::Export { dialog })),
             // Found sets.
             MODIFY_LAST_FIND => (|| {
                 self.commit(host)?;
@@ -593,8 +601,11 @@ impl Engine {
                 Suspend::Ui(UiRequest::CloseFile),
                 Pending::Ui(UiPending::Halt),
             )),
+            // Bytes 22–23: 1 copy, 2 compacted, 3 clone, 4 self-contained.
             SAVE_A_COPY_AS => ui(UiRequest::SaveCopy {
                 path: stored_path(p),
+                kind: s.arg,
+                folders: o & 0x200 != 0,
             }),
             // Recover File would rewrite the file from its blocks: refused.
             RECOVER_FILE => Err(error::UNAVAILABLE),
@@ -775,6 +786,8 @@ impl Engine {
                     found: w.found,
                     current: w.current,
                     level: 0,
+                    skip_auto: o & 0x1000 != 0,
+                    skip_validation: o & 0x100 != 0,
                 });
                 Ok(Flow::Next)
             })(),

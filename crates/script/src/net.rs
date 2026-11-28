@@ -84,6 +84,8 @@ mod native {
     /// Insert from URL: "Do not automatically encode URL".
     const NO_ENCODE: u32 = 0x100;
     const CREATE_FOLDERS: u32 = 0x200;
+    /// Save Records as JSONL: a table ([128] key 17).
+    const TABLE: u32 = 0x100;
 
     impl Engine {
         pub(crate) fn exec_net(
@@ -282,7 +284,12 @@ mod native {
             use serde_json::json;
             let (table, layout_to, _) = Self::context(host);
             let completion = s.inline_field().filter(|_| s.options & COMPLETION != 0);
-            let to = completion.map_or(layout_to, |f| f.to);
+            // The Table option (`0x100`): its occurrence at [128] key 17.
+            let table_to = (s.options & TABLE != 0)
+                .then(|| s.raw_params.get(&[128], 17))
+                .flatten()
+                .and_then(|b| fmp12::graph::to_ref(&b));
+            let to = table_to.unwrap_or(completion.map_or(layout_to, |f| f.to));
             let tid = host.db().table_of(to).ok_or(error::FIELD_MISSING)?.id;
             let w = host.window().clone();
             let records: Vec<usize> = if tid == table {

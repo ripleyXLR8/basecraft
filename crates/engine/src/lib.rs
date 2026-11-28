@@ -1162,12 +1162,21 @@ impl Database {
     /// New Record with FileMaker's auto-enter options applied (creation
     /// stamps, serial numbers, auto-enter calculations). Returns its index.
     pub fn new_record(&mut self, table: u32) -> Option<usize> {
+        self.new_record_with(table, true)
+    }
+
+    /// New record; `auto` = false skips auto-enter, lookups and stamps
+    /// (Open Transaction [Skip auto-enter options]). Privileges still apply.
+    pub fn new_record_with(&mut self, table: u32, auto: bool) -> Option<usize> {
         if !self.can(Action::Create, table, None) {
             self.access.denied = Some(RECORD_DENIED);
             return None;
         }
         let ti = self.tables.iter().position(|t| t.id == table)?;
         let r = self.tables[ti].new_record();
+        if !auto {
+            return Some(r);
+        }
         let fields = self.tables[ti].fields.clone();
         for f in &fields {
             if let Some(v) = self.auto_value(table, r, f, true) {
@@ -1205,6 +1214,18 @@ impl Database {
     /// match field changed copy their value again, then modification
     /// stamps are applied.
     pub fn set_values(&mut self, table: u32, record: usize, values: &[(u32, String)]) {
+        self.set_values_with(table, record, values, true);
+    }
+
+    /// [`Self::set_values`]; `auto` = false skips lookups, auto-enter
+    /// calculations and modification stamps (privileges still apply).
+    pub fn set_values_with(
+        &mut self,
+        table: u32,
+        record: usize,
+        values: &[(u32, String)],
+        auto: bool,
+    ) {
         if let Some(code) = self.edit_denied(table, record, values) {
             self.access.denied = Some(code);
             return;
@@ -1225,7 +1246,7 @@ impl Database {
             rec.values.insert(*f, v.clone());
         }
         let changed: Vec<u32> = values.iter().map(|(f, _)| *f).collect();
-        if changed.is_empty() {
+        if changed.is_empty() || !auto {
             return;
         }
         self.apply_lookups(table, record, Some(&changed));

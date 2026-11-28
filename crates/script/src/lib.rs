@@ -25,6 +25,7 @@ mod accounts;
 pub mod datafiles;
 pub mod files;
 mod hostfns;
+pub mod io;
 mod net;
 mod steps;
 pub mod text;
@@ -419,8 +420,12 @@ pub enum UiRequest {
         path: Option<String>,
         text: String,
     },
+    /// Save a Copy as: `kind` 1 copy, 2 compacted, 3 clone (no records),
+    /// 4 self-contained; `folders` = create folders.
     SaveCopy {
         path: Option<String>,
+        kind: u16,
+        folders: bool,
     },
     Import {
         dialog: bool,
@@ -826,6 +831,10 @@ struct Transaction {
     found: Vec<usize>,
     current: usize,
     level: usize,
+    /// Open Transaction's "Skip auto-enter options" (`0x1000`) and "Skip
+    /// data entry validation" (`0x100`).
+    skip_auto: bool,
+    skip_validation: bool,
 }
 
 enum Flow {
@@ -1665,6 +1674,11 @@ impl Engine {
             .join("\r")
     }
 
+    /// Auto-enter applies, unless Open Transaction skips it.
+    fn auto_enter(&self) -> bool {
+        !self.transaction.as_ref().is_some_and(|t| t.skip_auto)
+    }
+
     /// Commit Records; `skip` = "Skip data entry validation" (fields
     /// validated "always" are still checked).
     fn commit_with(&mut self, host: &mut dyn Host, skip: bool) -> Result<(), u32> {
@@ -1674,6 +1688,7 @@ impl Engine {
             }
             return Ok(());
         };
+        let skip = skip || self.transaction.as_ref().is_some_and(|t| t.skip_validation);
         if let Some(e) = host
             .db()
             .validate_script(table, r)
@@ -2222,7 +2237,11 @@ impl Engine {
                     w.requests.push(Request::default());
                     w.current_request = w.requests.len() - 1;
                 } else {
-                    let r = host.db().new_record(table).ok_or(error::RECORD_MISSING)?;
+                    let auto = self.auto_enter();
+                    let r = host
+                        .db()
+                        .new_record_with(table, auto)
+                        .ok_or(error::RECORD_MISSING)?;
                     let w = host.window();
                     w.found.push(r);
                     w.current = w.found.len() - 1;
@@ -2464,7 +2483,7 @@ impl Engine {
                 | accounts::RE_LOGIN,
             ) => self.account_step(host, frame, s)?,
             // Export Field Contents goes through the host UI (`exec_more`).
-            (_, INSERT_PICTURE | INSERT_FILE) => self.container_step(host, s)?,
+            (_, INSERT_PICTURE | INSERT_FILE) => self.container_step(host, frame, s)?,
             (_, x) if datafiles::handles(x) => return self.exec_files(host, frame, s),
             (_, x) if net::handles(x) => return self.exec_net(host, frame, s),
             _ => {
@@ -2568,18 +2587,23 @@ impl Engine {
 
     /// Insert Picture, Insert File (a file from the host into the step's
     /// field) and Export Field Contents (the field's file to the host).
-    // ponytail: the file paths and options stored in the steps are not
-    // decoded; the host asks for the file.
-    fn container_step(&mut self, host: &mut dyn Host, s: &Step) -> Result<(), u32> {
+    /// A stored path is read with no dialog (stored as a reference with
+    /// option `0x800`); otherwise the host asks for the file.
+    fn container_step(&mut self, host: &mut dyn Host, frame: &Frame, s: &Step) -> Result<(), u32> {
         let f = s.inline_field().ok_or(error::FIELD_MISSING)?;
         if s.id != EXPORT_FIELD_CONTENTS {
-            let (name, data) = host
-                .pick_file(s.id == INSERT_PICTURE)
-                .ok_or(error::USER_CANCELED)?;
-            let file = calc::value::Container {
-                name,
-                data,
-                ..Default::default()
+            let file = match self.insert_stored(host, frame, s) {
+                Some(r) => r?,
+                None => {
+                    let (name, data) = host
+                        .pick_file(s.id == INSERT_PICTURE)
+                        .ok_or(error::USER_CANCELED)?;
+                    calc::value::Container {
+                        name,
+                        data,
+                        ..Default::default()
+                    }
+                }
             };
             return self.set_field(host, f, Value::Container(file));
         }
@@ -2675,8 +2699,10 @@ impl Engine {
         if !matches!(&self.open, Some((ot, or, _)) if *ot == tid && *or == r) {
             self.open = Some((tid, r, Some(db.tables[ti].records[r].clone())));
         }
-        // Lookups matching on the field copy again, stamps update.
-        db.set_values(tid, r, &[(key, text)]);
+        // Lookups matching on the field copy again, stamps update (not
+        // in a transaction that skips auto-enter).
+        let auto = self.auto_enter();
+        host.db().set_values_with(tid, r, &[(key, text)], auto);
         Ok(())
     }
 }

@@ -449,6 +449,18 @@ impl App {
 
     /// Saves the records into a new `.fmp12` image. `as_copy` asks where.
     fn save(&mut self, ctx: &egui::Context, as_copy: bool) {
+        self.save_to(ctx, as_copy, None, false);
+    }
+
+    /// [`Self::save`]; a copy goes to `target` when given (Save a Copy as
+    /// with a stored path) and `clone` leaves the records out.
+    pub(crate) fn save_to(
+        &mut self,
+        ctx: &egui::Context,
+        as_copy: bool,
+        target: Option<std::path::PathBuf>,
+        clone: bool,
+    ) {
         if self.remote_save() || !self.commit_record() {
             return;
         }
@@ -472,8 +484,22 @@ impl App {
                 return;
             }
         };
+        // A clone (Save a Copy as) has the schema and no records.
+        let copy = if clone {
+            let mut db = d.db.clone();
+            db.tables.iter_mut().for_each(|t| t.records.clear());
+            match fmp12::File::from_bytes(bytes.clone()).and_then(|f| db.save(&f)) {
+                Ok(b) => b,
+                Err(e) => {
+                    self.error = Some(e.to_string());
+                    return;
+                }
+            }
+        } else {
+            bytes.clone()
+        };
         // An encrypted file is written encrypted again (FORMAT.md §17).
-        let disk = d.file.to_disk(bytes.clone());
+        let disk = d.file.to_disk(copy);
         match d.file.replaced(bytes) {
             Ok(f) => {
                 // Scripts as written (steps get their parameter nodes).
@@ -510,8 +536,9 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = ctx;
-            let target = match (&d.path, as_copy) {
-                (Some(p), false) => Some(p.clone()),
+            let target = match (&d.path, as_copy, target) {
+                (_, true, Some(t)) => Some(t),
+                (Some(p), false, _) => Some(p.clone()),
                 _ => rfd::FileDialog::new()
                     .add_filter("FileMaker", &["fmp12"])
                     .set_file_name(&file_name)
@@ -535,7 +562,7 @@ impl App {
         // In the browser, saving downloads the file.
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (ctx, as_copy);
+            let _ = (ctx, as_copy, target);
             wasm_bindgen_futures::spawn_local(async move {
                 if let Some(h) = rfd::AsyncFileDialog::new()
                     .set_file_name(&file_name)
@@ -2280,7 +2307,7 @@ fn draw_field(
                 let values = doc.db.value_list_values(vl);
                 if let Some(v) = ui
                     .push_id(id, |ui| {
-                        controls::value_set(ui, lk, inner, o.display, &values, s)
+                        controls::value_set(ui, lk, inner, o.display, &values, s, None)
                     })
                     .inner
                 {
@@ -2386,6 +2413,38 @@ fn draw_field(
             } else {
                 Vec::new()
             };
+            // "Other…" (`field_flags::OTHER`) and, on pop-up menus and
+            // drop-down lists of a custom value list, "Edit…"
+            // (`field_flags::EDIT_VALUES`): their dialogs' answers.
+            use fmp12::layouts::field_flags as ff;
+            use fmp12::valuelists::Source;
+            let ask_id = edit_id.with("ask");
+            let allow_other = o.field_flags & ff::OTHER != 0 && choices.is_some();
+            let typed = allow_other
+                .then(|| controls::dialog(ui.ctx(), ask_id, controls::Ask::Other))
+                .flatten();
+            let editable = match (o.display, o.value_list) {
+                (1 | 2, Some(vl)) if o.field_flags & ff::EDIT_VALUES != 0 => doc
+                    .db
+                    .value_lists
+                    .iter()
+                    .find(|v| v.id == vl && matches!(v.source, Source::Custom(_)))
+                    .map(|v| (v.id, v.name.clone())),
+                _ => None,
+            };
+            if let Some((vl, name)) = &editable
+                && let Some(text) = controls::dialog(ui.ctx(), ask_id, controls::Ask::EditValues)
+                && doc
+                    .db
+                    .set_value_list(&mut doc.file, *vl, name, &Source::Custom(text))
+                    .is_ok()
+            {
+                *dirty = true;
+            }
+            let choices = choices.map(|c| match (&editable, o.value_list) {
+                (Some(_), Some(vl)) => doc.db.value_list_values(vl),
+                _ => c,
+            });
             let mut changed = false;
             let mut left = false;
             if let Some(s) = doc
@@ -2398,13 +2457,19 @@ fn draw_field(
                 let before = s.clone();
                 match choices {
                     Some(values) => {
-                        let mut picked = None;
+                        let mut picked = typed
+                            .as_deref()
+                            .map(|v| controls::with_other(o.display, s, &values, v));
                         if o.display >= 3 {
-                            picked = ui
+                            let other = allow_other.then_some(ask_id);
+                            if let Some(v) = ui
                                 .push_id(edit_id, |ui| {
-                                    controls::value_set(ui, lk, inner, o.display, &values, s)
+                                    controls::value_set(ui, lk, inner, o.display, &values, s, other)
                                 })
-                                .inner;
+                                .inner
+                            {
+                                picked = Some(v);
+                            }
                         } else {
                             // A drop-down list without "Include arrow icon"
                             // looks like an edit box (the field's own look).
@@ -2438,6 +2503,36 @@ fn draw_field(
                                             if ui.selectable_label(s == v, label(v)).clicked() {
                                                 picked = Some(v.clone());
                                             }
+                                        }
+                                        if allow_other || editable.is_some() {
+                                            ui.separator();
+                                        }
+                                        let other = controls::item(controls::Ask::Other);
+                                        if allow_other
+                                            && ui.selectable_label(false, other).clicked()
+                                        {
+                                            let cur = if values.contains(s) {
+                                                String::new()
+                                            } else {
+                                                s.clone()
+                                            };
+                                            controls::open(
+                                                ui.ctx(),
+                                                ask_id,
+                                                controls::Ask::Other,
+                                                cur,
+                                            );
+                                        }
+                                        let edit = controls::item(controls::Ask::EditValues);
+                                        if editable.is_some()
+                                            && ui.selectable_label(false, edit).clicked()
+                                        {
+                                            controls::open(
+                                                ui.ctx(),
+                                                ask_id,
+                                                controls::Ask::EditValues,
+                                                values.join("\n"),
+                                            );
                                         }
                                     })
                                     .response

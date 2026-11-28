@@ -215,8 +215,11 @@ impl Stored {
     /// For a file stored outside, the reference stream counts as the
     /// embedded stream would (`PNGf` + the file's bytes).
     pub fn hash(&self) -> [u8; 16] {
-        let mut streams: BTreeMap<[u8; 4], &[u8]> =
-            self.streams.iter().map(|(t, d)| (*t, d.as_slice())).collect();
+        let mut streams: BTreeMap<[u8; 4], &[u8]> = self
+            .streams
+            .iter()
+            .map(|(t, d)| (*t, d.as_slice()))
+            .collect();
         if let (Some(data), Some(tag)) = (&self.external_data, self.tag()) {
             streams.remove(&tag);
             streams.insert(tag.map(|c| c ^ 0x20), data);

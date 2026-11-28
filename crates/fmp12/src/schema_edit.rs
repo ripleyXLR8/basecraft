@@ -2352,6 +2352,13 @@ impl Editor {
         if let Some(c) = &main {
             deps.extend(same_table(c).into_iter().map(|x| (x, 1)));
         }
+        // A stored calculation that uses no field of its table (a constant,
+        // custom functions, Get): FF00 = 00 and FF01 = 00, as FileMaker Pro
+        // 26 writes; without them it never computes the value.
+        if matches!(spec.field_type, FieldType::Calculated { stored: true, .. }) && deps.is_empty()
+        {
+            deps.extend([(32640, 0), (32641, 0)]);
+        }
         if let FieldType::Summary { field, op, by, .. } = spec.field_type {
             match by {
                 Some(b) if op == SummaryOp::Average => {

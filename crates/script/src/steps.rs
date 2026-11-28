@@ -87,16 +87,29 @@ pub mod sid {
     pub const SET_ALLOWED_ORIENTATIONS: u16 = 176;
     pub const LOCAL_NOTIFICATION: u16 = 187;
     pub const CONFIGURE_AI_ACCOUNT: u16 = 212;
+    pub const OPEN_SCRIPT_WORKSPACE: u16 = 88;
+    pub const OPEN_SETTINGS: u16 = 105;
+    pub const OPEN_FIND_REPLACE: u16 = 129;
 }
 
+/// FileMaker's design dialogs BaseCraft has no equivalent of (Manage
+/// Database, Value Lists, Sharing, File Options, Data Sources, Layouts,
+/// Containers, Themes): full access is asked first (Claris, Open Manage
+/// Database: "your account must have full access privileges"; the same
+/// rule is assumed for the others), error 9 without it, 3 with it.
+pub const DESIGN_DIALOGS: [u16; 8] = [38, 112, 113, 114, 140, 151, 156, 165];
+
 /// Steps that cannot run in a desktop, local application: iOS-only,
-/// server-only, plug-ins, AI, macOS-only, transactions over a host and
-/// the dialogs of FileMaker's own design tools. They return
-/// [`error::UNAVAILABLE`] as FileMaker does on Windows (FORMAT.md §8).
+/// server-only, plug-ins, AI, macOS-only, transactions over a host: they
+/// return [`error::UNAVAILABLE`] as FileMaker does on Windows (FORMAT.md
+/// §8). Also FileMaker's dialogs BaseCraft does not have (Open Help, the
+/// design dialogs of [`DESIGN_DIALOGS`], Edit Saved Finds, Hosts, Upload
+/// to Host, Favorites, Starter Solution): FileMaker opens them, BaseCraft
+/// returns 3.
 pub const UNSUPPORTED: &[u16] = &[
-    32, 38, 57, 59, 64, 67, 88, 96, 105, 106, 107, 108, 109, 112, 113, 114, 115, 118, 129, 139,
-    140, 142, 149, 151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201, 202,
-    208, 210, 211, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 226, 227, 239, 240, 241,
+    32, 38, 57, 59, 64, 67, 96, 106, 107, 108, 109, 112, 113, 114, 115, 118, 139, 140, 142, 149,
+    151, 152, 156, 157, 161, 164, 165, 172, 175, 177, 178, 179, 183, 184, 201, 202, 208, 210, 211,
+    213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 224, 226, 227, 239, 240, 241,
 ];
 
 /// Option bits of these steps (record bytes 24–27, FORMAT.md §8).
@@ -766,6 +779,20 @@ impl Engine {
             } else {
                 error::UNAVAILABLE
             }),
+            // The Script Workspace stops the running script (Claris: "FileMaker
+            // Pro halts execution of the current script").
+            // ponytail: full access asked as for the other design dialogs;
+            // FileMaker's own rule for this step is not documented.
+            OPEN_SCRIPT_WORKSPACE if !host.db().full_access() => Err(engine::PRIVILEGES),
+            OPEN_SCRIPT_WORKSPACE => Ok(Flow::Suspend(
+                Suspend::Ui(UiRequest::Dialog(crate::AppDialog::ScriptWorkspace)),
+                Pending::Ui(UiPending::Halt),
+            )),
+            OPEN_SETTINGS => ui(UiRequest::Dialog(crate::AppDialog::Preferences)),
+            OPEN_FIND_REPLACE => ui(UiRequest::Dialog(crate::AppDialog::FindReplace)),
+            id if DESIGN_DIALOGS.contains(&id) && !host.db().full_access() => {
+                Err(engine::PRIVILEGES)
+            }
             id if UNSUPPORTED.contains(&id) => Err(error::UNAVAILABLE),
             _ => return None,
         };

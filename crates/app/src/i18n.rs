@@ -121,6 +121,7 @@ pub fn tr(key: &'static str) -> &'static str {
         }
         "Accept anyway" => "Accepter quand même",
         "Save a Copy As…" => "Enregistrer une copie sous…",
+        "Print…" => "Imprimer…",
         "Layout Mode" => "Mode Modèle",
         "Exit Layout" => "Quitter le modèle",
         "New Layout/Report" => "Nouveau modèle/rapport",

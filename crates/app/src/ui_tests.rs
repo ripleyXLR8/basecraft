@@ -1105,6 +1105,59 @@ fn script_steps_done_by_the_app() {
     assert_eq!(h.state().view, View::List);
 }
 
+/// Print without dialog goes to the default printer, with dialog to the
+/// system viewer (neither reaches the OS in tests); Open Settings, Open
+/// Find/Replace and Open Script Workspace open BaseCraft's dialogs, the
+/// last one stopping the script; File › Print… prints with dialog.
+#[test]
+fn print_and_dialog_steps() {
+    let mut h = harness_for(shop_app());
+    h.run_steps(3);
+    clients(&mut h);
+    let app = h.state_mut();
+    let d = app.doc.as_ref().unwrap();
+    let names = script::text::Names {
+        db: &d.db,
+        scripts: &[],
+    };
+    let mut print = Step::new(43);
+    print.options = 0x80;
+    let mut after = Step::new(id::SET_VARIABLE);
+    after.params = StepParams::SetVariable {
+        name: "$$after".into(),
+        value: Some(names.compile("1").unwrap()),
+        repetition: None,
+    };
+    app.engine
+        .as_mut()
+        .unwrap()
+        .scripts
+        .push(fmp12::scripts::Script {
+            id: 902,
+            name: "Print steps".into(),
+            options: 8,
+            steps: vec![print, Step::new(105), Step::new(129), Step::new(88), after],
+        });
+    app.pending_script = Some(902);
+    h.run_steps(6);
+    let (path, dialog) = h.state().steps_ui.printed.clone().expect("printed");
+    assert!(!dialog);
+    assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF"));
+    let _ = std::fs::remove_file(&path);
+    assert!(h.state().prefs.is_some());
+    h.get_by_label(records::t("Find/Replace"));
+    assert!(h.state().workspace.open);
+    assert!(h.state().active.is_none());
+    assert_eq!(global(&h, "$$after"), None);
+    h.state_mut().prefs = None;
+    h.state_mut().steps_ui.printed = None;
+    h.run_steps(2);
+    menu5(&mut h, "File", tr("Print…"));
+    let (path, dialog) = h.state().steps_ui.printed.clone().expect("printed");
+    assert!(dialog);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Tools › Script Debugger: the script stops at its first step; Step,
 /// the Data Viewer's Current tab, Run; a breakpoint, Run to it, Halt.
 #[test]

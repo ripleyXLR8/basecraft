@@ -466,3 +466,48 @@ fn charts_in_pdf() {
         assert!(has(&bytes, s), "{s}");
     }
 }
+
+/// `Get ( PageNumber )` and `Get ( PageCount )` while saving as PDF, in a
+/// footer calculation and in symbols (any case); 0 and nothing after.
+#[test]
+fn page_flags_while_printing() {
+    let mut db = db(&PEOPLE);
+    let mut c = field(9, "PageLabel", 2, 1);
+    c.calc = Some("\"P\" & Get ( PageNumber ) & \"/\" & Get ( PageCount )".into());
+    db.tables[0].fields.push(c);
+    let l = &mut db.layouts[0];
+    l.objects.push(obj(9, 101.0, 200.0, Some(9), None));
+    l.objects.push(obj(
+        10,
+        101.0,
+        350.0,
+        None,
+        Some("{{pagenumber}} {{No Such}} {{x"),
+    ));
+    let found = sorted(&db);
+    // Room for header, footer and two body rows a page.
+    let paper = Paper {
+        height: 72.0 + 40.0 + 20.0 + 45.0,
+        ..Paper::letter()
+    };
+    let (bytes, n) = pdf(&db, 1, &found, &[], &paper).unwrap();
+    assert_eq!(n, 3);
+    for s in [
+        "(Page 1 of 3) Tj",
+        "(Page 3 of 3) Tj",
+        "(P1/3) Tj",
+        "(P2/3) Tj",
+        "(P3/3) Tj",
+        "(2 {{No Such}} {{x) Tj",
+    ] {
+        assert!(has(&bytes, s), "{s}");
+    }
+    let get = |f: &str| {
+        db.eval_source(&format!("Get ( {f} )"), T, T, None)
+            .to_text()
+    };
+    assert_eq!(
+        (get("PageNumber"), get("PageCount")),
+        ("0".into(), String::new())
+    );
+}

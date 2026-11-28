@@ -501,7 +501,7 @@ impl App {
         }
     }
 
-    fn open_find_replace(&mut self) {
+    pub(crate) fn open_find_replace(&mut self) {
         if self.m8.find.is_none() {
             self.m8.find = Some(FindDialog {
                 q: FindReplace::default(),

@@ -14,7 +14,7 @@ mod system;
 mod text;
 
 pub use datetime::{builtin_get, set_user_name};
-pub use system::{APPLICATION_VERSION, fm_folder, fm_path, set_application_language};
+pub use system::{APPLICATION_VERSION, fm_folder, fm_path, set_application_language, set_page};
 pub(crate) use text::base_key;
 
 use crate::ast::Expr;

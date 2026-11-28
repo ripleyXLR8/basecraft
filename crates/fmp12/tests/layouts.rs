@@ -252,3 +252,160 @@ fn graphic_objects_resolve_to_pictures() {
     }
     assert!(seen > 0);
 }
+
+/// Key `key` of `path` as stored (layout settings live in two places).
+fn kv_at(f: &fmp12::File, path: &[u32], key: u32) -> Option<Vec<u8>> {
+    let mut out = None;
+    f.walk(|p, c| {
+        if let (Some(p), fmp12::Chunk::Kv { key: k, data }) = (fmp12::int_path(p), c)
+            && p == path
+            && *k == key
+        {
+            out = Some(data.to_vec());
+        }
+    })
+    .unwrap();
+    out
+}
+
+type Edit = fn(&mut Layout);
+
+/// Layout Setup settings round-trip one at a time, written where
+/// FileMaker Pro 26 writes them: the options are the values FileMaker
+/// wrote for the same change on Contacts "Détails des contacts"
+/// (0x10F3080D before).
+#[test]
+fn layout_setup_settings_roundtrip() {
+    use fmp12::layouts::setup;
+    use fmp12::triggers::{Trigger, mode};
+    let Some(dir) = template_dir() else { return };
+    let f = fmp12::File::open(dir.join("Contacts").join("fr.fmp12")).unwrap();
+    let before = fmp12::layouts::layouts(&f).unwrap();
+    let l = before.iter().position(|l| l.id == 3).unwrap();
+    assert_eq!(before[l].options, 0x10F3_080D);
+    assert_eq!(before[l].views(), [true, false, false]);
+    assert_eq!((before[l].menu_set, before[l].columns), (0, 2));
+    // Liste des contacts: list only, default list, OnLayoutEnter.
+    let list = before.iter().find(|l| l.id == 2).unwrap();
+    assert_eq!(
+        (list.views(), list.default_view()),
+        ([false, true, false], 1)
+    );
+    assert_eq!(list.triggers.len(), 1);
+    let edits: [(&str, Edit, u64); 12] = [
+        ("save", |l| l.options |= setup::NO_AUTO_SAVE, 0x10F3_081D),
+        ("frames", |l| l.options |= setup::FIELD_FRAMES, 0x10F3_082D),
+        ("delineate", |l| l.options &= !setup::DELINEATE, 0x10F3_080C),
+        (
+            "indicator",
+            |l| l.options &= !setup::NO_RECORD_INDICATOR,
+            0x00F3_080D,
+        ),
+        (
+            "quick find",
+            |l| l.options |= setup::NO_QUICK_FIND,
+            0x10F3_880D,
+        ),
+        ("table", |l| l.options &= !setup::NO_TABLE, 0x10F3_0805),
+        (
+            "list default",
+            |l| {
+                l.options &= !(setup::NO_LIST | setup::NO_TABLE);
+                l.set_default_view(1);
+            },
+            0x10F3_0A01,
+        ),
+        (
+            "table default",
+            |l| {
+                l.options &= !(setup::NO_LIST | setup::NO_TABLE);
+                l.set_default_view(2);
+            },
+            0x10F3_4A01,
+        ),
+        (
+            "columns",
+            |l| {
+                l.options |= setup::COLUMNS | setup::COLUMNS_DOWN;
+                l.columns = 3;
+            },
+            0x10F3_0D0D,
+        ),
+        (
+            "margins",
+            |l| {
+                l.options |= setup::FIXED_MARGINS | setup::FACING_PAGES;
+                l.margins = [11.0, 33.0, 22.0, 44.0];
+            },
+            0x10F3_08CD,
+        ),
+        ("menu set", |l| l.menu_set = 1, 0x10F3_080D),
+        ("hidden", |l| l.flags |= setup::HIDDEN, 0x10F3_080D),
+    ];
+    for (what, edit, options) in edits {
+        let mut ls = before.clone();
+        edit(&mut ls[l]);
+        let f2 = fmp12::File::from_bytes(fmp12::save::save_layouts(&f, &ls).unwrap()).unwrap();
+        let after = fmp12::layouts::layouts(&f2).unwrap();
+        assert_eq!(after[l], ls[l], "{what}");
+        assert_eq!(after[l].options, options, "{what}");
+        for p in [&[4, 5, 3][..], &[4, 1, 7, 3]] {
+            assert_eq!(kv_at(&f2, p, 241).unwrap(), options.to_be_bytes(), "{what}");
+            let menu = Msg::parse(&kv_at(&f2, p, 2).unwrap()).unwrap().uint(3);
+            assert_eq!(menu, Some(ls[l].menu_set), "{what}");
+        }
+        if what == "hidden" {
+            for p in [&[4, 5, 3][..], &[4, 1, 7, 3]] {
+                assert_eq!(kv_at(&f2, p, 240).unwrap(), 8u64.to_be_bytes(), "{what}");
+            }
+        }
+        for (a, b) in before.iter().zip(&after).filter(|(a, _)| a.id != 3) {
+            assert_eq!(a, b, "{what}: other layouts");
+        }
+    }
+    // Triggers: two added (FileMaker wrote count 2 in both places and
+    // these records), then removed again.
+    let mut ls = before.clone();
+    ls[l].triggers = vec![
+        Trigger {
+            event: 103,
+            script: 3,
+            modes: mode::BROWSE,
+            parameter: None,
+        },
+        Trigger {
+            event: 104,
+            script: 3,
+            modes: mode::BROWSE | mode::FIND,
+            parameter: None,
+        },
+    ];
+    let bytes = fmp12::save::save_layouts(&f, &ls).unwrap();
+    // FMP12_SETUP_DEMO=<out.fmp12>: every setting changed at once, to open
+    // in FileMaker (Layout Setup of "Détails des contacts").
+    if let Some(out) = std::env::var_os("FMP12_SETUP_DEMO") {
+        let mut all = ls.clone();
+        for (_, edit, _) in &edits[..11] {
+            edit(&mut all[l]);
+        }
+        // Hidden from the layout menus: the list layout (2).
+        all.iter_mut().find(|l| l.id == 2).unwrap().flags |= setup::HIDDEN;
+        std::fs::write(out, fmp12::save::save_layouts(&f, &all).unwrap()).unwrap();
+    }
+    let f2 = fmp12::File::from_bytes(bytes).unwrap();
+    assert_eq!(
+        fmp12::layouts::layouts(&f2).unwrap()[l].triggers,
+        ls[l].triggers
+    );
+    assert_eq!(kv_at(&f2, &[4, 5, 3, 48], 4).unwrap(), [0, 2]);
+    assert_eq!(kv_at(&f2, &[4, 1, 7, 3], 48).unwrap(), [0, 0, 0, 2]);
+    assert_eq!(
+        kv_at(&f2, &[4, 5, 3, 48, 5, 232], 1).unwrap(),
+        [0, 0x68, 2, 1, 3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0]
+    );
+    let mut ls2 = fmp12::layouts::layouts(&f2).unwrap();
+    ls2[l].triggers.clear();
+    let f3 = fmp12::File::from_bytes(fmp12::save::save_layouts(&f2, &ls2).unwrap()).unwrap();
+    assert!(fmp12::layouts::layouts(&f3).unwrap()[l].triggers.is_empty());
+    assert_eq!(kv_at(&f3, &[4, 1, 7, 3], 48).unwrap(), [0, 0, 0, 0]);
+}

@@ -314,8 +314,9 @@ fn data_viewer_and_preview() {
     }
     // Type a task on the current (last) record.
     let task = |h: &Harness<'_, App>| {
+        // The last row: Task List offers List view only (Layout Setup).
         h.get_all_by_role(egui::accesskit::Role::TextInput)
-            .find(|n| n.rect().left() < 100.0 && below_toolbar(n))
+            .rfind(|n| n.rect().left() < 100.0 && below_toolbar(n))
             .unwrap()
             .rect()
             .center()

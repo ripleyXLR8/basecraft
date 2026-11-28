@@ -1017,30 +1017,87 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
             }
         }
 
-        // Header: table occurrence and width; name.
+        // Header (key 2 of the layout and of its catalog entry): table
+        // occurrence, width, menu set, printing; options (241) and flags
+        // (240), kept in both places; name.
+        let catalog = [4, 1, 7, l];
+        let mut seen = BTreeSet::new();
         for e in entries.iter_mut() {
             let p = ipath(e);
             let Some((key, d)) = entry_kv(e) else {
                 continue;
             };
-            let header = p.as_deref() == Some(&lp) && key == 2;
-            let listed = p.as_deref() == Some(&[4, 1, 7, l]) && key == 2;
-            if (header || listed)
-                && (old.table_occurrence != new.table_occurrence
-                    || header && old.width != new.width)
-                && let Some(mut m) = crate::pb::MsgBuf::parse(&d)
-            {
-                if old.table_occurrence != new.table_occurrence {
-                    m.set(2, crate::pb::Field::Varint(new.table_occurrence));
-                }
-                if header && old.width != new.width {
-                    m.set(8, crate::pb::Field::F64(new.width));
-                }
-                e.item = write::encode(&Item::Kv {
-                    key: 2,
-                    data: m.encode(),
-                });
+            let header = p.as_deref() == Some(&lp);
+            if !header && p.as_deref() != Some(&catalog) {
+                continue;
             }
+            if let (240 | 241, true) = (key, old.flags != new.flags || old.options != new.options) {
+                seen.insert((header, key));
+                let v = if key == 240 { new.flags } else { new.options };
+                e.item = write::encode(&Item::Kv {
+                    key,
+                    data: v.to_be_bytes().to_vec(),
+                });
+                continue;
+            }
+            let any = old.table_occurrence != new.table_occurrence
+                || old.menu_set != new.menu_set
+                || header
+                    && (old.width != new.width
+                        || old.columns != new.columns
+                        || old.margins != new.margins);
+            if key != 2 || !any {
+                continue;
+            }
+            let Some(mut m) = crate::pb::MsgBuf::parse(&d) else {
+                continue;
+            };
+            use crate::pb::Field::{F64, Varint};
+            if old.table_occurrence != new.table_occurrence {
+                m.set(2, Varint(new.table_occurrence));
+            }
+            if old.menu_set != new.menu_set {
+                m.set(3, Varint(new.menu_set));
+            }
+            if header && old.width != new.width {
+                m.set(8, F64(new.width));
+            }
+            if header && old.columns != new.columns {
+                m.set(11, Varint(new.columns));
+            }
+            if header && old.margins != new.margins {
+                let mut g = m.msg(12);
+                for (f, v) in (1..).zip(new.margins) {
+                    g.set(f, F64(v));
+                }
+                m.set_msg(12, &g);
+            }
+            e.item = write::encode(&Item::Kv {
+                key: 2,
+                data: m.encode(),
+            });
+        }
+        // FileMaker writes key 240 of a layout only once it is not 0.
+        for (header, key, v) in [
+            (true, 241, new.options),
+            (true, 240, new.flags),
+            (false, 241, new.options),
+            (false, 240, new.flags),
+        ] {
+            if (old.flags != new.flags || old.options != new.options)
+                && v != 0
+                && !seen.contains(&(header, key))
+            {
+                let p = if header {
+                    lp.to_vec()
+                } else {
+                    catalog.to_vec()
+                };
+                add.push(kv_entry(&p, key, v.to_be_bytes().to_vec()));
+            }
+        }
+        if old.triggers != new.triggers {
+            layout_triggers(&mut entries, &mut add, l, &new.triggers);
         }
         if old.name != new.name {
             renamed.push((l, new.name.clone()));
@@ -1061,6 +1118,73 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         let _ = ed.rename_layout(l, &name);
     }
     Ok(ed.finish())
+}
+
+/// Rewrites a layout's script triggers `[4].[5].[L].[48]` (key 4 = u16
+/// count, `.[5].[128 + event]` key 1 = record) and the count FileMaker
+/// keeps in the catalog entry (`[4].[1].[7].[L]` key 48, u32; 0, 1 and 2
+/// seen). A kept event keeps its parameter node `.[49]`; new triggers get
+/// none (ponytail: no parameter editing in Layout Setup yet).
+fn layout_triggers(
+    entries: &mut Vec<Entry>,
+    add: &mut Vec<Entry>,
+    l: u32,
+    ts: &[crate::triggers::Trigger],
+) {
+    let slot = |t: &crate::triggers::Trigger| 128 + t.event as u32;
+    let events: BTreeSet<u32> = ts.iter().map(slot).collect();
+    entries.retain(|e| {
+        !matches!(ipath(e).as_deref(), Some([4, 5, x, 48, 5, n, ..]) if *x == l && !events.contains(n))
+    });
+    let (mut has, mut count, mut listed) = (BTreeSet::new(), false, false);
+    for e in entries.iter_mut() {
+        let p = ipath(e);
+        let Some((key, _)) = entry_kv(e) else {
+            continue;
+        };
+        let (key, data) = match (p.as_deref(), key) {
+            (Some([4, 5, x, 48, 5, n]), 1) if *x == l => {
+                let Some(t) = ts.iter().find(|t| slot(t) == *n) else {
+                    continue;
+                };
+                has.insert(*n);
+                (1, crate::triggers::encode_record(t))
+            }
+            (Some([4, 5, x, 48]), 4) if *x == l => {
+                count = true;
+                (4, (ts.len() as u16).to_be_bytes().to_vec())
+            }
+            (Some([4, 1, 7, x]), 48) if *x == l => {
+                listed = true;
+                (48, (ts.len() as u32).to_be_bytes().to_vec())
+            }
+            _ => continue,
+        };
+        e.item = write::encode(&Item::Kv { key, data });
+    }
+    let node = [4, 5, l, 48];
+    add.push(marker(&node));
+    add.push(marker(&[4, 5, l, 48, 5]));
+    if !count {
+        add.push(kv_entry(&node, 4, (ts.len() as u16).to_be_bytes().to_vec()));
+    }
+    for t in ts.iter().filter(|t| !has.contains(&slot(t))) {
+        // Spelled `00 e` like FileMaker's (`[48].[5].[229]` = `00 65`).
+        let mut path = spelled(&[4, 5, l, 48, 5]);
+        path.push(vec![(t.event >> 8) as u8 & 0x7F, t.event as u8]);
+        add.push(Entry {
+            path: path.clone(),
+            item: vec![0x80],
+        });
+        add.push(kv(path, 1, crate::triggers::encode_record(t)));
+    }
+    if !listed {
+        add.push(kv_entry(
+            &[4, 1, 7, l],
+            48,
+            (ts.len() as u32).to_be_bytes().to_vec(),
+        ));
+    }
 }
 
 /// Reference to a layout object in its layout's indexes: `00 len 01 id`,

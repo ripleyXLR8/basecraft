@@ -229,8 +229,8 @@ pub struct Designer {
     tab: Tab,
     text_edit: Option<(u64, String)>,
     dialog: Option<Dialog>,
-    /// Layout Setup dialog: name and table occurrence being edited.
-    setup: Option<(String, u64)>,
+    /// Layout Setup dialog (`layout_setup.rs`).
+    setup: Option<crate::layout_setup::Setup>,
     /// Pending "save changes?" question.
     pub ask: Option<Then>,
     /// A request for the app: leave the layout, or run a Layouts command.
@@ -452,6 +452,9 @@ impl Designer {
     pub fn apply(&mut self, doc: &mut Doc) {
         self.end_text_edit();
         doc.layouts[self.index] = self.layout.clone();
+        doc.triggers
+            .layouts
+            .insert(self.layout.id, self.layout.triggers.clone());
         match doc.db.layouts.iter_mut().find(|l| l.id == self.layout.id) {
             Some(l) => *l = self.layout.clone(),
             None => doc.db.layouts.push(self.layout.clone()),
@@ -776,7 +779,7 @@ impl Designer {
     }
 
     pub fn open_setup(&mut self) {
-        self.setup = Some((self.layout.name.clone(), self.layout.table_occurrence));
+        self.setup = Some(crate::layout_setup::Setup::new(&self.layout));
     }
 
     /// Layouts › New Layout/Report…: asks for a name and an occurrence.
@@ -3210,57 +3213,22 @@ impl Designer {
         } else if close {
             self.dialog = None;
         }
-        self.setup_dialog(ctx, doc);
+        self.setup_dialog(ctx, doc, scripts);
     }
 
-    fn setup_dialog(&mut self, ctx: &egui::Context, doc: &Doc) {
-        let mut setup_done = None;
-        if let Some((name, to)) = &mut self.setup {
-            egui::Modal::new(egui::Id::NULL.with("layout_setup")).show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                ui.heading(tr("Layout Setup"));
-                ui.horizontal(|ui| {
-                    ui.label(tr("Layout Name"));
-                    ui.text_edit_singleline(name);
-                });
-                ui.label(tr("Show records from"));
-                let cur = (*to & 0xFFF) as u32;
-                egui::ComboBox::from_id_salt("setup_to")
-                    .selected_text(
-                        doc.db
-                            .occurrences
-                            .iter()
-                            .find(|t| t.id == cur)
-                            .map_or("?", |t| t.name.as_str()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for t in &doc.db.occurrences {
-                            if ui.selectable_label(t.id == cur, &t.name).clicked() {
-                                *to = 0x104000 | t.id as u64;
-                            }
-                        }
-                    });
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!name.trim().is_empty(), egui::Button::new("OK"))
-                        .clicked()
-                    {
-                        setup_done = Some(Some((name.trim().to_string(), *to)));
-                    }
-                    if ui.button(tr("Cancel")).clicked() {
-                        setup_done = Some(None);
-                    }
-                });
-            });
-        }
-        if let Some(r) = setup_done {
-            self.setup = None;
-            if let Some((name, to)) = r
-                && (name != self.layout.name || to != self.layout.table_occurrence)
-            {
-                self.checkpoint();
-                self.layout.name = name;
-                self.layout.table_occurrence = to;
+    fn setup_dialog(&mut self, ctx: &egui::Context, doc: &Doc, scripts: &[(u32, String)]) {
+        let Some(s) = self.setup.as_mut() else {
+            return;
+        };
+        let Some(ok) = s.show(ctx, doc, scripts) else {
+            return;
+        };
+        if let Some(s) = self.setup.take().filter(|_| ok) {
+            let before = self.layout.clone();
+            if crate::layout_setup::apply(&mut self.layout, &s.layout) {
+                self.undo.push(before);
+                self.redo.clear();
+                self.touched = None;
             }
         }
     }

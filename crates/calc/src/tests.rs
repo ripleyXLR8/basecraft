@@ -791,7 +791,7 @@ fn registry_coverage() {
 
 /// Registered functions short of FileMaker (docs/COVERAGE.md): styled
 /// text keeps no styles, CryptEncrypt has its own byte layout, ExecuteSQL
-/// has no joins or GROUP BY.
+/// has no functions, arithmetic or system tables.
 const PARTIAL_FUNCTIONS: [&str; 15] = [
     "TextColor",
     "TextColorRemove",

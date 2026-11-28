@@ -727,7 +727,10 @@ impl App {
             return;
         }
         let Some(d) = self.doc.as_ref() else { return };
-        let hits = engine::find(&d.db, t, &reqs);
+        let Some(l) = d.layouts.get(self.layout) else {
+            return;
+        };
+        let hits = engine::find_from(&d.db, (l.table_occurrence & 0xFFF) as u32, &reqs);
         let found: Vec<usize> = match extend {
             None => hits,
             Some(false) => before

@@ -204,7 +204,7 @@ fn get_coverage() {
     assert_eq!(flags.len(), 139);
     assert_eq!(
         (answered.len(), PARTIAL_GET.len(), missing.len()),
-        (53, 8, 78)
+        (54, 8, 77)
     );
 }
 
@@ -220,7 +220,7 @@ const PARTIAL_GET: [&str; 8] = [
     "CurrentTime",
     "CurrentTimestamp",
     "CurrentHostTimestamp",
-    // Always empty.
+    // Empty, but after Revert Transaction with a custom error.
     "LastErrorDetail",
 ];
 
@@ -230,7 +230,6 @@ const PARTIAL_STEPS: [(u16, &str); 23] = [
     (18, "no spelling check"),
     (19, "no spelling check"),
     (20, "no spelling check"),
-    (28, "criteria on related fields are dropped"),
     (35, "stored import options not used (dialog)"),
     (36, "stored export options not used (dialog)"),
     (37, "stored path not used"),
@@ -247,7 +246,11 @@ const PARTIAL_STEPS: [(u16, &str); 23] = [
     (146, "web viewers are not drawn: only checks the name"),
     (169, "popover not closed"),
     (209, "no dictionaries"),
-    (223, "the setting is not kept"),
+    (205, "Skip auto-enter / Skip data entry validation ignored"),
+    (
+        207,
+        "condition, error code, message read as parameters 0-2: not checked",
+    ),
     (237, "no web viewer"),
     (43, "prints to PDF only"),
 ];
@@ -381,6 +384,47 @@ fn go_to_related_record() {
     assert_eq!(e.windows.len(), 1);
     assert_eq!(e.windows[0].layout, invoices);
     let _ = inv;
+}
+
+/// Perform Find on a related field: clients having a matching invoice.
+#[test]
+fn perform_find_related_field() {
+    let (mut h, [_, ito, cid, ..]) = lookup_host();
+    let clients =
+        h.db.layouts
+            .iter()
+            .find(|l| l.name == "Clients")
+            .unwrap()
+            .id;
+    let crit = |omit: bool, t: &str| FindRequest {
+        omit,
+        criteria: vec![(
+            FieldRef {
+                to: ito,
+                field: cid,
+                repetition: 1,
+            },
+            t.to_string(),
+        )],
+    };
+    for (omit, t, want, err) in [
+        (false, "1", vec![0], 0),
+        (true, "1", vec![1], 0),
+        (false, "3", vec![], 401),
+    ] {
+        h.win = Window::new(&h.db, clients);
+        let find = step(
+            id::PERFORM_FIND,
+            StepParams::Find {
+                pause: false,
+                restore: true,
+                requests: vec![crit(omit, t)],
+            },
+        );
+        let (_, o) = go(&mut h, vec![find]);
+        assert_eq!(o.last_error, err, "{omit} {t}");
+        assert_eq!(h.win.found, want, "{omit} {t}");
+    }
 }
 
 #[test]
@@ -786,18 +830,94 @@ fn debugger_stepping() {
 #[test]
 fn transactions() {
     let mut h = TestHost::new(PEOPLE);
+    let open = || rawp(sid::OPEN_TRANSACTION, &[], 0, 0);
+    let commit = || rawp(sid::COMMIT_TRANSACTION, &[], 0, 0);
     let steps = vec![
-        rawp(sid::OPEN_TRANSACTION, &[], 0, 0),
+        open(),
         set_field(NAME, "\"Xavier\""),
         plain(id::NEW_RECORD),
+        // Not reverted: the condition is false.
+        rawp(sid::REVERT_TRANSACTION, &[calc(&h, "0")], 0, 0),
+        var_c(&h, "$open", "Get(TransactionOpenState)"),
         rawp(sid::REVERT_TRANSACTION, &[], 0, 0),
-        var("$a", "People::Name & Get(FoundCount)"),
-        rawp(sid::OPEN_TRANSACTION, &[], 0, 0),
+        // Skipped: Revert goes on after Commit Transaction.
+        var_c(&h, "$skipped", "1"),
+        commit(),
+        var_c(
+            &h,
+            "$a",
+            "People::Name & Get(FoundCount) & $open & Get(TransactionOpenState) & $skipped",
+        ),
+        open(),
         set_field(NAME, "\"Yves\""),
-        rawp(sid::COMMIT_TRANSACTION, &[], 0, 0),
-        exit("$a & People::Name"),
+        commit(),
+        // No transaction open: error 3.
+        rawp(sid::REVERT_TRANSACTION, &[], 0, 0),
+        var_c(&h, "$b", "Get(LastError)"),
+        open(),
+        set_field(NAME, "\"Zoe\""),
+        rawp(
+            sid::REVERT_TRANSACTION,
+            &[calc(&h, "1"), calc(&h, "5001"), calc(&h, "\"Nope\"")],
+            0,
+            0,
+        ),
+        commit(),
+        exit_c(
+            &h,
+            "$a & People::Name & $b & Get(LastError) & Get(LastErrorDetail)",
+        ),
     ];
     let (_, o) = go(&mut h, steps);
-    assert_eq!(o.result.to_text(), "Ann4Yves");
+    assert_eq!(o.result.to_text(), "Ann410Yves35001Nope");
     assert_eq!(h.db.tables[0].records.len(), 4);
+    // Halt Script reverts.
+    let steps = vec![
+        open(),
+        set_field(NAME, "\"Xavier\""),
+        plain(id::HALT_SCRIPT),
+    ];
+    go(&mut h, steps);
+    assert_eq!(h.db.tables[0].records[0].values[&NAME], "Yves");
+}
+
+/// A validation error reverts the transaction unless Set Revert
+/// Transaction on Error is off.
+#[test]
+fn transaction_revert_on_error() {
+    let mut h = TestHost::new(PEOPLE);
+    for f in h.db.tables[0].fields.iter_mut().filter(|f| f.id == NAME) {
+        f.def.options.resize(26, 0);
+        f.def.options[15] |= 1 << 3;
+    }
+    let on = 0x2_0000;
+    let body = |h: &TestHost, revert: u32| {
+        vec![
+            rawp(sid::REVERT_ON_ERROR, &[], revert, 0),
+            var_c(h, "$state", "Get(RevertTransactionOnErrorState)"),
+            rawp(sid::OPEN_TRANSACTION, &[], 0, 0),
+            set_field(NAME, "\"Xavier\""),
+            plain(id::NEW_RECORD),
+            // Name empty: 509.
+            plain(id::COMMIT),
+            set_field(NAME, "\"Zed\""),
+            rawp(sid::COMMIT_TRANSACTION, &[], 0, 0),
+            exit_c(h, "$state & Get(LastError) & Get(FoundCount)"),
+        ]
+    };
+    let (_, o) = {
+        let s = body(&h, on);
+        go(&mut h, s)
+    };
+    // Reverted on the error: on after Commit Transaction.
+    assert_eq!(o.result.to_text(), "15094");
+    assert_eq!(h.db.tables[0].records.len(), 4);
+    assert_eq!(h.db.tables[0].records[0].values[&NAME], "Ann");
+    let (_, o) = {
+        let s = body(&h, 0);
+        go(&mut h, s)
+    };
+    assert_eq!(o.result.to_text(), "005");
+    assert_eq!(h.db.tables[0].records.len(), 5);
+    assert_eq!(h.db.tables[0].records[0].values[&NAME], "Xavier");
 }

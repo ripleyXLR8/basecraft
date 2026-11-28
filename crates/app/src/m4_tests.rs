@@ -594,3 +594,48 @@ fn preferences_dialog() {
     prefs::set(prefs::Prefs::default());
     i18n::set_french(None);
 }
+
+/// Find mode on a related field: contacts with a matching phone number.
+#[test]
+fn find_on_related_field() {
+    let Some(mut app) = contacts() else { return };
+    let d = app.doc.as_mut().unwrap();
+    let to = |d: &Doc, n: &str| d.db.occurrences.iter().find(|o| o.name == n).unwrap().id;
+    let pto = to(d, "Phone Numbers");
+    let c =
+        d.db.tables
+            .iter()
+            .find(|t| t.name == "Contacts")
+            .unwrap()
+            .id;
+    let p = d.db.table_of(pto).unwrap().id;
+    let pk =
+        d.db.table(c)
+            .unwrap()
+            .field_by_name("PrimaryKey")
+            .unwrap()
+            .id;
+    let fk =
+        d.db.table(p)
+            .unwrap()
+            .field_by_name("ForeignKey")
+            .unwrap()
+            .id;
+    let num = d.db.table(p).unwrap().field_by_name("Number").unwrap().id;
+    for (rec, n) in [(1, "555-0101"), (3, "555-0199")] {
+        let key = d.db.value(c, rec, pk).to_text();
+        let r = d.db.new_record(p).unwrap();
+        d.db.set_values(p, r, &[(fk, key), (num, n.into())]);
+    }
+    app.enter_find();
+    app.request
+        .insert(engine::related_key(pto, num), "555-0101".into());
+    app.find_combined(None);
+    assert_eq!(values(&mut app, "Last Name"), ["Hopper"]);
+    app.enter_find();
+    app.request
+        .insert(engine::related_key(pto, num), "555*".into());
+    app.omit = true;
+    app.find_combined(None);
+    assert_eq!(values(&mut app, "Last Name").len(), 3);
+}

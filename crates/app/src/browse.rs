@@ -529,9 +529,9 @@ impl App {
             .flat_map(|(c, _)| c.iter())
             .filter(|(_, v)| !v.trim().is_empty())
             .map(|(f, v)| {
-                let n = tbl
-                    .and_then(|x| x.field(*f))
-                    .map_or("", |x| x.name.as_str());
+                let (to, f) = (*f >> 16, *f & 0xFFFF);
+                let t = if to == 0 { tbl } else { d.db.table_of(to) };
+                let n = t.and_then(|x| x.field(f)).map_or("", |x| x.name.as_str());
                 format!("{n}: {v}")
             })
             .collect::<Vec<_>>()

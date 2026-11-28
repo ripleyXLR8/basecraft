@@ -1636,7 +1636,12 @@ impl App {
                                     Stroke::new(0.5, Color32::from_gray(220)),
                                 );
                             }
-                            let Some(rr) = related_rec else { continue };
+                            // Find mode: the first row takes criteria.
+                            let rr = match related_rec {
+                                Some(rr) => Some(rr),
+                                None if mode == Mode::Find && row == 0 => None,
+                                None => continue,
+                            };
                             for &ci in &children {
                                 let c = &layout.objects[ci];
                                 let cr = Rect::from_min_size(
@@ -1657,7 +1662,7 @@ impl App {
                                     c,
                                     &looks[ci],
                                     cr,
-                                    Some((ptable, Some(rr))),
+                                    Some((ptable, rr)),
                                     &mut self.request,
                                     &mut self.dirty,
                                     &mut self.obj_events,
@@ -1987,7 +1992,13 @@ fn draw_field(
     let is_container = def.is_some_and(|f| f.data_type == fmp12::schema::DataType::Container);
     let inner = lk.content_rect(r);
     match (c.mode, record) {
-        (Mode::Find, _) if t == c.table && rep == 1 => {
+        (Mode::Find, _) if rep == 1 => {
+            // Related fields: criteria keyed by their occurrence.
+            let field = o
+                .field
+                .map(|(to, _, _)| (to & 0xFFF) as u32)
+                .filter(|_| t != c.table)
+                .map_or(field, |to| engine::related_key(to, field));
             painter.rect_stroke(
                 r,
                 0.0,

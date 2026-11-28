@@ -14,7 +14,7 @@ test until this page and the test are updated together.
 | Category | Reference | Total | Implemented | Partial | Missing | Test |
 |----------|-----------|------:|------------:|--------:|--------:|------|
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
-| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 53 | 8 | 78 | `cargo test -p script get_coverage -- --nocapture` |
+| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 54 | 8 | 77 | `cargo test -p script get_coverage -- --nocapture` |
 | Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 23 | 0 (+71 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 9 | 0 | 17 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
@@ -59,8 +59,9 @@ decompiled.
    OnWindowTransaction. They are read from the file but never run their script.
 3. **Checkbox sets, radio button sets and drop-down calendars** show as edit boxes in
    Browse mode (PROGRESS.md M4).
-4. **Set Revert Transaction on Error** does nothing, and **Perform Find** drops criteria
-   on related fields: scripts can behave differently from FileMaker without an error.
+4. **Revert Transaction**'s condition, error code and message are read from the step
+   by guess (no FileMaker-written step checked them), and Open Transaction's Skip
+   auto-enter / Skip validation options are ignored.
 5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
 6. **Web viewers** are a placeholder box; Set Web Viewer, Perform JavaScript in Web Viewer
@@ -82,7 +83,8 @@ GetModelAttributes, GetRAGSpaceInfo.
 Short of FileMaker: TextColor, TextColorRemove, TextFont, TextFontRemove, TextFormatRemove,
 TextSize, TextSizeRemove, TextStyleAdd, TextStyleRemove (styles dropped); CryptEncrypt,
 CryptDecrypt, CryptEncryptBase64, CryptDecryptBase64 (own byte layout); ExecuteSQL,
-ExecuteSQLe (no joins, GROUP BY or system tables).
+ExecuteSQLe (joins, GROUP BY, HAVING and the aggregates work; no functions such as UPPER or
+CAST, no arithmetic, no subqueries, no FileMaker_Tables / FileMaker_Fields system tables).
 
 Missing: none.
 
@@ -90,10 +92,10 @@ Missing: none.
 
 Partial (8): ActiveFieldName, ActiveFieldTableName, ActiveFieldContents (only while a field
 is active; error 1225 instead of empty otherwise); CurrentDate, CurrentTime,
-CurrentTimestamp, CurrentHostTimestamp (UTC: no time-zone data); LastErrorDetail (always
-empty).
+CurrentTimestamp, CurrentHostTimestamp (UTC: no time-zone data); LastErrorDetail (empty but
+after Revert Transaction with a custom error).
 
-Missing (78): ApplicationVersion, HostName, FileName, FileSize, SystemLanguage, PageNumber,
+Missing (77): ApplicationVersion, HostName, FileName, FileSize, SystemLanguage, PageNumber,
 MultiUserState, PrinterName, ScreenDepth, ScreenHeight, ActiveRepetitionNumber,
 SystemVersion, ScreenWidth, UserCount, ActiveModifierKeys, NetworkProtocol, FilePath,
 RecordModificationCount, RecordAccess, HighContrastState, LayoutAccess, SystemAppearance,
@@ -108,14 +110,14 @@ ConnectionAttributes, ModifiedFields, TouchKeyboardState, ScreenScaleFactor,
 AccountGroupName, ActiveRecordNumber, MenubarState, RegionMonitorEvents, PageCount,
 UUIDNumber, OpenDataFileInfo, InstalledFMPluginsAsJSON, SessionIdentifier,
 SystemLocaleElements, FileLocaleElements, CacheFileName, CacheFilePath,
-RevertTransactionOnErrorState, SystemStorageAvailable, LastStepTokensUsed,
+SystemStorageAvailable, LastStepTokensUsed,
 GuidedAccessState, AccountPasswordDaysRemaining, WindowUUID, PrivilegeSetName (not known
 to the script compiler).
 
 ## Script steps
 
 Partial (23): 18 Check Selection, 19 Check Record, 20 Check Found Set (no spelling check);
-28 Perform Find (criteria on related fields dropped); 35 Import Records, 36 Export Records
+35 Import Records, 36 Export Records
 (stored options not used, the dialog opens); 37 Save a Copy as (stored path not used);
 43 Print (to PDF only); 56 Insert Picture, 131 Insert File (stored path and options not
 decoded, a file picker opens); 132 Export Field Contents (stored path not decoded);
@@ -123,8 +125,10 @@ decoded, a file picker opens); 132 Export Field Contents (stored path not decode
 System Formats, 120 Arrange All Windows (do nothing); 128 Perform Find/Replace (a
 script's "current field" searches every field); 138 Re-Login ("with dialog" shows none);
 146 Set Web Viewer (only checks the name); 169 Close Popover (does nothing); 209 Set
-Dictionary (no dictionaries); 223 Set Revert Transaction on Error (not kept); 237 Flush
-Web Viewer Cookies (no web viewer).
+Dictionary (no dictionaries); 205 Open Transaction (Skip auto-enter / Skip data entry
+validation ignored); 207 Revert Transaction (condition, error code and message read as
+parameters 0–2, not checked against a FileMaker-written step); 237 Flush Web Viewer
+Cookies (no web viewer).
 
 FileMaker's desktop error by design (71): listed in PROGRESS.md M5, "Step coverage".
 

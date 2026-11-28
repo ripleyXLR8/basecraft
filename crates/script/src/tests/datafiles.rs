@@ -6,10 +6,10 @@ use super::*;
 use crate::datafiles::*;
 use crate::files::{Disk, encode_path_list};
 
-struct FileHost {
-    h: TestHost,
-    disk: Disk,
-    asked: Vec<String>,
+pub(super) struct FileHost {
+    pub(super) h: TestHost,
+    pub(super) disk: Disk,
+    pub(super) asked: Vec<String>,
 }
 
 impl Host for FileHost {
@@ -41,14 +41,14 @@ impl Host for FileHost {
 }
 
 /// A fresh folder under the system's temporary folder.
-fn folder(name: &str) -> std::path::PathBuf {
+pub(super) fn folder(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("basecraft-df-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
 }
 
-fn host(name: &str) -> FileHost {
+pub(super) fn host(name: &str) -> FileHost {
     FileHost {
         h: TestHost::new(PEOPLE),
         disk: Disk {
@@ -59,7 +59,7 @@ fn host(name: &str) -> FileHost {
     }
 }
 
-fn compile(src: &str) -> Calc {
+pub(super) fn compile(src: &str) -> Calc {
     text::Names {
         db: &TestHost::new(PEOPLE).db,
         scripts: &[],
@@ -71,7 +71,7 @@ fn compile(src: &str) -> Calc {
 /// A step as FileMaker 26 stores it: option bits, bytes 22–23, a path
 /// list (`[128]` key 130, option 0x20), a target variable (`[160]`) and
 /// calculations at `[128 + i]`.
-fn st(
+pub(super) fn st(
     id: u16,
     opt: u32,
     arg: u16,
@@ -110,11 +110,11 @@ fn st(
 }
 
 /// Runs one step; its error.
-fn run(e: &mut Engine, h: &mut FileHost, s: Step) -> u32 {
+pub(super) fn run(e: &mut Engine, h: &mut FileHost, s: Step) -> u32 {
     e.run_step(h, &s).last_error
 }
 
-fn g(e: &Engine, name: &str) -> String {
+pub(super) fn g(e: &Engine, name: &str) -> String {
     e.globals
         .get(&(name.to_lowercase(), 1))
         .map(|v| v.to_text())

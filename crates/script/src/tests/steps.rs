@@ -99,13 +99,7 @@ fn step_coverage() {
         if !h.1.is_empty() {
             host.push(line);
         } else if UNSUPPORTED.contains(&id)
-            || [
-                sid::SPEAK,
-                sid::DIAL_PHONE,
-                sid::EXECUTE_SQL,
-                sid::INSERT_FROM_URL,
-            ]
-            .contains(&id)
+            || [sid::SPEAK, sid::DIAL_PHONE, sid::EXECUTE_SQL].contains(&id)
             || [
                 sid::RECOVER_FILE,
                 sid::SET_ALLOWED_ORIENTATIONS,
@@ -140,7 +134,7 @@ fn step_coverage() {
     // Every step runs; none is left to `Host::other` (PROGRESS.md M5).
     assert_eq!(
         (runs.len(), stub.len(), host.len()),
-        (151, 71, 0),
+        (155, 67, 0),
         "{host:?}"
     );
 }
@@ -240,7 +234,7 @@ const PARTIAL_GET: [&str; 8] = [
 
 /// Steps that run but ignore stored options or do nothing where FileMaker
 /// acts (docs/COVERAGE.md), with the reason.
-const PARTIAL_STEPS: [(u16, &str); 23] = [
+const PARTIAL_STEPS: [(u16, &str); 27] = [
     (18, "no spelling check"),
     (19, "no spelling check"),
     (20, "no spelling check"),
@@ -267,6 +261,13 @@ const PARTIAL_STEPS: [(u16, &str); 23] = [
     ),
     (237, "no web viewer"),
     (43, "prints to PDF only"),
+    (
+        3,
+        "schema, layouts, scripts only: no UUIDs, DDR_INFO, step parameters",
+    ),
+    (160, "http and https only; some cURL options ignored"),
+    (203, "no portalData writes, modId always 0"),
+    (225, "no predefined system prompt; option slots not checked"),
 ];
 
 #[test]
@@ -843,7 +844,6 @@ fn file_and_misc_steps() {
         (sid::DIAL_PHONE, 3),
         (sid::EXECUTE_SQL, 5),
         (sid::RECOVER_FILE, 3),
-        (sid::INSERT_FROM_URL, 3),
         (sid::SET_ALLOWED_ORIENTATIONS, 4),
         (164, 3), // Perform Script on Server
         (212, 5), // Configure AI Account, no parameters

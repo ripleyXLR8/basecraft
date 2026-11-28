@@ -707,6 +707,9 @@ did not know; those steps were left out below.
 | Send Mail (client) | 0 | `0x80` no dialog | [128] To, [129] CC, [130] BCC, [131] subject, [132] message |
 | Get Folder Path | 0 | `0x100` allow folder creation | [128] key 1 the variable name; [131] dialog title, [132] default location |
 | Speak, Dial Phone, Set Web Viewer | (Set Web Viewer: 5 go to URL) | `0x80` no dialog | [128] text / number / object name, [129] URL |
+| Insert from URL | 0 | `0x1000` select, `0x80` no dialog, `0x1000_0000` verify SSL certificates, `0x1`/`0x4` target | [128] URL, [129] cURL options (XML position 1, seen in a reverse-oracle export); target as Insert Text: [160] key 1 variable, [160].[5] its repetition (XML position 32), or the inline field |
+| Save a Copy as XML | 0 | `0x100` details for analysis tools, `0x200` each layout object's binary data, `0x8000` options as JSON | output file not observed (BaseCraft reads [128] key 130) |
+| Save Records as JSONL, Execute FileMaker Data API | 0 | JSONL: `0x1000` format for fine-tuning, `0x200` create folders; Data API: `0x1000` select | not observed (BaseCraft reads JSONL's prompts at [129]–[131], the Data API request at [128]) |
 
 The path list ([128] key 130, `script::files::decode_path_list`): a u32
 count, then per path a u8-prefixed kind (`file`; empty for a variable

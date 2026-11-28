@@ -79,7 +79,7 @@ pub fn handles(id: u16) -> bool {
 }
 
 /// A step's target: the variable in `[160]` key 1 or the inline field.
-fn target(s: &Step) -> Target {
+pub(crate) fn target(s: &Step) -> Target {
     match s.raw_params.text(32) {
         Some(v) if !v.is_empty() => Target::Variable(v),
         _ => s.inline_field().map_or(Target::None, Target::Field),
@@ -97,7 +97,7 @@ fn ask(path: &str) -> Flow {
 }
 
 /// `Err(CONFIRM)` becomes the confirmation, other errors stay.
-fn write_result(r: Result<(), u32>, path: &str) -> Result<Flow, u32> {
+pub(crate) fn write_result(r: Result<(), u32>, path: &str) -> Result<Flow, u32> {
     match r {
         Ok(()) => Ok(Flow::Next),
         Err(CONFIRM) => Ok(ask(path)),
@@ -550,7 +550,7 @@ impl Engine {
 }
 
 /// A variable's value (`$local` in the frame, `$$global` in the engine).
-fn variable(globals: &Vars, frame: &Frame, name: &str) -> Value {
+pub(crate) fn variable(globals: &Vars, frame: &Frame, name: &str) -> Value {
     let key = (name.to_lowercase(), 1);
     let vars = if name.starts_with("$$") {
         globals

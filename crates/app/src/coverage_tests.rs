@@ -187,5 +187,5 @@ fn error_code_coverage() {
     println!("RAISED {}: {done:?}", done.len());
     println!("NEVER RAISED {}: {missing:?}", missing.len());
     assert_eq!(codes.len(), 300);
-    assert_eq!((done.len(), missing.len()), (59, 241));
+    assert_eq!((done.len(), missing.len()), (65, 235));
 }

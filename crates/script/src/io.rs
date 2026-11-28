@@ -131,50 +131,17 @@ pub fn export_spec(p: &RawParams) -> Option<ExportSpec> {
     Some(s)
 }
 
-/// Import source text as UTF-8 (FileMaker's character set numbers).
-// ponytail: Windows ANSI, DOS and Mac Roman are read as Latin-1; use real
-// code pages if non-ASCII text from those sources matters.
-pub fn decode_charset(b: &[u8], charset: u8) -> Vec<u8> {
-    match charset {
-        3 => {
-            let (be, body) = match b {
-                [0xFE, 0xFF, rest @ ..] => (true, rest),
-                [0xFF, 0xFE, rest @ ..] => (false, rest),
-                _ => (false, b),
-            };
-            let units = body.as_chunks::<2>().0.iter().map(|&x| {
-                if be {
-                    u16::from_be_bytes(x)
-                } else {
-                    u16::from_le_bytes(x)
-                }
-            });
-            String::from_utf16_lossy(&units.collect::<Vec<_>>()).into_bytes()
-        }
-        0..=2 => b
-            .iter()
-            .map(|&c| c as char)
-            .collect::<String>()
-            .into_bytes(),
-        _ => b.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(b).to_vec(),
-    }
-}
-
-/// Export text (UTF-8) in the step's character set.
-// ponytail: UTF-16 is little-endian with a byte order mark; ANSI, DOS and
-// Macintosh write Latin-1 (`?` beyond it).
-pub fn encode_charset(text: Vec<u8>, charset: u8) -> Vec<u8> {
-    let s = String::from_utf8_lossy(&text);
-    match charset {
-        3 => [0xFF, 0xFE]
-            .into_iter()
-            .chain(s.encode_utf16().flat_map(u16::to_le_bytes))
-            .collect(),
-        0..=2 => s
-            .chars()
-            .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
-            .collect(),
-        _ => text,
+/// The engine's character set for a step's stored number (0 Windows ANSI,
+/// 1 DOS, 2 Macintosh, 3 Unicode, 4/5 UTF-8).
+// ponytail: DOS maps to 7-bit ASCII (FileMaker's is likely code page 437).
+pub fn step_charset(code: u8) -> engine::charset::Charset {
+    use engine::charset::Charset as C;
+    match code {
+        0 => C::WindowsAnsi,
+        1 => C::Ascii,
+        2 => C::MacRoman,
+        3 => C::Utf16,
+        _ => C::Utf8,
     }
 }
 
@@ -201,12 +168,7 @@ impl Engine {
             self.commit(host)?;
             let bytes = bytes?;
             let format = Format::from_name(&path).unwrap_or(Format::Tab);
-            let bytes = if format == Format::Xlsx {
-                bytes
-            } else {
-                decode_charset(&bytes, spec.charset)
-            };
-            let rows = engine::import::read_rows(format, &bytes).map_err(|_| 100u32)?;
+            let charset = step_charset(spec.charset);
             let db = host.db();
             let t = db.table_of(spec.to).ok_or(error::FIELD_MISSING)?;
             let tid = t.id;
@@ -240,7 +202,12 @@ impl Engine {
                 mapping: engine::import::Mapping::ByOrder(names),
                 mode,
                 auto_enter: spec.options & import_opt::AUTO_ENTER != 0 && self.auto_enter(),
+                charset,
+                delimiter: None,
+                split_repetitions: spec.options & import_opt::SPLIT_REPETITIONS != 0,
+                container_files: None,
             };
+            let rows = engine::import::read_source(&opts, &bytes).map_err(|_| 100u32)?;
             let (table, _, _) = Self::context(host);
             let found = if tid == table {
                 host.window().found.clone()
@@ -281,6 +248,7 @@ impl Engine {
             let (_, to, _) = Self::context(host);
             let found = host.window().found.clone();
             let file = host.window().host.file_name.clone();
+            let layout = Some(host.window().layout);
             let db = host.db();
             let mut columns = Vec::new();
             for &(fto, f) in &spec.fields {
@@ -311,12 +279,11 @@ impl Engine {
                 formatted: spec.formatted,
                 file_name: &file_name,
                 group_by: &group,
+                charset: step_charset(spec.charset),
+                layout,
             }
-            .write(format);
-            let out = match format {
-                Format::Xlsx => out,
-                _ => encode_charset(out, spec.charset),
-            };
+            .write(format)
+            .map_err(|_| error::UNAVAILABLE)?;
             let folders = s.options & CREATE_FOLDERS != 0;
             write_result(host.file_write(&path, &out, folders), &path)
         })())
@@ -448,15 +415,11 @@ mod tests {
 
     #[test]
     fn character_sets() {
-        assert_eq!(
-            decode_charset(&[0xFF, 0xFE, b'a', 0, 0xE9, 0], 3),
-            "aé".as_bytes()
-        );
-        assert_eq!(decode_charset(&[0xE9], 0), "é".as_bytes());
-        assert_eq!(
-            encode_charset("é€".as_bytes().to_vec(), 0),
-            vec![0xE9, b'?']
-        );
-        assert_eq!(encode_charset(b"a".to_vec(), 3), vec![0xFF, 0xFE, b'a', 0]);
+        use engine::charset::Charset as C;
+        assert_eq!(step_charset(0), C::WindowsAnsi);
+        assert_eq!(step_charset(2), C::MacRoman);
+        assert_eq!(step_charset(3), C::Utf16);
+        assert_eq!(step_charset(4), C::Utf8);
+        assert_eq!(step_charset(5), C::Utf8);
     }
 }

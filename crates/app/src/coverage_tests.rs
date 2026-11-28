@@ -94,7 +94,7 @@ fn trigger_coverage() {
     }
     println!("FIRED {}: {}", fired.len(), fired.join(", "));
     println!("NOT FIRED {}: {}", missing.len(), missing.join(", "));
-    assert_eq!((fired.len(), missing.len()), (9, 17));
+    assert_eq!((fired.len(), missing.len()), (22, 4));
 }
 
 /// Layout object kinds: implemented = read, drawn in Browse mode and made

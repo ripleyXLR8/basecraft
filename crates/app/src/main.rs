@@ -39,6 +39,9 @@ mod script_ui;
 mod security_ui;
 mod toolbar;
 #[cfg(test)]
+mod trigger_tests;
+mod triggers;
+#[cfg(test)]
 mod ui_tests;
 mod views;
 mod windows;
@@ -173,6 +176,8 @@ struct App {
     prefs: Option<prefs::Prefs>,
     /// Launch Center (`launch.rs`).
     launch: launch::State,
+    /// Content size of each window last frame (OnLayoutSizeChange).
+    sizes: BTreeMap<String, egui::Vec2>,
 }
 
 impl App {
@@ -362,14 +367,8 @@ impl App {
                 self.fire(event::LAYOUT_ENTER);
                 self.fire(event::MODE_ENTER);
                 self.fire(event::RECORD_LOAD);
-                if let Some(t) = self
-                    .doc
-                    .as_ref()
-                    .and_then(|d| d.triggers.file(event::FIRST_WINDOW_OPEN))
-                    .cloned()
-                {
-                    self.trigger_queue.push_back((t.script, t.parameter));
-                }
+                self.fire_file(event::FIRST_WINDOW_OPEN);
+                self.fire_file(event::WINDOW_OPEN);
             }
         }
     }
@@ -489,6 +488,7 @@ impl App {
         if errs.is_empty() {
             self.editing = None;
             self.fire(event::RECORD_COMMIT);
+            self.window_transaction("Modified", t, &[r]);
             return true;
         }
         let tbl = d.db.table(t);
@@ -568,6 +568,7 @@ impl App {
         f: impl FnOnce(&mut script::Engine, &mut AppHost) -> R,
     ) -> Option<R> {
         let mode = self.mode();
+        let (old_view, old_names) = (self.view, self.window_names());
         let window = self.script_window()?;
         let d = self.doc.as_mut()?;
         let mut engine = self.engine.take()?;
@@ -621,6 +622,15 @@ impl App {
         if self.layout != old_layout && !self.from_trigger {
             self.fire(event::LAYOUT_ENTER);
             self.fire(event::RECORD_LOAD);
+        }
+        if !self.from_trigger {
+            if self.view != old_view {
+                self.fire(event::VIEW_CHANGE);
+            }
+            // New Window: the front window is one that was not there.
+            if !old_names.contains(&self.front_name()) {
+                self.fire_file(event::WINDOW_OPEN);
+            }
         }
         Some(out)
     }
@@ -689,33 +699,15 @@ impl App {
 
     /// Queues the current layout's trigger for `ev` (in the current mode).
     fn fire(&mut self, ev: u16) {
-        let Some(d) = self.doc.as_ref() else { return };
-        let Some(l) = d.layouts.get(self.layout) else {
-            return;
-        };
-        let bit = match self.mode() {
-            Mode::Find => fmp12::triggers::mode::FIND,
-            Mode::Preview => fmp12::triggers::mode::PREVIEW,
-            Mode::Browse | Mode::Layout => fmp12::triggers::mode::BROWSE,
-        };
-        if self.mode() == Mode::Layout {
-            return;
-        }
-        if let Some(t) = d.triggers.layout(l.id, ev, bit) {
-            self.trigger_queue
-                .push_back((t.script, t.parameter.clone()));
+        if let Some(t) = self.layout_trigger(ev) {
+            self.trigger_queue.push_back((t.script, t.parameter));
         }
     }
 
     /// Queues an object's trigger for `ev`.
     fn fire_object(&mut self, object: u64, ev: u16) {
-        let Some(d) = self.doc.as_ref() else { return };
-        let Some(l) = d.layouts.get(self.layout) else {
-            return;
-        };
-        if let Some(t) = d.triggers.object(l.id, object, ev) {
-            self.trigger_queue
-                .push_back((t.script, t.parameter.clone()));
+        if let Some(t) = self.object_trigger(object, ev) {
+            self.trigger_queue.push_back((t.script, t.parameter));
         }
     }
 
@@ -727,13 +719,10 @@ impl App {
         let Some((script, param)) = self.trigger_queue.pop_front() else {
             return;
         };
-        let value = param.and_then(|c| {
-            let t = self.table()?;
-            let rec = self.current_record();
-            let d = self.doc.as_ref()?;
-            let to = (d.layouts.get(self.layout)?.table_occurrence & 0xFFF) as u32;
-            Some(d.db.eval_tokens(&c.0, t, to, rec))
-        });
+        let value = self.trigger_value(param);
+        if let Some(e) = self.engine.as_mut() {
+            e.trigger = Default::default();
+        }
         self.start_run(true, |e, h| e.start(h, script, value));
     }
 
@@ -955,7 +944,7 @@ impl App {
     }
 
     fn enter_find(&mut self) {
-        if !self.commit() {
+        if !self.commit() || !self.mode_exit() {
             return;
         }
         self.mode = Some(Mode::Find);
@@ -1022,7 +1011,11 @@ impl App {
 
     /// View › Layout Mode: edits a copy of the current layout.
     fn enter_layout(&mut self) {
-        if self.mode() == Mode::Layout || self.remote_refuses(tr("Layout Mode")) || !self.commit() {
+        if self.mode() == Mode::Layout
+            || self.remote_refuses(tr("Layout Mode"))
+            || !self.commit()
+            || !self.mode_exit()
+        {
             return;
         }
         let Some(d) = self.doc.as_ref() else { return };
@@ -1496,6 +1489,7 @@ impl App {
             })
         };
         let mut clicked_tab = None;
+        let tabs_before = self.tabs.clone();
         let browse = mode == Mode::Browse;
         if browse {
             objects::tab_navigation(ui, &layout, &mut self.objs);
@@ -1714,6 +1708,7 @@ impl App {
         if let Some((tc, p)) = clicked_tab {
             self.tabs.insert(tc, p);
         }
+        self.panel_switches(&tabs_before);
         if browse {
             objects::close_popover_on_click(ui, &mut self.objs);
             for (id, ev) in &self.obj_events {
@@ -2146,8 +2141,12 @@ fn draw_field(
                             r.clone().on_hover_text(tip.as_str());
                         }
                         let was = edit_id.with("before");
+                        // Back after a cancelled OnObjectValidate: no OnObjectEnter.
+                        let back = edit_id.with("refocus");
                         if r.gained_focus() {
-                            events.push((o.id, event::OBJECT_ENTER));
+                            if ui.data_mut(|d| d.remove_temp::<bool>(back)).is_none() {
+                                events.push((o.id, event::OBJECT_ENTER));
+                            }
                             ui.data_mut(|d| d.insert_temp(was, before.clone()));
                         }
                         if r.has_focus() {
@@ -2160,9 +2159,12 @@ fn draw_field(
                                 },
                             );
                         }
-                        if r.lost_focus()
-                            && let Some(b) = ui.data_mut(|d| d.remove_temp::<String>(was))
-                        {
+                        // egui can report the loss twice: the field is left once.
+                        let leaving = r
+                            .lost_focus()
+                            .then(|| ui.data_mut(|d| d.remove_temp::<String>(was)))
+                            .flatten();
+                        if let Some(b) = leaving.clone() {
                             editing::record(
                                 ui.ctx(),
                                 editing::Edit {
@@ -2216,6 +2218,17 @@ fn draw_field(
                         ui.data_mut(|d| d.insert_temp(list_id, over));
                         if r.lost_focus() {
                             left = true;
+                        }
+                        if leaving.is_some() {
+                            // A modified field: OnObjectValidate (which can
+                            // keep the focus in it), then OnObjectSave.
+                            let m = egui::Id::NULL.with(("modified", t, rec, key));
+                            if changed || ui.data(|d| d.get_temp::<bool>(m)).is_some() {
+                                let v = egui::Id::NULL.with(("bc_validate", o.id));
+                                ui.data_mut(|d| d.insert_temp(v, (edit_id, m)));
+                                events.push((o.id, event::OBJECT_VALIDATE));
+                                events.push((o.id, event::OBJECT_SAVE));
+                            }
                             events.push((o.id, event::OBJECT_EXIT));
                         }
                     }
@@ -2305,7 +2318,28 @@ impl App {
         self.custom_functions_dialog(&ctx);
         self.prefs_dialog(&ctx);
         self.editing_frame(&ctx);
+        let mut kept = None;
         for (o, ev) in std::mem::take(&mut self.obj_events) {
+            if kept == Some(o) {
+                continue;
+            }
+            if ev == event::OBJECT_VALIDATE {
+                let t = self.object_trigger(o, ev);
+                if !self.run_pre(t, Default::default()) {
+                    // The field keeps the focus and stays modified; its
+                    // OnObjectSave and OnObjectExit do not fire.
+                    kept = Some(o);
+                    let v = egui::Id::NULL.with(("bc_validate", o));
+                    if let Some((edit, m)) = ctx.data(|d| d.get_temp::<(egui::Id, egui::Id)>(v)) {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(m, true);
+                            d.insert_temp(edit.with("refocus"), true);
+                        });
+                        ctx.data_mut(|d| d.insert_temp(objects::focus_id(), o));
+                    }
+                }
+                continue;
+            }
             if ev == event::OBJECT_ENTER {
                 self.m8.focus = Some(o);
             }
@@ -2410,6 +2444,10 @@ impl App {
         let ctx = ui.ctx().clone();
         if keys {
             self.window_keys(&ctx);
+            self.keystrokes(&ctx);
+        }
+        if self.doc.is_some() && self.mode() != Mode::Layout {
+            self.layout_size(ui.max_rect().size());
         }
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         self.remote_frame(ui);

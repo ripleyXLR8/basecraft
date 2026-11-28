@@ -173,7 +173,10 @@ impl App {
             (View::Table, "View as Table"),
         ] {
             if ui.selectable_label(self.view == v, t(label)).clicked() {
-                self.view = v;
+                if self.view != v {
+                    self.view = v;
+                    self.fire(fmp12::triggers::event::VIEW_CHANGE);
+                }
                 ui.close();
             }
         }
@@ -619,7 +622,7 @@ impl App {
         let (Some((t, r)), Some((st, sr, rec))) = (self.editing, self.m5.snapshot.clone()) else {
             return;
         };
-        if (t, r) != (st, sr) {
+        if (t, r) != (st, sr) || !self.record_revert() {
             return;
         }
         if let Some(tb) = self

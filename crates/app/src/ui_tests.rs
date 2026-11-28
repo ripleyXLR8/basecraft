@@ -383,7 +383,7 @@ fn data_viewer<'a>(h: &'a Harness<'_, App>) -> egui_kittest::Node<'a> {
 /// Clients::Name, Size from the value list S/M/L with a custom message),
 /// built with the schema editor; the Invoices layout shows its three
 /// fields side by side. Opened on that layout.
-fn shop_app() -> App {
+pub(crate) fn shop_app() -> App {
     use fmp12::schema::{DataType, Lookup, NoMatch};
     use fmp12::schema_edit::{FieldSpec, RelationshipSpec};
     use fmp12::valuelists::Source;
@@ -450,7 +450,7 @@ fn shop_app() -> App {
 }
 
 /// Clicks the `n`-th text input from the left, selects its text and types `text`.
-fn retype(h: &mut Harness<'_, App>, n: usize, text: &str) {
+pub(crate) fn retype(h: &mut Harness<'_, App>, n: usize, text: &str) {
     click_input(h, n);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     h.event(egui::Event::Text(text.into()));
@@ -463,7 +463,7 @@ pub(crate) fn below_toolbar(n: &egui_kittest::Node<'_>) -> bool {
 }
 
 /// Clicks the `n`-th text input from the left.
-fn click_input(h: &mut Harness<'_, App>, n: usize) {
+pub(crate) fn click_input(h: &mut Harness<'_, App>, n: usize) {
     let mut inputs: Vec<egui::Pos2> = h
         .get_all_by_role(egui::accesskit::Role::TextInput)
         .filter(below_toolbar)

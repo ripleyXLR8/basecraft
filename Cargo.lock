@@ -506,6 +506,7 @@ dependencies = [
  "egui_system_font_provider",
  "engine",
  "fmp12",
+ "gtk",
  "print",
  "remote",
  "rfd",
@@ -1885,6 +1886,34 @@ dependencies = [
  "pango-sys",
  "pkg-config",
  "system-deps 9.0.1",
+]
+
+[[package]]
+name = "gdkx11"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad7a698a74652ddba8dc348f9933f6f209fbcf3ab318f2c1fd72c6b2fa99505"
+dependencies = [
+ "gdk",
+ "gdkx11-sys",
+ "gio",
+ "glib",
+ "libc",
+ "x11",
+]
+
+[[package]]
+name = "gdkx11-sys"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a103facf2056ce28125a49501f98beb01d1e3c9477257a8e05cfc5d3d677709e"
+dependencies = [
+ "cairo-sys-rs",
+ "gdk-sys",
+ "glib-sys",
+ "libc",
+ "system-deps 9.0.1",
+ "x11",
 ]
 
 [[package]]
@@ -5971,6 +6000,7 @@ dependencies = [
  "dom_query",
  "dpi",
  "dunce",
+ "gdkx11",
  "gtk",
  "http",
  "javascriptcore-rs",
@@ -5996,6 +6026,17 @@ dependencies = [
  "windows",
  "windows-core",
  "windows-version",
+ "x11-dl",
+]
+
+[[package]]
+name = "x11"
+version = "2.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "502da5464ccd04011667b11c435cb992822c2c0dbde1770c988480d312a0db2e"
+dependencies = [
+ "libc",
+ "pkg-config",
 ]
 
 [[package]]

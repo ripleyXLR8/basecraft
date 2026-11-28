@@ -67,10 +67,14 @@ decompiled.
    other missing flags belong to servers, FileMaker Go or plug-ins.
 5. **Styled-text functions** (TextColor, TextStyleAdd, …) keep the plain text only, and
    **CryptEncrypt / CryptDecrypt** use their own byte layout (not readable by FileMaker).
-6. **Web viewers** show their page on Windows and macOS (native webview) and in the web
+6. **Web viewers** show their page on Windows, macOS and Linux under X11 or XWayland
+   (native webview: WebView2, WKWebView, WebKitGTK 4.1) and in the web
    version (a sandboxed `<iframe>` over the canvas: scripts and forms only, no same origin,
    no popups or top navigation), in the main window only (a placeholder box elsewhere:
-   Linux, the file's other windows and other files' windows). A partly scrolled-away viewer
+   Linux when BaseCraft's window is a Wayland window — wry's child webviews need an X11
+   parent, `env -u WAYLAND_DISPLAY basecraft` runs it on XWayland —, the file's other
+   windows and other files' windows). On Linux the webviews are untested on a real
+   desktop 🔸. A partly scrolled-away viewer
    is shrunk, not clipped, and viewers are hidden while a menu or modal dialog is open. In
    the web version the browser's cross-origin rules apply: the `FileMaker.PerformScript`
    bridge and Perform JavaScript in Web Viewer work only for `data:text/html` pages (the
@@ -229,8 +233,8 @@ triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".
 
 Partial objects (4): Graphic (PNG, JPEG, BMP pictures drawn in Browse, Preview and PDF; not
 GIF, SVG or PDF pictures; no Insert › Picture in Layout mode), Rounded Rectangle
-(drawn as read; no tool makes one), Web Viewer (its page in a native webview on Windows and
-macOS, a sandboxed iframe in the web version, a placeholder box with its address elsewhere; Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
+(drawn as read; no tool makes one), Web Viewer (its page in a native webview on Windows,
+macOS and Linux under X11, a sandboxed iframe in the web version, a placeholder box with its address elsewhere; Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
 series added and removed; no Chart tool in Layout mode).
 
 Text is drawn in the font the file asks for (theme and local font-family, font-weight,

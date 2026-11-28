@@ -158,10 +158,6 @@ const MONTHS_FR: [&str; 12] = [
     "novembre",
     "décembre",
 ];
-const MONTHS_FR_ABBR: [&str; 12] = [
-    "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
-    "déc.",
-];
 const DAYS_EN: [&str; 7] = [
     "Sunday",
     "Monday",
@@ -178,8 +174,9 @@ const DAYS_FR: [&str; 7] = [
 fn month(m: i64, abbr: bool, loc: &Locale) -> String {
     let i = (m - 1).clamp(0, 11) as usize;
     match (french(loc), abbr) {
-        (true, true) => MONTHS_FR_ABBR[i].into(),
-        (true, false) => MONTHS_FR[i].into(),
+        // FileMaker 26 writes French month names in full in its abbreviated
+        // formats too ("28 novembre 2026" for format 4).
+        (true, _) => MONTHS_FR[i].into(),
         (false, true) => MONTHS_EN[i][..3].into(),
         (false, false) => MONTHS_EN[i].into(),
     }
@@ -409,6 +406,10 @@ mod tests {
         assert_eq!(d(2, 2, 0), " 7/3/26");
         assert_eq!(d(7, 0, 1), "7/03/2026");
         assert_eq!(d(3, 0, 0), "7 mars 2026");
+        let nov = Value::Date(calc::value::day_number(2026, 11, 28));
+        let mut f4 = Format::new_default();
+        f4.date.format = 4;
+        assert_eq!(show(&f4, nov), "28 novembre 2026");
         assert_eq!(d(5, 0, 0), "sam. 7 mars 2026");
         assert_eq!(d(6, 0, 0), "samedi 7 mars 2026");
         let mut f = Format::new_default();

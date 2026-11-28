@@ -717,14 +717,12 @@ fn charts_render() {
     app.open("charts".into(), bytes);
     let mut h = harness_for(app);
     h.run_steps(3);
-    let key = {
-        let doc = h.state().doc.as_ref().unwrap();
-        egui::Id::NULL.with(("charts", &doc.name, doc.file.bytes().len()))
-    };
-    let cached = h
-        .ctx
-        .data(|d| d.get_temp::<std::sync::Arc<print::Charts>>(key));
-    assert_eq!(cached.unwrap().len(), 14);
+    let charts = h.state().doc.as_ref().unwrap().layouts[0]
+        .objects
+        .iter()
+        .filter(|o| o.chart.is_some())
+        .count();
+    assert_eq!(charts, 14);
     shot(&mut h, "ours_charts_browse");
     h.state_mut().mode = Some(Mode::Preview);
     h.run_steps(3);

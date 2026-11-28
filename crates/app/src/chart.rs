@@ -1,30 +1,17 @@
 //! Charts in Browse and Preview: the chart's values and shapes come from
 //! `print::chart` (shared with the PDF output); this paints them with egui.
 
-use std::sync::Arc;
-
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
 use fmp12::layouts::{Layout, LayoutObject};
 use print::chart::Shape;
 
 use crate::Doc;
 
-/// The file's charts, decoded once per opened file (kept in egui's memory).
-fn charts(ctx: &egui::Context, doc: &Doc) -> Arc<print::Charts> {
-    let id = egui::Id::NULL.with(("charts", &doc.name, doc.file.bytes().len()));
-    if let Some(c) = ctx.data(|d| d.get_temp::<Arc<print::Charts>>(id)) {
-        return c;
-    }
-    let c = Arc::new(fmp12::charts::charts(&doc.file).unwrap_or_default());
-    ctx.data_mut(|d| d.insert_temp(id, c.clone()));
-    c
-}
-
 /// Draws `o` if it is a chart: its values from `found` (the found set) or
 /// from `record`. Returns `false` for other objects.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
-    ctx: &egui::Context,
+    _ctx: &egui::Context,
     painter: &egui::Painter,
     doc: &Doc,
     layout: &Layout,
@@ -36,8 +23,8 @@ pub fn draw(
     if o.kind != 13 {
         return false;
     }
-    let all = charts(ctx, doc);
-    let Some(c) = all.get(&(layout.id, o.id)) else {
+    // The layout's own copy: Layout mode's Chart Setup edits show at once.
+    let Some(c) = o.chart.as_deref() else {
         return false;
     };
     let to = (layout.table_occurrence & 0xFFF) as u32;

@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use eframe::egui::{self, Color32, Rect, Stroke, StrokeKind, Vec2};
+use fmp12::charts::{Chart, Kind, Source};
 use fmp12::formats::{Format, num, time};
 use fmp12::layouts::{self as ly, Bounds, Condition, Layout, LayoutObject, kind, op};
 use fmp12::theme::{self, NORMAL, SELF};
@@ -40,6 +41,100 @@ pub(super) struct Extra {
     web: Option<(Bounds, Option<u64>, String)>,
     /// Calculation text being typed per (object, slot).
     calcs: BTreeMap<(u64, &'static str), String>,
+    /// Chart Setup: the chart being edited.
+    chart: Option<ChartEdit>,
+}
+
+/// Chart Setup's fields: the calculations as text, the rest as read.
+struct ChartEdit {
+    id: u64,
+    chart: Chart,
+    title: String,
+    x_title: String,
+    y_title: String,
+    x: String,
+    /// (value, name) per Y series.
+    series: Vec<(String, String)>,
+    size: String,
+    error: Option<String>,
+}
+
+const CHART_KINDS: [(Kind, &str); 10] = [
+    (Kind::Column, "Column"),
+    (Kind::Bar, "Bar"),
+    (Kind::Line, "Line"),
+    (Kind::Area, "Area"),
+    (Kind::Pie, "Pie"),
+    (Kind::PositiveNegative, "Positive/Negative"),
+    (Kind::StackedColumn, "Stacked Column"),
+    (Kind::StackedBar, "Stacked Bar"),
+    (Kind::Bubble, "Bubble"),
+    (Kind::Scatter, "Scatter"),
+];
+
+/// Web Viewer Setup's options (FORMAT.md §10, [`ly::web`]).
+const WEB_OPTIONS: [(u64, &str); 6] = [
+    (
+        ly::web::INTERACTION,
+        "Allow interaction with web viewer content",
+    ),
+    (
+        ly::web::JAVASCRIPT,
+        "Allow JavaScript to perform FileMaker scripts",
+    ),
+    (ly::web::FIND_MODE, "Display content in Find mode"),
+    (ly::web::PROGRESS_BAR, "Display progress bar"),
+    (ly::web::STATUS, "Display status messages"),
+    (ly::web::ENCODE_URL, "Automatically encode URL"),
+];
+
+impl ChartEdit {
+    fn read(doc: &Doc, id: u64, c: &Chart) -> ChartEdit {
+        let t = |x: &Option<Vec<u8>>| x.as_ref().map(|t| calc_text(doc, t)).unwrap_or_default();
+        ChartEdit {
+            id,
+            chart: c.clone(),
+            title: t(&c.title),
+            x_title: t(&c.x_title),
+            y_title: t(&c.y_title),
+            x: t(&c.x),
+            series: c
+                .y
+                .iter()
+                .map(|s| (calc_text(doc, &s.value), t(&s.name)))
+                .collect(),
+            size: t(&c.size),
+            error: None,
+        }
+    }
+
+    /// The chart with the calculations compiled (an empty one is removed;
+    /// series values and a bubble's size are required).
+    fn build(&self, doc: &Doc) -> Result<Chart, String> {
+        let opt = |s: &str| -> Result<Option<Vec<u8>>, String> {
+            if s.trim().is_empty() {
+                Ok(None)
+            } else {
+                compile(doc, s).map(Some)
+            }
+        };
+        let req = |s: &str| -> Result<Vec<u8>, String> {
+            opt(s)?.ok_or_else(|| tr("Specify a calculation for each series.").to_string())
+        };
+        let mut c = self.chart.clone();
+        c.title = opt(&self.title)?;
+        c.x_title = opt(&self.x_title)?;
+        c.y_title = opt(&self.y_title)?;
+        c.x = opt(&self.x)?;
+        for ((v, n), s) in self.series.iter().zip(c.y.iter_mut()) {
+            s.value = req(v)?;
+            s.name = opt(n)?;
+        }
+        if c.size.is_some() {
+            c.size = Some(req(&self.size)?);
+        }
+        Ok(c)
+    }
 }
 
 /// A condition as the dialog edits it.
@@ -425,6 +520,301 @@ impl Designer {
         self.place_inside(id);
     }
 
+    /// Chart Setup for a chart object (double-click, Format menu, Inspector).
+    pub(super) fn open_chart_setup(&mut self, id: u64, doc: &Doc) {
+        if let Some(c) = self.object(id).and_then(|o| o.chart.as_deref()) {
+            self.extra.chart = Some(ChartEdit::read(doc, id, c));
+        }
+    }
+
+    /// The segments of button bar `bar`, left to right.
+    fn segments(&self, bar: u64) -> Vec<u64> {
+        let mut s: Vec<&LayoutObject> = self
+            .layout
+            .objects
+            .iter()
+            .filter(|o| o.parent == Some(bar))
+            .collect();
+        s.sort_by(|a, b| a.bounds.left.total_cmp(&b.bounds.left));
+        s.iter().map(|o| o.id).collect()
+    }
+
+    /// Segments share the bar's width equally, as FileMaker lays them out.
+    fn relayout_bar(&mut self, bar: u64) {
+        let Some(b) = self.object(bar).map(|o| o.bounds.clone()) else {
+            return;
+        };
+        let segs = self.segments(bar);
+        let w = (b.right - b.left) / segs.len().max(1) as f64;
+        for (i, id) in segs.into_iter().enumerate() {
+            if let Some(o) = self.object_mut(id) {
+                o.bounds = Bounds {
+                    top: 0.0,
+                    left: (w * i as f64).round(),
+                    bottom: b.bottom - b.top,
+                    right: (w * (i + 1) as f64).round(),
+                };
+            }
+        }
+    }
+
+    /// Button bar › Add segment (a label, no action yet).
+    pub(super) fn add_segment(&mut self, bar: u64) {
+        self.checkpoint();
+        let label = format!("{} {}", tr("Button"), self.segments(bar).len() + 1);
+        self.add_child(
+            bar,
+            LayoutObject {
+                kind: kind::BUTTON,
+                options: ly::anchor::LEFT | ly::anchor::TOP | NEW_BUTTON_BIT,
+                style_raw: new_style(SEGMENT_TYPE),
+                label: Some(fmp12::save::text_literal_tokens(&label)),
+                text: Some(label),
+                ..Default::default()
+            },
+        );
+        self.relayout_bar(bar);
+    }
+
+    /// Button bar › Delete segment (a bar keeps at least one); the active
+    /// segment moves to the first one if it was this one.
+    pub(super) fn delete_segment(&mut self, bar: u64, seg: u64) {
+        if self.segments(bar).len() < 2 {
+            return;
+        }
+        self.checkpoint();
+        self.layout.objects.retain(|o| o.id != seg);
+        self.layout.tab_order.retain(|id| *id != seg);
+        let first = self.segments(bar).first().copied();
+        if let Some(b) = self.object_mut(bar)
+            && b.selected == Some(seg)
+        {
+            b.selected = first;
+        }
+        self.relayout_bar(bar);
+    }
+
+    /// Inspector › Data of web viewers, button bars and charts; `false` for
+    /// other objects.
+    pub(super) fn object_data(&mut self, ui: &mut egui::Ui, doc: &Doc, o: &LayoutObject) -> bool {
+        match o.kind {
+            kind::EXTERNAL if o.external.is_some_and(|e| e.0 == ly::WEB_VIEWER) => {
+                ui.label(tr("Web address"));
+                self.calc_field(ui, doc, o.id, "url", |o| o.url.as_ref(), |o, t| o.url = t);
+                let flags = o.external.map_or(0, |e| e.1);
+                for (bit, name) in WEB_OPTIONS {
+                    let mut on = flags & bit != 0;
+                    if ui.checkbox(&mut on, tr(name)).changed() {
+                        self.touch("web_options");
+                        if let Some(x) = self.object_mut(o.id)
+                            && let Some(e) = x.external.as_mut()
+                        {
+                            e.1 ^= bit;
+                        }
+                    }
+                }
+                if ui.button(tr("Web Viewer Setup…")).clicked() {
+                    self.open_web_setup(o.bounds.clone(), Some(o.id), doc);
+                }
+            }
+            kind::EXTERNAL if o.chart.is_some() => {
+                if ui.button(tr("Chart Setup…")).clicked() {
+                    self.open_chart_setup(o.id, doc);
+                }
+            }
+            kind::BUTTON_BAR => {
+                let segs = self.segments(o.id);
+                let to = (self.layout.table_occurrence & 0xFFF) as u32;
+                let table = doc.db.table_of(to).map(|t| t.id).unwrap_or(0);
+                let name = |s: &LayoutObject| match &s.label {
+                    Some(t) => doc.db.eval_tokens(t, table, to, None).to_text(),
+                    None => s.text.clone().unwrap_or_default(),
+                };
+                let names: Vec<(u64, String)> = segs
+                    .iter()
+                    .filter_map(|id| self.object(*id))
+                    .map(|s| (s.id, name(s)))
+                    .collect();
+                ui.label(tr("Active segment"));
+                let mut sel = o.selected;
+                let shown = |v: Option<u64>| {
+                    names
+                        .iter()
+                        .find(|n| Some(n.0) == v)
+                        .map_or(tr("<None>").to_string(), |n| n.1.clone())
+                };
+                egui::ComboBox::from_id_salt("bar_active")
+                    .selected_text(shown(sel))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut sel, None, tr("<None>"));
+                        for (id, n) in &names {
+                            ui.selectable_value(&mut sel, Some(*id), n);
+                        }
+                    });
+                if sel != o.selected {
+                    self.touch("bar_active");
+                    if let Some(x) = self.object_mut(o.id) {
+                        x.selected = sel;
+                    }
+                }
+                ui.separator();
+                for (i, (id, _)) in names.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} {}", tr("Segment"), i + 1));
+                        if ui.button(tr("Action…")).clicked() {
+                            self.open_button_setup(*id, doc);
+                        }
+                        if ui
+                            .add_enabled(names.len() > 1, egui::Button::new(tr("Delete")))
+                            .clicked()
+                        {
+                            self.delete_segment(o.id, *id);
+                        }
+                    });
+                    self.calc_field(
+                        ui,
+                        doc,
+                        *id,
+                        "label",
+                        |o| o.label.as_ref(),
+                        |o, t| o.label = t,
+                    );
+                }
+                if ui.button(tr("Add segment")).clicked() {
+                    self.add_segment(o.id);
+                }
+            }
+            _ => return false,
+        }
+        ui.separator();
+        true
+    }
+
+    fn chart_dialog(&mut self, ctx: &egui::Context, doc: &Doc) {
+        let Some(mut e) = self.extra.chart.take() else {
+            return;
+        };
+        let mut done = None;
+        let layout_to = (self.layout.table_occurrence & 0xFFF) as u32;
+        let related = super::related(doc, layout_to);
+        egui::Window::new(tr("Chart Setup"))
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                let bubble = e.chart.kind == Kind::Bubble;
+                egui::Grid::new("chart_setup").num_columns(2).show(ui, |ui| {
+                    ui.label(tr("Chart type"));
+                    let kind_name =
+                        |k: Kind| CHART_KINDS.iter().find(|x| x.0 == k).map_or("", |x| tr(x.1));
+                    egui::ComboBox::from_id_salt("chart_kind")
+                        .selected_text(kind_name(e.chart.kind))
+                        .show_ui(ui, |ui| {
+                            // A bubble chart's size series has no other use.
+                            for (k, n) in CHART_KINDS {
+                                if (k == Kind::Bubble) == bubble {
+                                    ui.selectable_value(&mut e.chart.kind, k, tr(n));
+                                }
+                            }
+                        });
+                    ui.end_row();
+                    for (label, s) in [
+                        ("Title", &mut e.title),
+                        ("X-axis title", &mut e.x_title),
+                        ("Y-axis title", &mut e.y_title),
+                        ("X-axis data", &mut e.x),
+                    ] {
+                        ui.label(tr(label));
+                        ui.add(egui::TextEdit::singleline(s).desired_width(300.0));
+                        ui.end_row();
+                    }
+                    for (i, (v, n)) in e.series.iter_mut().enumerate() {
+                        ui.label(format!("{} {}", tr("Series"), i + 1));
+                        ui.add(egui::TextEdit::singleline(v).desired_width(300.0));
+                        ui.end_row();
+                        ui.label(tr("Series name"));
+                        ui.add(egui::TextEdit::singleline(n).desired_width(300.0));
+                        ui.end_row();
+                    }
+                    if bubble {
+                        ui.label(tr("Bubble size"));
+                        ui.add(egui::TextEdit::singleline(&mut e.size).desired_width(300.0));
+                        ui.end_row();
+                    }
+                    ui.label(tr("Data source"));
+                    let mut src = match e.chart.source {
+                        Source::FoundSet => 0,
+                        Source::CurrentRecord => 1,
+                        Source::Related(_) => 2,
+                    };
+                    ui.vertical(|ui| {
+                        ui.radio_value(&mut src, 0, tr("Current Found Set"));
+                        ui.radio_value(&mut src, 1, tr("Current Record (delimited data)"));
+                        ui.add_enabled_ui(!related.is_empty(), |ui| {
+                            ui.radio_value(&mut src, 2, tr("Related Records"));
+                        });
+                        let mut to = match e.chart.source {
+                            Source::Related(t) => t,
+                            _ => related.first().map_or(0, |r| r.0),
+                        };
+                        if src == 2 {
+                            egui::ComboBox::from_id_salt("chart_to")
+                                .selected_text(
+                                    related.iter().find(|r| r.0 == to).map_or("", |r| r.1.as_str()),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (id, n) in &related {
+                                        ui.selectable_value(&mut to, *id, n);
+                                    }
+                                });
+                        }
+                        e.chart.source = match src {
+                            0 => Source::FoundSet,
+                            1 => Source::CurrentRecord,
+                            _ => Source::Related(to),
+                        };
+                    });
+                    ui.end_row();
+                });
+                ui.checkbox(&mut e.chart.legend, tr("Show legend"));
+                ui.checkbox(&mut e.chart.data_points, tr("Show data points on chart"));
+                if let Some(err) = &e.error {
+                    ui.colored_label(Color32::from_rgb(190, 40, 40), err);
+                }
+                ui.weak(tr(
+                    "Series can be edited, not added or removed (the chart's per-series settings are not decoded).",
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button(tr("OK")).clicked() {
+                        done = Some(true);
+                    }
+                    if ui.button(tr("Cancel")).clicked() {
+                        done = Some(false);
+                    }
+                });
+            });
+        match done {
+            Some(true) => match e.build(doc) {
+                Ok(c) => self.set_chart(e.id, c),
+                Err(err) => {
+                    e.error = Some(err);
+                    self.extra.chart = Some(e);
+                }
+            },
+            Some(false) => {}
+            None => self.extra.chart = Some(e),
+        }
+    }
+
+    /// Replaces the chart settings of object `id` (one undo step).
+    fn set_chart(&mut self, id: u64, c: Chart) {
+        if self.object(id).and_then(|o| o.chart.as_deref()) == Some(&c) {
+            return;
+        }
+        self.checkpoint();
+        if let Some(o) = self.object_mut(id) {
+            o.chart = Some(Box::new(c));
+        }
+    }
     /// Format menu (Layout mode).
     pub fn format_menu(&mut self, ui: &mut egui::Ui, doc: &Doc) {
         let one = self.sel.len() == 1;
@@ -449,6 +839,19 @@ impl Designer {
             && let Some(o) = web
         {
             self.open_web_setup(o.bounds.clone(), Some(o.id), doc);
+            ui.close();
+        }
+        let chart = self
+            .sel
+            .first()
+            .filter(|id| one && self.object(**id).is_some_and(|o| o.chart.is_some()))
+            .copied();
+        if ui
+            .add_enabled(chart.is_some(), egui::Button::new(tr("Chart Setup…")))
+            .clicked()
+            && let Some(id) = chart
+        {
+            self.open_chart_setup(id, doc);
             ui.close();
         }
     }
@@ -616,6 +1019,7 @@ impl Designer {
         self.conditions_dialog(ctx, doc);
         self.tab_order_dialog(ctx);
         self.web_dialog(ctx, doc);
+        self.chart_dialog(ctx, doc);
     }
 
     fn conditions_dialog(&mut self, ctx: &egui::Context, doc: &Doc) {
@@ -1499,6 +1903,132 @@ pub(crate) mod tests {
         }
         assert_eq!(l.tab_order[..5], mine.tab_order[..]);
         assert!(one(kind::BUTTON_BAR).selected.is_some());
+    }
+
+    /// Button bar segments added, deleted and made active, web viewer
+    /// options: written and read back.
+    #[test]
+    fn button_bar_and_web_viewer_edits() {
+        let Some(mut d) = objects_demo() else { return };
+        let i = d
+            .layouts
+            .iter()
+            .position(|l| l.name == "Objects Demo")
+            .unwrap();
+        let mut ds = Designer::new(&d, i);
+        let bar = ds
+            .layout
+            .objects
+            .iter()
+            .find(|o| o.kind == kind::BUTTON_BAR)
+            .unwrap()
+            .id;
+        let segs = ds.segments(bar);
+        assert_eq!(segs.len(), 3);
+        ds.add_segment(bar);
+        let segs = ds.segments(bar);
+        assert_eq!(segs.len(), 4);
+        // Equal widths over the bar (360 pt).
+        let w: Vec<f64> = segs
+            .iter()
+            .map(|id| {
+                ds.object(*id)
+                    .map_or(0.0, |o| o.bounds.right - o.bounds.left)
+            })
+            .collect();
+        assert_eq!(w, [90.0; 4]);
+        ds.object_mut(bar).unwrap().selected = Some(segs[1]);
+        ds.delete_segment(bar, segs[1]);
+        assert_eq!(ds.object(bar).unwrap().selected, Some(segs[0]));
+        let new_seg = segs[3];
+        ds.object_mut(new_seg).unwrap().label = Some(compile(&d, "Get ( LayoutName )").unwrap());
+        ds.object_mut(bar).unwrap().selected = Some(new_seg);
+        let web = ds
+            .layout
+            .objects
+            .iter()
+            .find(|o| o.url.is_some())
+            .unwrap()
+            .id;
+        let e = ds.object_mut(web).unwrap().external.as_mut().unwrap();
+        e.1 = (e.1 | ly::web::FIND_MODE) & !ly::web::STATUS;
+        ds.apply(&mut d);
+        let bytes = written(&d);
+        // `BASECRAFT_BAR_DEMO=<out.fmp12>` keeps it for `fms_check.sh`.
+        if let Some(p) = std::env::var_os("BASECRAFT_BAR_DEMO") {
+            std::fs::write(p, &bytes).unwrap();
+        }
+        let f = fmp12::File::from_bytes(bytes).unwrap();
+        let l = ly::layouts(&f)
+            .unwrap()
+            .into_iter()
+            .find(|l| l.name == "Objects Demo")
+            .unwrap();
+        let back: Vec<&LayoutObject> = l.objects.iter().filter(|o| o.parent == Some(bar)).collect();
+        assert_eq!(back.len(), 3);
+        assert_eq!(
+            l.objects.iter().find(|o| o.id == bar).unwrap().selected,
+            Some(new_seg)
+        );
+        let s = back.iter().find(|o| o.id == new_seg).unwrap();
+        assert_eq!(
+            calc_text(&d, s.label.as_ref().unwrap()),
+            "Get ( LayoutName )"
+        );
+        assert_eq!(
+            l.objects.iter().find(|o| o.id == web).unwrap().external,
+            Some((ly::WEB_VIEWER, 0x8007))
+        );
+    }
+
+    /// Chart Setup on the charts fixture: title, series name, type and
+    /// source written back; an empty series is refused.
+    #[test]
+    fn chart_setup_is_saved() {
+        let p = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../fmp12/tests/fixtures/charts.fmp12"
+        );
+        let file = fmp12::File::open(p).unwrap();
+        let db = engine::Database::load(&file).unwrap();
+        let layouts = db.layouts.clone();
+        let mut d = Doc {
+            name: "charts".into(),
+            db,
+            layouts,
+            file,
+            path: None,
+            triggers: Default::default(),
+        };
+        let i = d.layouts.iter().position(|l| l.id == 1).unwrap();
+        let mut ds = Designer::new(&d, i);
+        ds.open_chart_setup(2, &d);
+        let mut e = ds.extra.chart.take().unwrap();
+        assert_eq!(e.title, "\"Two series\"");
+        assert_eq!(e.series.len(), 2);
+        e.series[0].0.clear();
+        assert!(e.build(&d).is_err());
+        e = ChartEdit::read(&d, 2, ds.object(2).unwrap().chart.as_deref().unwrap());
+        e.title = "\"Sales \" & Get ( FoundCount )".into();
+        e.series[1].1 = "\"Costs\"".into();
+        e.x_title.clear();
+        e.chart.kind = Kind::Area;
+        e.chart.source = Source::CurrentRecord;
+        let c = e.build(&d).unwrap();
+        ds.set_chart(2, c);
+        assert!(ds.changed());
+        ds.apply(&mut d);
+        let out = fmp12::save::save_layouts(&d.file, &d.db.layouts).unwrap();
+        let f = fmp12::File::from_bytes(out).unwrap();
+        let back = fmp12::charts::charts(&f).unwrap();
+        let c = &back[&(1, 2)];
+        assert_eq!(
+            calc_text(&d, c.title.as_ref().unwrap()),
+            "\"Sales \" & Get ( FoundCount )"
+        );
+        assert_eq!(calc_text(&d, c.y[1].name.as_ref().unwrap()), "\"Costs\"");
+        assert_eq!((c.kind, c.source), (Kind::Area, Source::CurrentRecord));
+        assert!(c.x_title.is_none());
     }
 
     /// `BASECRAFT_OBJECTS_DEMO=<out.fmp12>`: writes the demo for

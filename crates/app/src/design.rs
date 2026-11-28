@@ -2003,30 +2003,10 @@ impl Designer {
                     let b = o.bounds.clone();
                     self.open_web_setup(b, Some(id), doc);
                 }
-                kind::BUTTON => {
-                    let label = o
-                        .label
-                        .as_ref()
-                        .map(|t| doc.db.eval_tokens(t, table, layout_to, None).to_text())
-                        .unwrap_or_default();
-                    let (script, target) = match o.button.as_ref().map(|s| &s.params) {
-                        Some(fmp12::scripts::StepParams::PerformScript { script, .. }) => {
-                            (true, script.unwrap_or(0))
-                        }
-                        Some(fmp12::scripts::StepParams::GoToLayout {
-                            dest: fmp12::scripts::LayoutDest::Layout(t),
-                            ..
-                        }) => (false, *t),
-                        _ => (false, l.id),
-                    };
-                    self.dialog = Some(Dialog::Button {
-                        rect: o.bounds.clone(),
-                        edit: Some(id),
-                        label,
-                        script,
-                        target,
-                    });
+                fmp12::layouts::kind::EXTERNAL if o.chart.is_some() => {
+                    self.open_chart_setup(id, doc);
                 }
+                kind::BUTTON => self.open_button_setup(id, doc),
                 _ => {}
             }
         }
@@ -2839,6 +2819,10 @@ impl Designer {
             self.portal_data(ui, doc, &o);
             return;
         }
+        if ids.len() == 1 && self.object_data(ui, doc, &o) {
+            self.data_extra(ui, doc, ids);
+            return;
+        }
         let Some((to_ref, field, rep)) = o.field else {
             ui.label(tr("No field selected"));
             self.data_extra(ui, doc, ids);
@@ -3419,6 +3403,35 @@ impl Designer {
             o.active_child = first;
         }
         self.sel = BTreeSet::from([tc]);
+    }
+
+    /// Button Setup for an existing button or button bar segment.
+    fn open_button_setup(&mut self, id: u64, doc: &Doc) {
+        let Some(o) = self.object(id) else { return };
+        let layout_to = (self.layout.table_occurrence & 0xFFF) as u32;
+        let table = doc.db.table_of(layout_to).map(|t| t.id).unwrap_or(0);
+        let label = o
+            .label
+            .as_ref()
+            .map(|t| doc.db.eval_tokens(t, table, layout_to, None).to_text())
+            .unwrap_or_default();
+        let (script, target) = match o.button.as_ref().map(|s| &s.params) {
+            Some(fmp12::scripts::StepParams::PerformScript { script, .. }) => {
+                (true, script.unwrap_or(0))
+            }
+            Some(fmp12::scripts::StepParams::GoToLayout {
+                dest: fmp12::scripts::LayoutDest::Layout(t),
+                ..
+            }) => (false, *t),
+            _ => (false, self.layout.id),
+        };
+        self.dialog = Some(Dialog::Button {
+            rect: o.bounds.clone(),
+            edit: Some(id),
+            label,
+            script,
+            target,
+        });
     }
 
     fn set_button(

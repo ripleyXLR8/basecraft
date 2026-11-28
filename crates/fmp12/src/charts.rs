@@ -38,6 +38,25 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Every type, in the order of FileMaker's Chart Setup menu codes.
+    pub const ALL: [Kind; 10] = [
+        Kind::Column,
+        Kind::Bar,
+        Kind::Line,
+        Kind::Area,
+        Kind::Pie,
+        Kind::PositiveNegative,
+        Kind::StackedColumn,
+        Kind::StackedBar,
+        Kind::Bubble,
+        Kind::Scatter,
+    ];
+
+    /// The record code (byte 8).
+    pub fn code(self) -> u32 {
+        Kind::ALL.iter().position(|k| *k == self).unwrap_or(0) as u32
+    }
+
     fn from_code(c: u32) -> Kind {
         match c {
             1 => Kind::Bar,
@@ -100,6 +119,95 @@ pub struct Chart {
     pub data_points: bool,
     /// Colour scheme (byte 23): 0 Bright, 3 Earth (the default)…
     pub scheme: u32,
+    /// The settings record as read (its undecoded parts are kept when the
+    /// chart is written back, [`Chart::encode_record`]).
+    pub record: Vec<u8>,
+}
+
+impl Chart {
+    /// A chart from its node: the settings record (chunks joined) and the
+    /// calculations by sub-node key (128 title, 129/130 axis titles, 131 X,
+    /// 133 + 2i / 134 + 2i series value and name).
+    pub fn from_node(record: Vec<u8>, mut calc: impl FnMut(u32) -> Option<Vec<u8>>) -> Chart {
+        let mut c = Chart::default();
+        read_record(&mut c, &record);
+        c.record = record;
+        c.title = calc(128);
+        c.x_title = calc(129);
+        c.y_title = calc(130);
+        c.x = calc(131);
+        let mut k = 133;
+        while let Some(value) = calc(k) {
+            let name = calc(k + 1);
+            c.y.push(Series { value, name });
+            k += 2;
+        }
+        // ponytail: seen with two series only (key 137); a bubble chart's
+        // unnamed last "series" is taken as its size.
+        if c.kind == Kind::Bubble && c.y.last().is_some_and(|s| s.name.is_none()) {
+            c.size = c.y.pop().map(|s| s.value);
+        }
+        c
+    }
+
+    /// The calculations by sub-node key, as [`Chart::from_node`] reads them.
+    pub fn calcs(&self) -> Vec<(u32, &Vec<u8>)> {
+        let mut out: Vec<(u32, &Vec<u8>)> = [
+            (128, &self.title),
+            (129, &self.x_title),
+            (130, &self.y_title),
+            (131, &self.x),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| Some((k, v.as_ref()?)))
+        .collect();
+        let mut k = 133;
+        for s in &self.y {
+            out.push((k, &s.value));
+            if let Some(n) = &s.name {
+                out.push((k + 1, n));
+            }
+            k += 2;
+        }
+        if let Some(s) = &self.size {
+            out.push((k, s));
+        }
+        out
+    }
+
+    /// The settings record with the decoded words and the data source
+    /// replaced; the rest (fonts, colours, axis formats) as read.
+    /// ponytail: per-series parts of the record are not decoded, so the
+    /// number of series should not change (FileMaker's record for two
+    /// series is 75 bytes longer than for one).
+    pub fn encode_record(&self) -> Vec<u8> {
+        let mut b = self.record.clone();
+        if b.len() < 125 {
+            return b;
+        }
+        let mut put = |at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_be_bytes());
+        put(4, self.data_points as u32);
+        put(8, self.kind.code());
+        put(20, self.scheme);
+        put(56, self.legend as u32);
+        let old_len = 1 + b[121] as usize;
+        let tail: Vec<u8> = match self.source {
+            Source::Related(to) => {
+                let [hi, lo] = (to.saturating_sub(128) as u16).to_be_bytes();
+                vec![4, 3, 0xD0, hi, lo]
+            }
+            _ if b[120] == 3 => vec![2, 1, 0],
+            _ => b[121..121 + old_len.min(b.len() - 121)].to_vec(),
+        };
+        b[120] = match self.source {
+            Source::CurrentRecord => 1,
+            Source::FoundSet => 2,
+            Source::Related(_) => 3,
+        };
+        let end = (121 + old_len).min(b.len());
+        b.splice(121..end, tail);
+        b
+    }
 }
 
 fn word(b: &[u8], at: usize) -> u32 {
@@ -156,25 +264,8 @@ pub fn charts(file: &File) -> Result<BTreeMap<(u32, u64), Chart>, Error> {
         .into_iter()
         .filter(|(_, r)| !r.record.is_empty())
         .map(|(id, mut r)| {
-            let mut c = Chart::default();
             let rec: Vec<u8> = r.record.values().flatten().copied().collect();
-            read_record(&mut c, &rec);
-            c.title = r.calcs.remove(&128);
-            c.x_title = r.calcs.remove(&129);
-            c.y_title = r.calcs.remove(&130);
-            c.x = r.calcs.remove(&131);
-            let mut k = 133;
-            while let Some(value) = r.calcs.remove(&k) {
-                let name = r.calcs.remove(&(k + 1));
-                c.y.push(Series { value, name });
-                k += 2;
-            }
-            // ponytail: seen with two series only (key 137); a bubble chart's
-            // unnamed last "series" is taken as its size.
-            if c.kind == Kind::Bubble && c.y.last().is_some_and(|s| s.name.is_none()) {
-                c.size = c.y.pop().map(|s| s.value);
-            }
-            (id, c)
+            (id, Chart::from_node(rec, |k| r.calcs.remove(&k)))
         })
         .collect())
 }
@@ -219,5 +310,28 @@ mod tests {
         b[120..126].copy_from_slice(&[3, 4, 3, 0xD0, 0, 2]);
         read_record(&mut c, &b);
         assert_eq!(c.source, Source::Related(130));
+    }
+
+    #[test]
+    fn record_written_back() {
+        let mut c = Chart::from_node(hex(DELIMITED), |_| None);
+        assert_eq!(c.encode_record(), hex(DELIMITED));
+        c.kind = Kind::Pie;
+        c.legend = false;
+        c.data_points = true;
+        c.source = Source::Related(130);
+        let b = c.encode_record();
+        assert_eq!(b.len(), hex(DELIMITED).len() + 2);
+        let back = Chart::from_node(b, |_| None);
+        assert_eq!(
+            (back.kind, back.legend, back.data_points, back.source),
+            (Kind::Pie, false, true, Source::Related(130))
+        );
+        c.source = Source::FoundSet;
+        let b = c.encode_record();
+        assert_eq!(
+            (b.len(), b[120], &b[121..124]),
+            (hex(DELIMITED).len(), 2, &[2u8, 1, 0][..])
+        );
     }
 }

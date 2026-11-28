@@ -152,3 +152,12 @@ FMDeveloperTool reports the fixture's script catalog as damaged
 scripts); FileMaker Server hosts it and runs Echo all the same.
 `cargo run -p remote --example fixture -- in out --no-script` leaves the
 script out.
+* `datafiles/`: oracle for the data file, PDF and other late steps. `cargo run -p script --example bare_steps -- <in> <out> <spec>`
+  adds scripts of raw steps (option bits, bytes 22–23, inline slots, calculations, texts, path lists, raw keys) to a copy of a file;
+  `gen_sem1.py`, `gen_sem2.py`, `gen_sem5.py` (helpers in `gen_common.py`) write such specs: every step followed by a Set Variable
+  that appends `Get ( LastError )` and the result to `$$e`, stored in `Tasks::Description` at the end.
+  `round.sh <name>` builds `<name>.fmp12` from a copy of Tasks and prints how FileMaker Server's XML export reads the steps
+  (headless, `fms_check.sh`); `run_sem.ps1 -file <name>` runs script "BC Steps" in FileMaker Pro (waits until no FileMaker runs,
+  drives and stops only its own process) and prints the field. `lib.ps1` also has `Copy-Back` (paste an fmxmlsnippet into a new
+  script; FileMaker's import log, `Import.log` next to the file, names the elements it does not know). Results: FORMAT.md §8,
+  "Data file, PDF and other steps".

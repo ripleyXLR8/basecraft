@@ -2003,6 +2003,20 @@ fn draw_field(
                 (1 | 2, Some(vl)) => Some(doc.db.value_list_values(vl)),
                 _ => None,
             };
+            // Edit boxes set to auto-complete offer the values entered in
+            // other records while the field is being edited (or the list
+            // is under the pointer, so that a click can reach it).
+            let list_id = edit_id.with("complete");
+            let completions = if o.display == 0
+                && o.field_flags & fmp12::layouts::field_flags::AUTO_COMPLETE != 0
+                && (ui.memory(|m| m.has_focus(edit_id))
+                    || ui.data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false))
+            {
+                let typed = doc.db.value_rep(t, rec, field, rep).to_text();
+                doc.db.completions(t, field, &typed)
+            } else {
+                Vec::new()
+            };
             let mut changed = false;
             let mut left = false;
             if let Some(tbl) = doc.db.tables.iter_mut().find(|x| x.id == t) {
@@ -2104,6 +2118,42 @@ fn draw_field(
                             changed = true;
                             events.push((o.id, event::OBJECT_MODIFY));
                         }
+                        let mut over = false;
+                        if !completions.is_empty() {
+                            // ponytail: picked with the mouse only, no arrow keys.
+                            let shown = egui::Area::new(list_id)
+                                .order(egui::Order::Foreground)
+                                .fixed_pos(inner.left_bottom())
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                        ui.set_min_width(inner.width());
+                                        completions
+                                            .iter()
+                                            .take(12)
+                                            .find(|v| ui.selectable_label(false, *v).clicked())
+                                            .cloned()
+                                    })
+                                });
+                            over = shown.response.contains_pointer();
+                            if let Some(v) = shown.inner.inner {
+                                editing::record(
+                                    ui.ctx(),
+                                    editing::Edit {
+                                        table: t,
+                                        record: rec,
+                                        key,
+                                        before: s.clone(),
+                                        after: v.clone(),
+                                    },
+                                );
+                                *s = v;
+                                changed = true;
+                                left = true;
+                                over = false;
+                                events.push((o.id, event::OBJECT_MODIFY));
+                            }
+                        }
+                        ui.data_mut(|d| d.insert_temp(list_id, over));
                         if r.lost_focus() {
                             left = true;
                             events.push((o.id, event::OBJECT_EXIT));

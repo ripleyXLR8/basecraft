@@ -247,6 +247,24 @@ fn status_toolbar_and_quick_find() {
     assert_eq!(values(h.state_mut(), "Last Name"), ["Turing"]);
     assert_eq!(h.state_mut().messages.len(), 1);
     h.state_mut().messages.clear();
+    // A field whose "Include field for Quick Find" is off is not searched.
+    {
+        let a = h.state_mut();
+        let li = a.layout;
+        let d = a.doc.as_mut().unwrap();
+        let t = d.db.tables.iter().find(|t| t.name == "Contacts").unwrap();
+        let job = t.field_by_name("Job Title").unwrap().id as u64;
+        for o in &mut d.layouts[li].objects {
+            if o.field.is_some_and(|f| f.1 == job) {
+                o.field_flags |= fmp12::layouts::field_flags::NO_QUICK_FIND;
+            }
+        }
+    }
+    h.state_mut().quick_find("professor");
+    h.run_steps(2);
+    assert_eq!(values(h.state_mut(), "Last Name"), ["Turing"]);
+    assert_eq!(h.state_mut().messages.len(), 1);
+    h.state_mut().messages.clear();
     h.get_by_label(tr("Show All")).click();
     h.run_steps(2);
     assert_eq!(values(h.state_mut(), "Last Name").len(), 5);
@@ -267,6 +285,37 @@ fn status_toolbar_and_quick_find() {
     );
     h.run_steps(2);
     assert!(h.state().win.toolbar);
+}
+
+/// An edit box set to "Auto-complete using previously entered values"
+/// lists the other records' values that start with what is typed.
+#[test]
+fn edit_box_auto_complete() {
+    let Some(mut app) = contacts() else { return };
+    let li = app.layout;
+    let d = app.doc.as_mut().unwrap();
+    let t = d.db.tables.iter().find(|t| t.name == "Contacts").unwrap();
+    let job = t.field_by_name("Job Title").unwrap().id;
+    let o = d.layouts[li]
+        .objects
+        .iter_mut()
+        .find(|o| o.display == 0 && o.field.is_some_and(|f| f.1 == job as u64))
+        .unwrap();
+    o.field_flags |= fmp12::layouts::field_flags::AUTO_COMPLETE;
+    let mut h = harness_for(app);
+    h.run_steps(3);
+    let at = h.get_by_value("Mathematician").rect().center();
+    press(&mut h, at, egui::PointerButton::Primary);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("r".into()));
+    h.run_steps(3);
+    shots(&mut h, "auto_complete");
+    h.get_by_label("Rear Admiral").click();
+    h.run_steps(3);
+    let at = pos(h.state());
+    let jobs = values(h.state_mut(), "Job Title");
+    assert_eq!(jobs[at], "Rear Admiral");
+    assert_eq!(jobs.iter().filter(|j| *j == "Rear Admiral").count(), 2);
 }
 
 /// Find mode: Insert › Operators into the field edited, Omit, Perform

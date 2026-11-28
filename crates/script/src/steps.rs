@@ -428,10 +428,24 @@ impl Engine {
                     None => String::new(),
                 };
                 let (table, _, _) = Self::context(host);
-                let fields: Vec<u32> = layout_fields(host)
+                // The layout's fields with "Include field for Quick Find" on.
+                let layout = host.window().layout;
+                let db = host.db();
+                let fields: Vec<u32> = db
+                    .layouts
                     .iter()
-                    .filter(|f| host.db().table_of(f.to).is_some_and(|t| t.id == table))
-                    .map(|f| f.field)
+                    .filter(|l| l.id == layout)
+                    .flat_map(|l| &l.objects)
+                    .filter(|o| {
+                        o.kind == 1
+                            && o.field_flags & fmp12::layouts::field_flags::NO_QUICK_FIND == 0
+                    })
+                    .filter_map(|o| o.field)
+                    .filter(|(to, _, _)| {
+                        db.table_of((to & 0xFFF) as u32)
+                            .is_some_and(|t| t.id == table)
+                    })
+                    .map(|(_, f, _)| f as u32)
                     .collect();
                 let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
                 if words.is_empty() {

@@ -96,6 +96,19 @@ pub mod slide {
     pub const NO_DOTS: u64 = 0x2;
 }
 
+/// Field object option bits (object field 8.1, the clipboard XML's
+/// `FieldObj flags`; the templates' edit boxes have `0x1200E0`). Each was
+/// set in FileMaker's Inspector › Data and read back.
+pub mod field_flags {
+    /// Drop-down list: "Include arrow icon to show and hide list".
+    pub const ARROW: u64 = 0x400;
+    /// Edit box: "Auto-complete using previously entered values"; drop-down
+    /// list: "Auto-complete using value list".
+    pub const AUTO_COMPLETE: u64 = 0x800;
+    /// "Include field for Quick Find" unchecked (Inspector › Data › Behavior).
+    pub const NO_QUICK_FIND: u64 = 0x8000;
+}
+
 /// A conditional format (`.[138].[128 + i]`): a test, and the style it
 /// applies (`k13` = `{1 options, 2 style {1 local rules}, 3 operator}`).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -299,6 +312,8 @@ pub struct LayoutObject {
     pub display: u64,
     /// Value list id attached to a field object (field 8.6).
     pub value_list: Option<u32>,
+    /// Field object options (field 8.1), see [`field_flags`].
+    pub field_flags: u64,
     /// Button label calculation (token stream, `crate::calc::decompile`).
     pub label: Option<Vec<u8>>,
     /// Portal: (table occurrence as in XML, rows shown, first row).
@@ -478,6 +493,7 @@ fn object(m: &Msg, r: &Raw) -> LayoutObject {
         label: None,
         display: m.msg(8).and_then(|f| f.uint(5)).unwrap_or(0),
         value_list: m.msg(8).and_then(|f| f.uint(6)).map(|v| v as u32),
+        field_flags: m.msg(8).and_then(|f| f.uint(1)).unwrap_or(0),
         active_child: m.uint(6),
         portal: m.msg(15).map(|p| {
             (
@@ -735,6 +751,9 @@ fn field_msg(old: MsgBuf, o: &LayoutObject) -> MsgBuf {
         r.set(3, Field::Varint(rep));
         m.set_msg(2, &r);
     }
+    if o.field_flags != 0 {
+        m.set(1, Field::Varint(o.field_flags));
+    }
     m.set(5, Field::Varint(o.display));
     match o.value_list {
         Some(v) => m.set(6, Field::Varint(v as u64)),
@@ -843,7 +862,9 @@ pub fn patch_object(
         m.set(5, Field::Bytes(new.style_raw.clone()));
         changed = true;
     }
-    if (new.field, new.display, new.value_list) != (old.field, old.display, old.value_list) {
+    if (new.field, new.display, new.value_list, new.field_flags)
+        != (old.field, old.display, old.value_list, old.field_flags)
+    {
         let f = field_msg(m.msg(8), new);
         m.set_msg(8, &f);
         changed = true;

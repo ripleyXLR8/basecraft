@@ -66,3 +66,66 @@ fn tampered_page_is_refused() {
         Err(Error::Sector { id: 2, .. })
     ));
 }
+
+/// Saving an encrypted file writes it encrypted again: same password,
+/// cipher, hint and shared id, a new salt and check value, and the same
+/// content as the plain image.
+#[test]
+fn writes_encrypted_files() {
+    let path = format!("{FIX}blank_abc.fmp12");
+    let orig = std::fs::read(&path).unwrap();
+    let f = File::from_encrypted_bytes(orig.clone(), "abc").unwrap();
+    let enc = f.encryption().unwrap();
+    assert_eq!(enc.hint(), "hintxyz");
+    assert_eq!(enc.shared_id(), "bcshared");
+    // The header FileMaker wrote is the one a new encryption gets.
+    assert_eq!(
+        enc,
+        &fmp12::ear::Encryption::new("abc", "hintxyz", "bcshared").unwrap()
+    );
+    let disk = f.to_disk(f.bytes().to_vec()).unwrap();
+    assert!(fmp12::ear::is_encrypted(&disk));
+    assert_eq!(disk[..250], orig[..250]);
+    assert_ne!(disk[250..266], orig[250..266], "new salt");
+    assert_eq!(disk[298..4096], orig[298..4096]);
+    assert!(matches!(
+        File::from_encrypted_bytes(disk.clone(), "abd"),
+        Err(Error::EncryptionPassword)
+    ));
+    let back = File::from_encrypted_bytes(disk.clone(), "abc").unwrap();
+    assert_eq!(
+        fmp12::write::entries(&back).unwrap(),
+        fmp12::write::entries(&f).unwrap()
+    );
+    // Fresh IVs: writing twice gives different pages.
+    let again = f.to_disk(f.bytes().to_vec()).unwrap();
+    assert_ne!(again[4096..8192], disk[4096..8192]);
+    // An edit keeps the encryption; removing it gives the plain image.
+    let mut g = back.replaced(back.bytes().to_vec()).unwrap();
+    assert!(g.is_encrypted());
+    g.set_encryption(None);
+    assert_eq!(g.to_disk(g.bytes().to_vec()).unwrap(), g.bytes());
+}
+
+/// Full sectors (the payloads must shrink by 32 bytes) and a password
+/// needing NFD.
+#[test]
+fn encrypts_full_sectors() {
+    let mut es = fmp12::write::entries(&File::from_bytes(BLANK.to_vec()).unwrap()).unwrap();
+    for i in 0..400u32 {
+        es.push(fmp12::write::Entry {
+            path: vec![vec![0x7F], vec![0x05]],
+            item: fmp12::write::encode(&fmp12::write::Item::KvLong {
+                key: i.to_be_bytes().to_vec(),
+                data: vec![i as u8; 60],
+            }),
+        });
+    }
+    let plain = fmp12::write::build(&BLANK[..4096], &es);
+    let enc = fmp12::ear::Encryption::new("Cl\u{e9}", "", "").unwrap();
+    let disk = fmp12::ear::encrypt(&plain, &enc).unwrap();
+    assert!(disk.len() >= plain.len());
+    let back = File::from_encrypted_bytes(disk, "Cle\u{301}").unwrap();
+    assert_eq!(fmp12::write::entries(&back).unwrap(), es);
+    back.walk(|_, _| {}).unwrap();
+}

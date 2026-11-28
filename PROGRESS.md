@@ -61,7 +61,7 @@ counts asserted by tests), implemented / partial / missing:
 | Custom functions (`fmp12::custom_functions`, catalog `[16]`): name, parameters, calculation, availability, folders; calls in calculations (`1B`/`1C` tokens, FORMAT.md §16) | ✅ read and written (create, edit, delete through `schema_edit`); files BaseCraft wrote open in FileMaker Pro 26 and FileMaker Server's consistency check passes; Manage Custom Functions and Save as XML list them; calculation fields and Evaluate give the same results in FileMaker and BaseCraft |
 | Container data: embedded files and pictures (store `[T].[31]`, streams FNAM, PNGf, JPEG, GIFf, FILE, SIZE, DPI_), references by path; GetContainerAttribute, GetAsText, Base64Encode | ✅ (from containers inserted in FileMaker; `all` matches) |
 | Container data stored externally: field options, `REMO` reference and data stream, base directories `[38]`, open storage read from and written to `<base directory>/<Table>/<Field>/` (`name_1.ext` for a second file of the same name), as FileMaker Pro 26 does (FORMAT.md §13) | ✅ open storage: FileMaker reads the files BaseCraft wrote (MD5, size, picture size, path); BaseCraft reads FileMaker's |
-| Secure external storage | ⏳ blocked: layout decoded, but FileMaker encrypts the files and their folder names (AES, per-file `ENCR` stream) with a key not in reach: not read; new files in a secure field are stored embedded (FileMaker reads them) |
+| Secure external storage: files read and decrypted (AES-128-CBC with the `ENCR` key, AES-256 in files with encryption at rest; found by the MD5 in the store) | ✅ read, checked on files FileMaker Server's tools moved to secure storage (with and without encryption at rest). ⏳ writing: the folder id function is unknown, so new files in a secure field are stored embedded (FileMaker reads them) |
 | Thumbnails | ⏳ FileMaker 26 makes them only for hosted files; none are stored in local files (checked with permanent thumbnails on) |
 | Custom open-storage folder calculations, base directories other than the first | ⏳ |
 
@@ -96,8 +96,8 @@ the macOS version), SystemLanguage (`LANG` / `LC_ALL` first, else the OS's langu
 `sys-locale`; English in the browser), HostName (the
 computer's name, FileMaker's answer for a file FileMaker Pro hosts), ApplicationLanguage (the
 interface language, set by the app), MultiUserState and ConnectionState (0) and UserCount (1)
-for a local file, NetworkProtocol (TCP/IP), InstalledFMPlugins (empty), EncryptionState (0:
-BaseCraft does not open encrypted files), and DesktopPath,
+for a local file, NetworkProtocol (TCP/IP), InstalledFMPlugins (empty), EncryptionState (0, also
+for files opened with encryption at rest), and DesktopPath,
 DocumentsPath, PreferencesPath, TemporaryPath, FileMakerPath and SystemDrive in FileMaker's
 path format (empty in the browser). ApplicationVersion answers **"Pro 26.0.1"**, the FileMaker
 Pro release BaseCraft is checked against, so solutions that test the version keep working
@@ -385,7 +385,8 @@ Engine API for the app (not wired in `crates/app` yet):
 | Chart fonts, custom series colours, gridlines, legend position, axis ranges and formats, other colour schemes, "summary groups when sorted" | ⏳ |
 | Security (`fmp12::security`, `engine::access`): login with FileMaker's salted password hash (`--account`/`--password` in the CLI and MCP, a login dialog in the app, "Log in using" honoured, "must change password" asks for a new one); privileges enforced (records with limiting calculations, read-only and hidden fields, hidden layouts, scripts, print, export; errors 9, 200, 201); `Get ( AccountName )`, `Get ( AccountPrivilegeSetName )`, `Get ( AccountExtendedPrivileges )`; script steps Add Account, Delete Account, Reset Account Password, Enable Account, Change Password, Re-Login (`script::accounts`); writing accounts and privilege sets with full access (File › Manage › Security, `accounts`/`privileges` commands, MCP tools) | ✅ verified in FileMaker 26: files BaseCraft wrote open without warning and take its passwords (wrong password and inactive account refused with FileMaker's alert, a no-access layout shows « Accès refusé »); hashes FileMaker wrote for test passwords verify; the account steps store and fail as in FileMaker (`tools/oracle/security_check.ps1`) |
 | Extended privileges written as FileMaker reads them (key 02 `01 01` turns a privilege's set list on, FORMAT.md §15) | ✅ FMDeveloperTool's Save as XML lists the sets BaseCraft grants `fmrest`/`fmodata`; FileMaker Server writes the same bytes when it adds `fmapp`; the Data API logs in the account of such a set |
-| External-server and OAuth logins, "Run script with full access privileges", Re-Login/Change Password dialogs from scripts, encryption at rest | ⏳ |
+| External-server and OAuth logins, "Run script with full access privileges", Re-Login/Change Password dialogs from scripts | ⏳ |
+| Encryption at rest (FORMAT.md §17): open with the encryption password, save encrypted again (new salt, check value, IV and MAC per page, payloads 32 bytes shorter, hint and shared id kept), File › Save a Copy Without Encryption | ✅ FMDeveloperTool `--checkConsistency -e` and `--removeEncryption` accept BaseCraft's encrypted files (re-encrypted, new, edited by the CLI); BaseCraft's decryption of FileMaker's files is byte for byte `--removeEncryption`. ⏳ encrypting a plain file from the app; AES-128 (FileMaker's tools never write it) |
 
 ## M4 — GUI (`crates/app`)
 | Menu bar, status toolbar, layout bar (English/French) | ✅ |

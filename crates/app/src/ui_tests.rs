@@ -1590,7 +1590,8 @@ fn control_styles_in_browse_and_find() {
 }
 
 /// A file with encryption at rest asks for its encryption password (with
-/// its hint); a wrong one is refused, the right one opens it read-only.
+/// its hint); a wrong one is refused, the right one opens it. A schema
+/// edit keeps the encryption and File › Save writes it encrypted again.
 #[test]
 fn encryption_password_dialog() {
     let bytes = include_bytes!("../../fmp12/tests/fixtures/ear/blank_abc.fmp12").to_vec();
@@ -1613,7 +1614,18 @@ fn encryption_password_dialog() {
     h.run_steps(1);
     h.get_by_label(security_ui::t("Open")).click();
     h.run_steps(3);
-    let d = h.state().doc.as_ref().expect("opened");
-    assert!(d.file.is_encrypted());
     assert!(h.state().security.ear.is_none());
+    let d = h.state_mut().doc.as_mut().expect("opened");
+    assert!(d.file.is_encrypted());
+    d.db.add_table(&mut d.file, "Added").unwrap();
+    assert!(d.file.is_encrypted());
+    let plain = crate::saved_bytes(d, None).unwrap();
+    let disk = d.file.to_disk(plain).unwrap();
+    let back = fmp12::File::from_encrypted_bytes(disk, "abc").unwrap();
+    assert!(
+        fmp12::schema::tables(&back)
+            .unwrap()
+            .iter()
+            .any(|t| t.name == "Added")
+    );
 }

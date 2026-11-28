@@ -389,7 +389,7 @@ impl Database {
     ) -> Result<T, EditError> {
         let mut ed = Editor::open(file)?;
         let out = edit(&mut ed)?;
-        let new = fmp12::File::from_bytes(ed.finish())?;
+        let new = file.replaced(ed.finish())?;
         let mut fresh = Database::load_with(&new, self.access.session.clone())?;
         for t in fresh.tables.iter_mut() {
             let Some(old) = self.tables.iter_mut().find(|o| o.id == t.id) else {
@@ -438,16 +438,25 @@ impl Database {
 
     /// Reads the files of containers kept in open external storage, from
     /// the folder `dir` of the database (FORMAT.md §13). Files that are
-    /// missing stay unread (FileMaker then shows the file name only);
-    /// secure storage is encrypted and is not read.
+    /// missing stay unread (FileMaker then shows the file name only).
+    /// Secure storage files are found by their MD5 and decrypted.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_external_containers(&mut self, dir: &std::path::Path) {
         let base = self.external_base(dir);
+        let mut secure = None;
         for t in self.tables.iter_mut() {
             for s in t.containers.values_mut() {
-                if let Some(p) = s.external().and_then(|x| x.path()) {
+                let Some(x) = s.external() else { continue };
+                if let Some(p) = x.path() {
                     s.external_data = std::fs::read(base.join(p)).ok();
+                    continue;
                 }
+                let files = secure
+                    .get_or_insert_with(|| fmp12::containers::secure_files(&base.join("Secure")));
+                s.external_data = files
+                    .get(&x.md5)
+                    .and_then(|p| std::fs::read(p).ok())
+                    .and_then(|b| s.decrypt_secure(&b));
             }
         }
     }

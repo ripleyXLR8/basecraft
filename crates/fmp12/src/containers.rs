@@ -14,8 +14,8 @@
 //! it ([`Storage`]): the store then keeps a reference (`REMO` and the data
 //! stream, [`External`]) and the file lies at
 //! `<database folder>/<base directory>/<REMO folder>/<file name>`. Secure
-//! storage encrypts the files and their folder names; only open storage
-//! can be read and written here.
+//! storage encrypts the files (read here, [`Stored::decrypt_secure`]); only open storage
+//! is written.
 
 use std::collections::BTreeMap;
 
@@ -29,6 +29,31 @@ pub const REF_END: char = '\u{E000}';
 /// Streams FileMaker stores next to the data, not the data itself.
 /// (`FORK`: 8 bytes next to pictures pasted on layouts, not decoded.)
 const META: [&[u8; 4]; 6] = [b"FNAM", b"SIZE", b"DPI_", b"REMO", b"ENCR", b"FORK"];
+
+/// The IV of every secure-storage file (`080597FM`, 4 bytes, `aedr`).
+const SECURE_IV: [u8; 16] = *b"080597FM\x49\xa6\xf2\x44aedr";
+
+/// The files of secure storage under `dir` (a base directory's `Secure`
+/// folder), by the MD5 of their bytes: the store's data stream holds that
+/// MD5, while the folder names come from an id BaseCraft does not derive.
+pub fn secure_files(dir: &std::path::Path) -> BTreeMap<[u8; 16], std::path::PathBuf> {
+    let mut out = BTreeMap::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else if let Ok(b) = std::fs::read(&p) {
+                out.insert(md5::Md5::digest(&b).into(), p);
+            }
+        }
+    }
+    out
+}
 
 /// How a container field stores its data outside the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +207,8 @@ impl Stored {
     pub fn external(&self) -> Option<External> {
         let remo = self.streams.get(b"REMO")?;
         let flags = *remo.first()?;
-        let storage = if flags & 1 != 0 {
+        // 1: secure, 2: secure in a file with encryption at rest.
+        let storage = if flags & 3 != 0 {
             Storage::Secure {
                 fewer_folders: flags & 8 != 0,
             }
@@ -207,6 +233,33 @@ impl Stored {
         })
     }
 
+    /// The file of a container in secure storage, from its encrypted bytes
+    /// (FORMAT.md §13): AES-CBC with PKCS #7 padding and FileMaker's fixed
+    /// IV, the key in the `ENCR` stream: its first 16 bytes (AES-128,
+    /// `REMO` flag 1) or all 32 (AES-256, flag 2: files with encryption at
+    /// rest, whose store is itself encrypted). `None` for another store or
+    /// bytes that do not decrypt.
+    pub fn decrypt_secure(&self, file: &[u8]) -> Option<Vec<u8>> {
+        use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
+        let key = self.streams.get(b"ENCR")?;
+        let mut buf = file.to_vec();
+        let n = match *self.streams.get(b"REMO")?.first()? & 3 {
+            1 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key.get(..16)?, &SECURE_IV)
+                .ok()?
+                .decrypt_padded::<Pkcs7>(&mut buf)
+                .ok()?
+                .len(),
+            2 => cbc::Decryptor::<aes::Aes256>::new_from_slices(key.get(..32)?, &SECURE_IV)
+                .ok()?
+                .decrypt_padded::<Pkcs7>(&mut buf)
+                .ok()?
+                .len(),
+            _ => return None,
+        };
+        buf.truncate(n);
+        Some(buf)
+    }
+
     /// Tag of the content stream (`PNGf`, `JPEG`, `FILE`…).
     pub fn tag(&self) -> Option<[u8; 4]> {
         self.streams.keys().find(|t| !META.contains(t)).copied()
@@ -214,11 +267,13 @@ impl Stored {
 
     /// Key 4: MD5 over every stream's tag and bytes, in tag order.
     /// For a file stored outside, the reference stream counts as the
-    /// embedded stream would (`PNGf` + the file's bytes).
+    /// embedded stream would (`PNGf` + the file's bytes), and the key of
+    /// secure storage (`ENCR`) does not.
     pub fn hash(&self) -> [u8; 16] {
         let mut streams: BTreeMap<[u8; 4], &[u8]> = self
             .streams
             .iter()
+            .filter(|(t, _)| *t != b"ENCR")
             .map(|(t, d)| (*t, d.as_slice()))
             .collect();
         if let (Some(data), Some(tag)) = (&self.external_data, self.tag()) {

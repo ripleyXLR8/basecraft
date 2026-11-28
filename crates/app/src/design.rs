@@ -3738,7 +3738,7 @@ pub fn reload_layouts(d: &mut Doc) {
 pub fn run_layout_op(d: &mut Doc, current: usize, op: &LayoutOp) -> Result<usize, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let bytes = fmp12::save::save_layouts(&d.file, &d.db.layouts).map_err(|x| e(&x))?;
-    d.file = fmp12::File::from_bytes(bytes).map_err(|x| e(&x))?;
+    d.file = d.file.replaced(bytes).map_err(|x| e(&x))?;
     let cur = d.layouts.get(current).cloned().ok_or("no layout")?;
     let name = |base: &str, d: &Doc| {
         std::iter::once(base.to_string())

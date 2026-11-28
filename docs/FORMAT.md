@@ -1660,7 +1660,7 @@ BaseCraft's writer (`save_containers`) adds new files, recounts key 18
 from the record values and drops files no record uses; files already in
 the store keep their bytes.
 
-### External storage ✅ open · ⏳ secure (encrypted)
+### External storage ✅ open · ✅ secure read
 
 Decoded from container fields set to "Store container data externally"
 in FileMaker Pro 26's Field Options (copies of Tasks, files set by
@@ -1679,18 +1679,19 @@ BaseCraft wrote.
 * **Store entry** `[T].[31].[5].[id]`: the record value is the store id
   as for embedded data; the entry holds `FNAM` and `SIZE` as usual, plus
   * `REMO`: byte 0 = flags (0 open, 1 secure, 9 secure with fewer
-    folders), 7 zero bytes, then for open storage the folder
-    (`Tasks/ExtOpen/`, plain UTF-8, not XOR-ed) and `00`;
+    folders, 2 secure in a file with encryption at rest, §17), 7 zero
+    bytes, then for open storage the folder (`Tasks/ExtOpen/`, plain
+    UTF-8, not XOR-ed) and `00`;
   * the data stream, its tag the embedded one with its case swapped
     (`pngF`, `jpeg`, `gifF`, `file` for other files): u64 little-endian
     file size, 16 bytes, then a name and `00`. Open storage: the file's
-    MD5 and its file name. Secure storage: 16 opaque bytes and
-    `_<table id>` (`_130`);
-  * `ENCR` (secure only): 32 bytes.
+    MD5 and its file name. Secure storage: the MD5 of the *encrypted*
+    file and `_<table id>` (`_130`);
+  * `ENCR` (secure only): 32 bytes, the file's key (below).
 
   Key 4 (the dedup MD5, §13) is computed as if the file were embedded:
   over `FNAM`, the embedded tag (`PNGf`) with the file's bytes, `REMO`
-  and `SIZE`, in tag order.
+  and `SIZE`, in tag order (`ENCR` left out).
 * **Open storage files** lie at `<database folder>/<base directory>/
   <REMO folder>/<file name>`: `Tasks/Tasks/ExtOpen/red.png`. A second,
   different file of the same name in the folder becomes `red_1.png`
@@ -1706,10 +1707,38 @@ BaseCraft wrote.
   (73 → 80, 15 → 16, 97 → 112: a 16-byte block cipher with padding), the
   same picture stored twice gives different bytes, and the 32 hex digits
   are not the MD5 of the content, of the stored 16 bytes, or of their hex
-  text (an encrypted id). The key is FileMaker's own; BaseCraft does not
-  derive it and stops there: secure-storage files are not read, and new
-  files in a secure field are stored embedded, which FileMaker reads
-  (`Storage Type: Embedded`).
+  text.
+
+  **Encryption** (established by logging the OpenSSL calls FileMaker
+  Server 26's FMDeveloperTool makes, through an `LD_PRELOAD` shim, while
+  it copies our own test files; no key is guessed): each file is the
+  content in AES-CBC with PKCS #7 padding (hence the lengths above), with
+  the same IV for every file, the 16 bytes `080597FM 49 A6 F2 44 aedr`.
+  The key is in the store entry's `ENCR` stream: with `REMO` flag 1 its
+  first 16 bytes are an AES-128 key (the other 16 are not used for the
+  content); with flag 2 (files with encryption at rest, where the store
+  itself is encrypted) all 32 bytes are an AES-256 key. Keys are random
+  per file; FileMaker's `--removeEncryption` turns flag 2 entries into
+  flag 1 entries with new keys and re-encrypts the files. The folder id
+  depends only on the content when there is no encryption at rest (the
+  red 4 × 3 PNG got `52/97/ABAB0061/…/E855` in two unrelated files, under
+  different keys) and on the file as well with it; the function was not
+  identified (no OpenSSL digest is called for it), so BaseCraft finds a
+  file by the MD5 the data stream holds, hashing the files under
+  `Secure/` once (`containers::secure_files`), then decrypts it
+  (`Stored::decrypt_secure`). New files in a secure field are still
+  stored embedded, which FileMaker reads (`Storage Type: Embedded`).
+
+  Test files (`fmp12/tests/fixtures/secure/`): a BaseCraft file whose
+  container field was set to open storage (field options, key 38 and a
+  `[38]` base directory written by hand, `basecraft-cli new … Photo=@…`
+  for three files), then `FMDeveloperTool --enableEncryption` (which
+  moves open storage to secure storage unless `-keep_open_storage`) and
+  `--removeEncryption`. Both decrypt to the original files, and key 4 of
+  each entry is the MD5 above over the decrypted bytes.
+  FMDeveloperTool itself sometimes fails to carry one of the three files
+  over (error 853 on `--copySelfContained`, a file missing after
+  `--removeEncryption`; a different one on each run).
 * **Thumbnails**: Manage › Containers › Thumbnails says FileMaker makes
   them for large pictures of *hosted* files. With "permanent" chosen and
   an 800 × 600 picture shown in a smaller field, a local file got no
@@ -2182,7 +2211,7 @@ their calculations; FileMaker's Evaluate of 15 expressions, the stored
 calculation field (`120/5/Hello/100/49/Admin/Hello`) and one depending
 on a field (`25/120`) give BaseCraft's results.
 
-## 17. Encryption at rest (`fmp12::ear`) ✅ read · ⏳ write
+## 17. Encryption at rest (`fmp12::ear`) ✅
 
 A file protected with FileMaker's Encryption at Rest says `HBAMe` at
 offset 15. Established for interoperability (EU directive 2009/24, art. 6)
@@ -2245,7 +2274,33 @@ still answers `Error::Encrypted`, a wrong password `Error::EncryptionPassword`.
 The app asks for the encryption password (showing the hint) when it opens
 such a file; `basecraft-cli` reads it from `BASECRAFT_ENCRYPTION_PASSWORD`
 or, with `--encryption-password`, from stdin. The password is never
-stored or printed. Encrypted files are **read-only**: saving would write
-the file decrypted, so the app and the CLI refuse. Not done yet: writing
-an encrypted file (new salt and check value, fresh IV and MAC per page,
-payloads 32 bytes shorter), AES-128 files, and secure container storage (§13).
+written to disk or printed; it stays in memory (`ear::Encryption`) so that
+the file can be saved encrypted again.
+
+**Writing** (`ear::encrypt`, `File::to_disk`). Saving a file that was
+opened encrypted packs its store again into payloads of at most 4044 bytes
+(`write::build_in`), then encrypts every body sector as above with a new
+random salt, a new check value and a random IV per page; the header keeps
+the cipher, key-derivation byte, hint and shared id (`Encryption::new`
+builds the same bytes FileMaker's `--enableEncryption` writes: checked on
+`blank_abc`). Every edit that replaces the file (`File::replaced`: schema,
+security, layouts, custom functions, File › Save) keeps the encryption.
+File › Save a Copy Without Encryption writes a decrypted copy.
+FileMaker's own IVs are not fully random: bytes 0–3 are the sector id (u32
+LE), bytes 8–11 a small counter (`0A`/`0B 00 00 00`), the rest random;
+FileMaker accepts fully random ones. Checked on FileMaker Server 26:
+`FMDeveloperTool --checkConsistency <file> -e <password>` finds no problem
+in BaseCraft's re-encryption of `blank_abc`, in `blank.fmp12` encrypted
+anew (hint and shared id), in a 150-record file encrypted by BaseCraft and
+in the same file after `basecraft-cli new` added a record to it (saved
+encrypted); `--removeEncryption` opens all four and their records and
+schema read back as BaseCraft's own decryption gives them (FileMaker
+re-packs, so the bytes differ), while BaseCraft's decryption of the same
+150-record file encrypted by FileMaker is byte for byte FileMaker's
+`--removeEncryption`. A wrong `-e` gives error 20414 (and FMDeveloperTool
+appends a "FAILED consistency check" log line to the file it checked).
+
+**AES-128** (cipher byte 1) is not supported: FMDeveloperTool's
+`--enableEncryption` has no cipher option and always writes AES-256, so
+there is no file to test with; BaseCraft refuses such a file with an
+"unsupported encryption" error.

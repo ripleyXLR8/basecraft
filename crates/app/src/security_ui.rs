@@ -35,9 +35,7 @@ pub fn t(key: &'static str) -> &'static str {
         "Encryption password:" => "Mot de passe de chiffrement :",
         "Hint:" => "Indice :",
         "The encryption password is incorrect." => "Le mot de passe de chiffrement est incorrect.",
-        "Encrypted files are read-only in BaseCraft." => {
-            "Les fichiers chiffrés sont en lecture seule dans BaseCraft."
-        }
+        "Save a Copy Without Encryption…" => "Enregistrer une copie non chiffrée…",
         "Accounts" => "Comptes",
         "Privilege Sets" => "Jeux de privilèges",
         "New" => "Nouveau",
@@ -566,7 +564,7 @@ impl App {
             }
         }
         let bytes = security::save(&d.file, &session, &new).map_err(|e| e.to_string())?;
-        let file = fmp12::File::from_bytes(bytes).map_err(|e| e.to_string())?;
+        let file = d.file.replaced(bytes).map_err(|e| e.to_string())?;
         d.db.refresh_security(&file).map_err(|e| e.to_string())?;
         d.file = file;
         self.dirty = true;

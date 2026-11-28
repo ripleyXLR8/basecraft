@@ -259,7 +259,7 @@ fn session(d: &Doc) -> Res<security::Session> {
 fn apply(d: &mut Doc, new: &Security) -> Res<()> {
     let s = session(d)?;
     let bytes = security::save(&d.file, &s, new).map_err(|e| e.to_string())?;
-    let file = fmp12::File::from_bytes(bytes).map_err(|e| e.to_string())?;
+    let file = d.file.replaced(bytes).map_err(|e| e.to_string())?;
     d.db.refresh_security(&file).map_err(|e| e.to_string())?;
     d.file = file;
     Ok(())

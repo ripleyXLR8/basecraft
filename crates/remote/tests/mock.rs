@@ -63,10 +63,9 @@ fn serve(
                 .iter()
                 .find(|(m, p, _, _)| *m == method && path.starts_with(p))
                 .map_or((404, "{}".to_string()), |(_, _, s, b)| (*s, b.clone()));
-            let head = if reply.starts_with("REDIRECT ") {
+            let head = if let Some(to) = reply.strip_prefix("REDIRECT ") {
                 format!(
-                    "HTTP/1.1 302 Found\r\nLocation: {}\r\nSet-Cookie: X-FMS-Session-Key=abc; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    &reply[9..]
+                    "HTTP/1.1 302 Found\r\nLocation: {to}\r\nSet-Cookie: X-FMS-Session-Key=abc; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 )
             } else {
                 format!(

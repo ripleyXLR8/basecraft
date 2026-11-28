@@ -276,6 +276,21 @@ fn break_field(b: &[u8]) -> Option<(u32, u32)> {
     Some((to, crate::path_int(b.get(8..8 + n)?)?))
 }
 
+/// A merge field stored by reference in layout text (`<<…>>` around
+/// `01 0x 0E` then, as hex digits, the field reference of a part's break
+/// field: `00 03 D0 hi lo len <path-int field>`, FORMAT.md §10): the
+/// table occurrence and field ids. `None` for a merge field by name.
+pub fn merge_field_ref(name: &str) -> Option<(u32, u32)> {
+    let hex = name.strip_prefix('\u{1}')?.get(2..)?;
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    let mut b = vec![8, bytes.len() as u8];
+    b.extend(bytes);
+    break_field(&b)
+}
+
 /// Inverse of [`break_field`].
 pub fn break_field_bytes(to: u32, field: u32) -> Vec<u8> {
     let [hi, lo] = (to.saturating_sub(128) as u16).to_be_bytes();
@@ -421,6 +436,10 @@ pub struct Layout {
     /// see [`crate::theme::ObjectStyle::of_layout`].
     pub style_raw: Vec<u8>,
     pub css_raw: Vec<u8>,
+    /// The layout's own named styles (key 33, styles saved with the
+    /// layout rather than the theme), in the theme's compiled form:
+    /// [`crate::theme::Theme::parse_styles`].
+    pub styles_raw: Vec<u8>,
     pub parts: Vec<Part>,
     pub objects: Vec<LayoutObject>,
     /// Tab order (`[L].[21]`): object ids, first to last.
@@ -528,6 +547,7 @@ impl Layout {
 struct Raw {
     name: String,
     header: Vec<u8>,
+    styles: Vec<u8>,
     theme: u32,
     /// Keys 241 (options) and 240 (flags).
     options: u64,
@@ -727,6 +747,7 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 match key {
                     16 => r.name = text(data),
                     2 => r.header = data.to_vec(),
+                    33 => r.styles = data.to_vec(),
                     240 => r.flags = be_u64(data),
                     241 => r.options = be_u64(data),
                     // `01 n`: byte count, then the theme number.
@@ -854,6 +875,7 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 theme: r.theme,
                 style_raw: header.bytes(5).unwrap_or_default().to_vec(),
                 css_raw: header.bytes(7).unwrap_or_default().to_vec(),
+                styles_raw: r.styles,
                 parts,
                 objects,
                 tab_order: r.tabs.values().copied().collect(),

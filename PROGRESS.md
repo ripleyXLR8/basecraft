@@ -381,7 +381,8 @@ Engine API for the app (not wired in `crates/app` yet):
 | Calculated fields displayed live | ✅ |
 | Theme styles decoded (`fmp12::theme`: colours, borders, fonts, padding, alignment) | ✅ |
 | Theme styles applied when drawing layouts: backgrounds, borders, radius, text colour, size, alignment, padding | ✅ |
-| Button labels (calculations evaluated live), merge fields `<<Field>>` in text | ✅ |
+| Button labels (calculations evaluated live), merge fields `<<Field>>` in text (by name, or by reference in older files; in portal rows too) | ✅ |
+| Global fields (one value per table, read from and saved to `[T].[8]`), multi-line relationship keys, value lists shown by their second field, layout-level custom styles, bold from styles, `.inner_border` borders, tab order and widths from the file, Adjust Window › Resize to Fit and Move/Resize Window sizing the OS window | ✅ |
 | Fonts (family, weight), icons, states (hover, focus, pressed) | ⏳ |
 | Form, List (body repeated per record) and Table views | ✅ |
 | Tab controls (clickable tabs, front panel) and portals (rows of related records, editable) | ✅ |

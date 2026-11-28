@@ -12,6 +12,9 @@ pub struct Look {
     pub gradient: Option<Gradient>,
     /// Border width and colour per side: top, right, bottom, left.
     pub borders: [(f32, Color32); 4],
+    /// Borders of the `.inner_border` element, drawn inside those (fields
+    /// of layouts converted from older versions have theirs there).
+    pub inner_borders: [(f32, Color32); 4],
     pub radius: f32,
     pub color: Color32,
     pub font_size: f32,
@@ -21,6 +24,8 @@ pub struct Look {
     pub valign: u8,
     /// Padding: top, right, bottom, left.
     pub padding: [f32; 4],
+    /// Bold text (`font-weight: bold`).
+    pub bold: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,12 +107,14 @@ impl Default for Look {
             background: None,
             gradient: None,
             borders: [(0.0, Color32::TRANSPARENT); 4],
+            inner_borders: [(0.0, Color32::TRANSPARENT); 4],
             radius: 0.0,
             color: Color32::BLACK,
             font_size: 12.0,
             align: 0,
             valign: 1,
             padding: [2.0; 4],
+            bold: false,
         }
     }
 }
@@ -136,15 +143,19 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
         .and_then(Value::gradient)
         .map(|g| Gradient::from_theme(&g));
     for i in 0..4u32 {
-        // Border style 1 = none.
-        let none = p.enum_value(prop::BORDER_STYLE + i) == Some(1);
-        let w = p
-            .length(prop::BORDER_WIDTH + i)
-            .map_or(0.0, |x| x.pt(font_size, 0.0) as f32);
-        let c = p
-            .color(prop::BORDER_COLOR + i)
-            .map_or(Color32::TRANSPARENT, color);
-        l.borders[i as usize] = if none { (0.0, c) } else { (w, c) };
+        let side = |p: &fmp12::theme::Props| {
+            // Border style 1 = none.
+            let none = p.enum_value(prop::BORDER_STYLE + i) == Some(1);
+            let w = p
+                .length(prop::BORDER_WIDTH + i)
+                .map_or(0.0, |x| x.pt(font_size, 0.0) as f32);
+            let c = p
+                .color(prop::BORDER_COLOR + i)
+                .map_or(Color32::TRANSPARENT, color);
+            if none { (0.0, c) } else { (w, c) }
+        };
+        l.borders[i as usize] = side(&p);
+        l.inner_borders[i as usize] = side(&inner);
         l.padding[i as usize] = inner
             .length(prop::PADDING + i)
             .map_or(2.0, |x| x.pt(font_size, 0.0) as f32);
@@ -177,6 +188,9 @@ pub fn resolve(theme: Option<&Theme>, style: &ObjectStyle) -> Look {
         Some(3) => 2,
         _ => 0,
     };
+    l.bold = [&p, &text]
+        .iter()
+        .any(|x| x.enum_value(prop::FONT_WEIGHT) == Some(2));
     l.valign = p
         .enum_value(prop::VERTICAL_ALIGN)
         .map_or(1, |v| v.clamp(0, 2) as u8);
@@ -213,20 +227,10 @@ impl Look {
         if let Some(g) = &self.gradient {
             g.fill(painter, r, self.radius);
         }
-        let [t, ri, b, le] = self.borders;
-        if [t, ri, b, le].iter().all(|s| s == &t) && t.0 > 0.0 {
-            painter.rect_stroke(r, rad, Stroke::new(t.0, t.1), StrokeKind::Inside);
-            return;
-        }
-        let side = |w: (f32, Color32), a: egui::Pos2, z: egui::Pos2| {
-            if w.0 > 0.0 {
-                painter.line_segment([a, z], Stroke::new(w.0, w.1));
-            }
-        };
-        side(t, r.left_top(), r.right_top());
-        side(ri, r.right_top(), r.right_bottom());
-        side(b, r.left_bottom(), r.right_bottom());
-        side(le, r.left_top(), r.left_bottom());
+        stroke_sides(painter, r, rad, self.borders);
+        let [t, ri, b, le] = self.borders.map(|s| s.0);
+        let inner = Rect::from_min_max(r.min + Vec2::new(le, t), r.max - Vec2::new(ri, b));
+        stroke_sides(painter, inner, rad, self.inner_borders);
     }
 
     /// Frameless single-line editor styled like the field.
@@ -234,9 +238,22 @@ impl Look {
         let h = [egui::Align::Min, egui::Align::Center, egui::Align::Max][self.align as usize];
         egui::TextEdit::singleline(s)
             .frame(egui::Frame::NONE)
+            // The padding is the field's own (`content_rect`).
+            .margin(egui::Margin::ZERO)
             .font(self.font())
             .text_color(self.color)
             .align(egui::Align2([h, egui::Align::Center]))
+    }
+
+    /// Where an editor goes for a field whose content area is `inner`:
+    /// at least one text row high, centred on it (a short field's text
+    /// overflows evenly, as FileMaker draws it, instead of downwards).
+    pub fn edit_rect(&self, ctx: &egui::Context, inner: Rect) -> Rect {
+        let row = ctx.fonts_mut(|f| f.row_height(&self.font()));
+        Rect::from_center_size(
+            inner.center(),
+            Vec2::new(inner.width(), inner.height().max(row)),
+        )
     }
 
     /// Area inside the padding.
@@ -263,8 +280,66 @@ impl Look {
         job.halign = anchor.x();
         let galley = painter.layout_job(job);
         let at = anchor.anchor_size(egui::pos2(x, y), galley.size());
-        painter
-            .with_clip_rect(r)
-            .galley(at.min - galley.rect.min.to_vec2(), galley, self.color);
+        let p = painter.with_clip_rect(r);
+        let pos = at.min - galley.rect.min.to_vec2();
+        // egui's fonts have no bold face: bold text is drawn twice.
+        if self.bold {
+            p.galley(pos + Vec2::new(0.6, 0.0), galley.clone(), self.color);
+        }
+        p.galley(pos, galley, self.color);
+    }
+}
+
+/// Strokes the sides of `r` inside it: top, right, bottom, left.
+fn stroke_sides(painter: &egui::Painter, r: Rect, rad: CornerRadius, sides: [(f32, Color32); 4]) {
+    let [t, ri, b, le] = sides;
+    if sides.iter().all(|s| s == &t) && t.0 > 0.0 {
+        painter.rect_stroke(r, rad, Stroke::new(t.0, t.1), StrokeKind::Inside);
+        return;
+    }
+    let side = |w: (f32, Color32), a: egui::Pos2, z: egui::Pos2| {
+        if w.0 > 0.0 {
+            painter.line_segment([a, z], Stroke::new(w.0, w.1));
+        }
+    };
+    side(t, r.left_top(), r.right_top());
+    side(ri, r.right_top(), r.right_bottom());
+    side(b, r.left_bottom(), r.right_bottom());
+    side(le, r.left_top(), r.left_bottom());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fmp12::theme::{Length, Rgba, Unit};
+
+    /// A field as layouts converted from older versions have it: bold
+    /// text, a white outset border on `.self` and its visible border on
+    /// `.inner_border`.
+    #[test]
+    fn bold_and_inner_borders() {
+        let mut style = ObjectStyle::default();
+        let black = Value::Color(Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        });
+        let pt = Value::Length(Length {
+            value: 1.0,
+            unit: Unit::Pt,
+        });
+        let own = style.local.entry((SELF, NORMAL)).or_default();
+        own.insert(prop::FONT_WEIGHT, Value::Enum(2));
+        let inner = style.local.entry((INNER_BORDER, NORMAL)).or_default();
+        for i in 0..4 {
+            inner.insert(prop::BORDER_STYLE + i, Value::Enum(5));
+            inner.insert(prop::BORDER_WIDTH + i, pt.clone());
+            inner.insert(prop::BORDER_COLOR + i, black.clone());
+        }
+        let l = resolve(Some(&Theme::default()), &style);
+        assert!(l.bold);
+        assert_eq!(l.borders[0].0, 0.0);
+        assert_eq!(l.inner_borders, [(1.0, Color32::BLACK); 4]);
     }
 }

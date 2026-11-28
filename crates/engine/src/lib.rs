@@ -59,10 +59,35 @@ pub struct Table {
     pub records: Vec<Record>,
     /// Container data by store id (FORMAT.md §13, "Containers").
     pub containers: BTreeMap<u32, Stored>,
+    /// Values of the global fields, by value key (`rep_key`): one per
+    /// table, whatever the record (FORMAT.md §13, "Global fields").
+    pub globals: BTreeMap<u32, String>,
     next_record_id: u32,
 }
 
 impl Table {
+    fn is_global(&self, key: u32) -> bool {
+        let f = split_rep_key(key).0;
+        self.fields.iter().any(|x| x.id == f && x.def.global())
+    }
+
+    /// Stored text of value key `key` (`rep_key`) as record `record` sees
+    /// it: a global field's is the table's.
+    pub fn raw(&self, record: usize, key: u32) -> Option<&String> {
+        if self.is_global(key) {
+            return self.globals.get(&key);
+        }
+        self.records.get(record)?.values.get(&key)
+    }
+
+    /// The stored text to edit in place (created empty).
+    pub fn raw_mut(&mut self, record: usize, key: u32) -> Option<&mut String> {
+        if self.is_global(key) {
+            return Some(self.globals.entry(key).or_default());
+        }
+        Some(self.records.get_mut(record)?.values.entry(key).or_default())
+    }
+
     /// An empty table (databases built in code, tests).
     pub fn new(id: u32, name: &str, fields: Vec<Field>) -> Table {
         Table {
@@ -71,6 +96,7 @@ impl Table {
             fields,
             records: Vec::new(),
             containers: BTreeMap::new(),
+            globals: BTreeMap::new(),
             next_record_id: 0,
         }
     }
@@ -313,6 +339,7 @@ impl Database {
                 fields,
                 records,
                 containers: fmp12::containers::read(file, t.id)?,
+                globals: fmp12::schema::globals(file, t)?,
             });
         }
         Ok(Database {
@@ -633,6 +660,12 @@ impl Database {
             data.insert(t.id, recs);
         }
         let bytes = fmp12::save::save_records(original, &data)?;
+        let globals = self
+            .tables
+            .iter()
+            .map(|t| (t.id, t.globals.clone()))
+            .collect();
+        let bytes = fmp12::save::save_globals(&fmp12::File::from_bytes(bytes)?, &globals)?;
         // Container data: files inserted since, use counts, unused files.
         let stores = self
             .tables
@@ -683,7 +716,10 @@ impl Database {
     /// of occurrence `layout_to`: `TO::Field`, `Field`, or the reference
     /// FileMaker stores ([`fmp12::layouts::merge_ref`]).
     pub fn merge_field(&self, name: &str, layout_to: u32) -> Option<(u32, u32)> {
-        if let Some(r) = fmp12::layouts::merge_ref(name) {
+        // By reference: two spellings of the same `TO::Field` bytes.
+        if let Some(r) =
+            fmp12::layouts::merge_ref(name).or_else(|| fmp12::layouts::merge_field_ref(name))
+        {
             return Some(r);
         }
         let (to_name, field) = name.split_once("::").unwrap_or(("", name));
@@ -757,9 +793,7 @@ impl Database {
                 .unwrap_or_else(|_| Value::text("?"));
         }
         let raw = t
-            .records
-            .get(record)
-            .and_then(|r| r.values.get(&rep_key(field, rep)))
+            .raw(record, rep_key(field, rep))
             .map_or("", |s| s.as_str());
         if f.data_type == DataType::Container {
             return container_value(t, raw);
@@ -916,6 +950,36 @@ impl Database {
         }
     }
 
+    /// What fields showing value list `id` display for their stored values
+    /// when the list shows only its second field's values: stored value
+    /// (first field) → second field's value, from the same record. `None`
+    /// for any other list.
+    pub fn value_list_labels(&self, id: u32) -> Option<BTreeMap<String, String>> {
+        let vl = self.value_lists.iter().find(|v| v.id == id)?;
+        let fmp12::valuelists::Source::Field {
+            to,
+            field,
+            second: Some((_, second)),
+            second_only: true,
+            ..
+        } = &vl.source
+        else {
+            return None;
+        };
+        // ponytail: the second field is read from the same record (as in
+        // `value_list_values_from`).
+        let t = self.table_of(*to)?;
+        let mut out = BTreeMap::new();
+        for r in 0..t.records.len() {
+            let v = self.value(t.id, r, *field).to_text();
+            if !v.is_empty() {
+                out.entry(v)
+                    .or_insert_with(|| self.value(t.id, r, *second).to_text());
+            }
+        }
+        Some(out)
+    }
+
     /// Evaluates calculation source text for `record` of `table`, from
     /// occurrence `to` (Data Viewer style).
     pub fn eval_source(&self, src: &str, table: u32, to: u32, record: Option<usize>) -> Value {
@@ -1067,13 +1131,22 @@ impl Database {
         let Some(ti) = self.tables.iter().position(|t| t.id == table) else {
             return;
         };
-        let Some(rec) = self.tables[ti].records.get_mut(record) else {
+        // Global fields keep one value for the table, records or not.
+        let t = &mut self.tables[ti];
+        let (globals, values): (Vec<_>, Vec<_>) = values.iter().partition(|(f, _)| t.is_global(*f));
+        for (f, v) in globals {
+            t.globals.insert(*f, v.clone());
+        }
+        let Some(rec) = t.records.get_mut(record) else {
             return;
         };
-        for (f, v) in values {
+        for (f, v) in &values {
             rec.values.insert(*f, v.clone());
         }
         let changed: Vec<u32> = values.iter().map(|(f, _)| *f).collect();
+        if changed.is_empty() {
+            return;
+        }
         self.apply_lookups(table, record, Some(&changed));
         self.reevaluate_auto(table, record, &changed);
         self.touch(table, record);
@@ -1199,12 +1272,9 @@ impl Database {
             return String::new();
         };
         match t.field(field) {
-            Some(f) if f.kind == FieldKind::Normal => t
-                .records
-                .get(record)
-                .and_then(|r| r.values.get(&field))
-                .cloned()
-                .unwrap_or_default(),
+            Some(f) if f.kind == FieldKind::Normal => {
+                t.raw(record, field).cloned().unwrap_or_default()
+            }
             _ => stored_text(&self.value(table, record, field), &self.locale),
         }
     }
@@ -1582,6 +1652,11 @@ impl Database {
         set
     }
 
+    /// Whether a relationship path leads from occurrence `from` to `to`.
+    pub fn is_related(&self, from: u32, to: u32) -> bool {
+        from != to && self.path(from, to).is_some()
+    }
+
     /// The relationships from occurrence `from` to `to`: (a, b, index in
     /// `relationships`) per hop. `None` when they are not related.
     fn path(&self, from: u32, to: u32) -> Option<Vec<(u32, u32, usize)>> {
@@ -1649,13 +1724,35 @@ impl Database {
 }
 
 /// Whether a predicate `left op right` holds, as FileMaker matches
-/// relationships: an empty value matches nothing, except through ×.
+/// relationships: an empty value matches nothing, except through ×. A
+/// value of several lines is a multi-key: each line is a key (as the
+/// field's index has it), and the predicate holds when one line of the
+/// left holds with one line of the right (each predicate on its own: the
+/// "type-ahead" range `low¶high ≥ x` and `low¶high ≤ x`).
 fn joins(op: fmp12::graph::JoinOp, left: &Value, right: &Value) -> bool {
-    use fmp12::graph::JoinOp as J;
-    use std::cmp::Ordering as O;
-    if op == J::Cartesian {
+    if op == fmp12::graph::JoinOp::Cartesian {
         return true;
     }
+    let lines = |v: &Value| -> Vec<Value> {
+        let t = v.to_text();
+        if t.contains(['\r', '\n']) {
+            t.split(['\r', '\n'])
+                .filter(|l| !l.is_empty())
+                .map(Value::text)
+                .collect()
+        } else {
+            vec![v.clone()]
+        }
+    };
+    let rights = lines(right);
+    lines(left)
+        .iter()
+        .any(|l| rights.iter().any(|r| joins_key(op, l, r)))
+}
+
+fn joins_key(op: fmp12::graph::JoinOp, left: &Value, right: &Value) -> bool {
+    use fmp12::graph::JoinOp as J;
+    use std::cmp::Ordering as O;
     if left.is_empty() || right.is_empty() {
         return false;
     }

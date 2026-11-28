@@ -263,10 +263,14 @@ impl App {
                     ui.put(cell, egui::Label::new(v).truncate());
                     continue;
                 }
-                let Some(tbl) = d.db.tables.iter_mut().find(|x| x.id == t) else {
+                let Some(s) =
+                    d.db.tables
+                        .iter_mut()
+                        .find(|x| x.id == t)
+                        .and_then(|x| x.raw_mut(rec, f))
+                else {
                     continue;
                 };
-                let s = tbl.records[rec].values.entry(f).or_default();
                 let r = ui.put(
                     cell,
                     egui::TextEdit::singleline(s)

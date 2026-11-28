@@ -233,6 +233,7 @@ Every catalog follows the same pattern:
 | `[T]` key 0 | last record id ever used (§13) | ✅ |
 | `[T].[1].[F]` | index of field F's values (§13) | ✅ |
 | `[T].[5].[R]` | record R: key F = value of field F (§13) | ✅ |
+| `[T].[8]` | values of the table's global fields, keyed like a record's (§13) | ✅ |
 | `[T].[5].[R].[F]` | long value of field F: key 0 = sizes, keys 1…n = chunks (§13) | ✅ |
 | `[T].[13]` | set of record ids (§13) | ✅ |
 | `[TO].[7]` | per-table-occurrence record list cache (`D0 hi lo` element, §13) | 🔍 |
@@ -830,7 +831,7 @@ id).
 
 Layout data is **Protocol Buffers** (schema-less reader in `pb.rs`):
 
-* `[4].[5].[L]` key 2 = header (2 TO in XML form, 3 menu set, 5 style, 7 local CSS, 8 width, 11 print columns, 12 margins; see "Layout Setup" below), key 11 = theme (`01 n`), keys 240/241 = flags and options;
+* `[4].[5].[L]` key 2 = header (2 TO in XML form, 3 menu set, 5 style, 7 local CSS, 8 width, 11 print columns, 12 margins; see "Layout Setup" below), key 11 = theme (`01 n`), keys 240/241 = flags and options, key 33 = the layout's own named styles (the XML's `<LayoutCustomStyle>`, styles saved with the layout instead of the theme) in the theme's compiled form: repeated field 2 = `{1 name, 2 rules, 3 object type}` (§12); an object names one in its style field 2 like a theme style;
 * `[4].[5].[L].[3]` key 0 = number of parts (length-prefixed); `[4].[5].[L].[3].[P]`
   (P = 1…n, top to bottom) key 2 = part (1 kind, 2 = 0, 3 = 0, 4 top,
   5 height, 6 break field, 10 style, 11 alternate-row style), key 7 =
@@ -857,6 +858,12 @@ summary, 38 footer, 39 title footer, 40 top navigation, 41 bottom
 navigation. The break field of a sub-summary (field 6) is
 `08 len 00 <TO ref 03 D0 hi lo> len <path-int field>`, e.g.
 `08 07 00 03 D0 00 02 01 08` = field 8 of occurrence 130.
+
+Merge fields in layout text are usually `<<TO::Field>>` by name. Files from
+older versions store them **by reference**: `<<`, the characters`01 02 0E`(`01 01 0E` seen too), then the same field reference spelled in
+hex digits, `>>`: `<<\x01\x02\x0E0003D000020108>>` = field 8 of
+occurrence 130 (`00 03 D0 00 02 01 08`). Checked against the XML export of
+such a file (`<<TO::Field>>` there) and FileMaker's display.
 
 ### Layout objects in detail
 
@@ -1512,6 +1519,16 @@ Long values move to the sub-path spelled the same way
 loses the top bit (`07 02` and `87 02` both read as 1922), so BaseCraft
 reads it as a repetition when the field repeats that far. Stored
 calculations with repetitions store each one.
+
+### Global fields
+
+A global field has one value per table, whatever the record (and with no
+record at all): `[T].[8]` (a node, marker `80`) holds it at key = field id,
+stored exactly like a record's value (inline, or in `[T].[8].[F]` when long;
+repetitions spelled the same). Found in a FileMaker-saved file whose globals
+FileMaker showed (a portal filter value, a selected id); a record never stores
+a global's value. BaseCraft writes the node back when the values change (the
+file then opens in FileMaker 26).
 
 ### Containers
 

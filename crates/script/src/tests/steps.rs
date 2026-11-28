@@ -757,6 +757,29 @@ fn window_steps() {
         run.resume(&mut e, &mut h, Answer::Start),
         Status::Suspended(Suspend::Ui(UiRequest::Adjust(Adjust::Maximize)))
     );
+    // Resize to Fit: the window's content takes the layout's size.
+    h.db.layouts[0].width = 600.0;
+    h.db.layouts[0].parts = vec![
+        fmp12::layouts::Part {
+            kind: fmp12::layouts::part::BODY,
+            top: 0.0,
+            height: 200.0,
+            ..Default::default()
+        },
+        fmp12::layouts::Part {
+            kind: fmp12::layouts::part::FOOTER,
+            top: 200.0,
+            height: 50.0,
+            ..Default::default()
+        },
+    ];
+    let mut e = Engine::new(vec![script(1, vec![rawp(sid::ADJUST_WINDOW, &[], 2, 1)])]);
+    let mut run = e.start(&mut h, 1, None);
+    assert_eq!(
+        run.resume(&mut e, &mut h, Answer::Start),
+        Status::Suspended(Suspend::Ui(UiRequest::Adjust(Adjust::ResizeToFit)))
+    );
+    assert_eq!((h.win.width, h.win.height), (600.0, 250.0));
     // Closing the last window closes the file and stops the script.
     let (_, o) = go(
         &mut h,

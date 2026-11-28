@@ -522,6 +522,20 @@ impl Engine {
                     _ => Adjust::ResizeToFit,
                 };
                 host.window().hidden = matches!(a, Adjust::Minimize | Adjust::Hide);
+                // Resize to Fit: the window's content takes the layout's size.
+                // ponytail: width and height then count the content only;
+                // the host adds its own window chrome.
+                if a == Adjust::ResizeToFit {
+                    let id = host.window().layout;
+                    let size = host.db().layouts.iter().find(|l| l.id == id).map(|l| {
+                        let h = l.parts.iter().map(|p| p.top + p.height).fold(0.0, f64::max);
+                        (l.width, h)
+                    });
+                    if let Some((w, h)) = size.filter(|s| s.0 > 0.0 && s.1 > 0.0) {
+                        let win = host.window();
+                        (win.width, win.height) = (w, h);
+                    }
+                }
                 ui(UiRequest::Adjust(a))
             }
             ARRANGE_WINDOWS | SCROLL_WINDOW | FLUSH_CACHE | SET_MULTI_USER => Ok(Flow::Next),

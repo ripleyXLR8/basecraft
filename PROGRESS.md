@@ -24,7 +24,7 @@ counts asserted by tests), implemented / partial / missing:
 
 | Functions | `Get()` flags | Script steps | Triggers | Layout objects | Control styles | Error codes raised |
 |----------:|--------------:|-------------:|---------:|---------------:|---------------:|-------------------:|
-| 197 / 37 / 0 of 234 | 53 / 8 / 78 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 9 / 0 / 17 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 58 of 300 |
+| 197 / 37 / 0 of 234 | 85 / 13 / 41 of 139 | 128 / 23 / 0 (+71 desktop error) of 222 | 9 / 0 / 17 of 26 | 15 / 4 / 0 of 19 | 3 / 3 / 1 of 7 | 58 of 300 |
 
 ## M1 — Reading `.fmp12`
 
@@ -80,20 +80,32 @@ numbers and the list of missing functions.
 | Item | Done / total |
 |------|-------------:|
 | Functions | 234 / 234 |
-| `Get()` flags answered without a host | 11 / 139 |
-| `Get()` flags answered by the data engine without a script or window | 15 more |
+| `Get()` flags answered without a host | 29 / 139 |
+| `Get()` flags answered by the data engine without a script or window | 16 more |
 
 The 234 reference lines include `Status` twice. The 139 `Get()` flags exclude the
-`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 11
+`Get ( flag )` header line. A host can answer any flag through `Context::get`. The 29
 built-in flags are UserName, CurrentDate, CurrentTime, CurrentTimestamp, CurrentHostTimestamp
 (UTC, because the engine has no time-zone data), CurrentTimeUTCMilliseconds,
-CurrentTimeUTCMicroseconds, UUID, CalculationRepetitionNumber, SystemPlatform and
-ApplicationArchitecture. The engine answers FoundCount, RecordNumber, TotalRecordCount,
+CurrentTimeUTCMicroseconds, UUID, UUIDNumber (192 random bits), CalculationRepetitionNumber,
+SystemPlatform, ApplicationArchitecture, Device, SystemVersion ("10.0" / "11.0" on Windows,
+the macOS version), SystemLanguage (from `LANG` / `LC_ALL`, else English), HostName (the
+computer's name, FileMaker's answer for a file FileMaker Pro hosts), ApplicationLanguage (the
+interface language, set by the app), MultiUserState and ConnectionState (0) and UserCount (1)
+for a local file, NetworkProtocol (TCP/IP), InstalledFMPlugins (empty), and DesktopPath,
+DocumentsPath, PreferencesPath, TemporaryPath, FileMakerPath and SystemDrive in FileMaker's
+path format (empty in the browser). ApplicationVersion answers **"Pro 26.0.1"**, the FileMaker
+Pro release BaseCraft is checked against, so solutions that test the version keep working
+(`calc::functions::APPLICATION_VERSION`). The engine answers FoundCount, RecordNumber, TotalRecordCount,
 RecordID, SortState and LayoutCount from the found set it is given (every record,
 unsorted, without one), and outside a script LastError, ErrorCaptureState,
 RecordOpenState, RecordOpenCount, TransactionOpenState and WindowMode (0),
 AllowAbortState (1), ScriptName, ScriptParameter, ScriptResult, LastErrorDetail and
-LastErrorLocation (empty); a script answers them from its own state first.
+LastErrorLocation (empty), AccountGroupName (empty for FileMaker accounts); a script answers
+them from its own state first. The app hands scripts FileName, FilePath, FileSize,
+QuickFindText, WindowContentWidth/Height, ScreenWidth/Height, ScreenScaleFactor and
+ActiveModifierKeys (`script::HostInfo`). `Get ( PrivilegeSetName )` compiles to
+CurrentPrivilegeSetName's token.
 
 Oracle: **2,022 expressions** evaluated by FileMaker Pro 26.0.1 (Windows, English Tasks
 template, en_US formats) in [crates/calc/tests/oracle.tsv](crates/calc/tests/oracle.tsv),

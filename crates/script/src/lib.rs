@@ -110,6 +110,37 @@ pub struct Window {
     pub portal_row: usize,
     /// Requests of the last find (Modify Last Find, Constrain/Extend).
     pub last_find: Vec<Request>,
+    /// Layout object given the focus by Go to Object (`Get (
+    /// ActiveLayoutObjectName )`); cleared when a field is entered otherwise.
+    pub object: String,
+    /// What only the application knows: the file, the screen, Quick Find.
+    pub host: HostInfo,
+}
+
+/// The host's answers to `Get ( FileName )`, `Get ( ScreenWidth )`…,
+/// filled by the application for each script run. `None` (or an empty
+/// file name): the flag needs a host.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HostInfo {
+    /// File name without its extension.
+    pub file_name: String,
+    /// FileMaker path of the file (`file:/C:/dir/x.fmp12`); empty when it
+    /// is not on disk.
+    pub file_path: String,
+    /// Size of the file in bytes.
+    pub file_size: Option<u64>,
+    /// Width and height in points of the window's content area (less the
+    /// title bar, menu bar and toolbars).
+    pub content: Option<(f64, f64)>,
+    /// Width and height in points of the window's screen.
+    pub screen: Option<(f64, f64)>,
+    /// Pixels per point of the window's screen.
+    pub scale: Option<f64>,
+    /// Modifier keys held down: Shift 1, Caps Lock 2, Ctrl 4, Alt/Option
+    /// 8, Command 16.
+    pub modifier_keys: Option<u32>,
+    /// Text of the window's Quick Find box.
+    pub quick_find: String,
 }
 
 /// View As.
@@ -148,6 +179,8 @@ impl Default for Window {
             selection: (0, 0),
             portal_row: 0,
             last_find: Vec::new(),
+            object: String::new(),
+            host: HostInfo::default(),
         }
     }
 }
@@ -1150,6 +1183,34 @@ impl Engine {
         flags.insert("activeportalrownumber", num(w.portal_row));
         flags.insert("activeselectionstart", num(w.selection.0 + 1));
         flags.insert("activeselectionsize", num(w.selection.1));
+        // No active field: empty (FileMaker 26), repetition 0.
+        for f in [
+            "activefieldname",
+            "activefieldtablename",
+            "activefieldcontents",
+        ] {
+            flags.insert(f, Value::empty());
+        }
+        flags.insert(
+            "activerepetitionnumber",
+            num(w.field.map_or(0, |f| f.repetition.max(1) as usize)),
+        );
+        // The Go to Object name, else the name of the active field's object.
+        let object = match (&w.object, w.field) {
+            (o, _) if !o.is_empty() => o.clone(),
+            (_, Some(f)) => layout
+                .and_then(|l| {
+                    l.objects.iter().find(|o| {
+                        o.field.is_some_and(|(t, x, _)| {
+                            (t & 0xFFF) as u32 == f.to && x as u32 == f.field
+                        })
+                    })
+                })
+                .map(|o| o.name.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        flags.insert("activelayoutobjectname", Value::text(object));
         if let Some(f) = w.field {
             let fname = db
                 .table_of(f.to)
@@ -1164,10 +1225,57 @@ impl Engine {
                 .map(|o| o.name.clone())
                 .unwrap_or_default();
             flags.insert("activefieldtablename", Value::text(tname));
-            if let (Some(t), Some(r)) = (db.table_of(f.to), record)
-                && t.id == table
-            {
-                flags.insert("activefieldcontents", db.value(table, r, f.field));
+            let rep = f.repetition.max(1) as u32;
+            if let (Some(t), Some(r)) = (db.table_of(f.to), record) {
+                // A related field: its first related record.
+                let own = (t.id == table).then_some(r);
+                let at = own.or_else(|| db.related(to, r, f.to).first().copied());
+                if let Some(at) = at {
+                    flags.insert("activefieldcontents", db.value_rep(t.id, at, f.field, rep));
+                }
+            }
+        }
+        flags.insert(
+            "activerecordnumber",
+            num(if record.is_some() { w.current + 1 } else { 0 }),
+        );
+        flags.insert("textrulervisible", num(w.ruler as usize));
+        flags.insert("menubarstate", num(w.menubar as usize));
+        flags.insert(
+            "requestomitstate",
+            num(
+                (w.mode == Mode::Find && w.requests.get(w.current_request).is_some_and(|r| r.omit))
+                    as usize,
+            ),
+        );
+        flags.insert("modifiedfields", Value::text(self.modified_fields(db)));
+        let h = &w.host;
+        flags.insert("quickfindtext", Value::text(&h.quick_find));
+        if !h.file_name.is_empty() {
+            flags.insert("filename", Value::text(&h.file_name));
+            flags.insert("filepath", Value::text(&h.file_path));
+        }
+        let pts = |x: f64| Value::int(x.round() as i64);
+        let pairs = [
+            ("filesize", h.file_size.map(|s| Value::int(s as i64))),
+            ("windowcontentwidth", h.content.map(|c| pts(c.0))),
+            ("windowcontentheight", h.content.map(|c| pts(c.1))),
+            ("screenwidth", h.screen.map(|c| pts(c.0))),
+            ("screenheight", h.screen.map(|c| pts(c.1))),
+            (
+                "screenscalefactor",
+                h.scale
+                    .and_then(|s| calc::num::from_f64(s, 2))
+                    .map(Value::Number),
+            ),
+            (
+                "activemodifierkeys",
+                h.modifier_keys.map(|k| Value::int(k as i64)),
+            ),
+        ];
+        for (k, v) in pairs {
+            if let Some(v) = v {
+                flags.insert(k, v);
             }
         }
         flags.insert("triggerkeystroke", Value::text(&self.trigger.keystroke));
@@ -1256,6 +1364,39 @@ impl Engine {
     /// the first failing rule (509 not empty…) leaves the record open.
     fn commit(&mut self, host: &mut dyn Host) -> Result<(), u32> {
         self.commit_with(host, false)
+    }
+
+    /// `Get ( ModifiedFields )`: the fields of the record the script is
+    /// editing whose value changed since it was opened (for a new record,
+    /// those with a value), one per line in the table's field order.
+    // ponytail: only edits made by scripts open a record here; the app's
+    // own typing is not seen until it hands its open record to the engine.
+    fn modified_fields(&self, db: &Database) -> String {
+        let Some((table, r, old)) = &self.open else {
+            return String::new();
+        };
+        let Some(t) = db.table(*table) else {
+            return String::new();
+        };
+        let Some(now) = t.records.get(*r) else {
+            return String::new();
+        };
+        let values = |rec: Option<&engine::Record>, f: u32| -> Vec<(u32, String)> {
+            rec.map(|rec| {
+                rec.values
+                    .iter()
+                    .filter(|(k, v)| engine::split_rep_key(**k).0 == f && !v.is_empty())
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+        };
+        t.fields
+            .iter()
+            .filter(|f| values(Some(now), f.id) != values(old.as_ref(), f.id))
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+            .join("\r")
     }
 
     /// Commit Records; `skip` = "Skip data entry validation" (fields
@@ -1704,6 +1845,7 @@ impl Engine {
                     return Err(error::FIELD_MISSING);
                 }
                 host.window().field = *field;
+                host.window().object.clear();
                 let len = match field {
                     Some(f) if *select => {
                         self.field_value(host, *f).map_or(0, |v| v.chars().count())
@@ -1733,6 +1875,7 @@ impl Engine {
                 if !host.go_to_object(&n, r as u32) {
                     return Err(error::OBJECT_MISSING);
                 }
+                host.window().object = n;
                 // A field object becomes the active field.
                 if let Some((t, f, _)) = field {
                     host.window().field = Some(FieldRef {

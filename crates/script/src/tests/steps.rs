@@ -155,7 +155,18 @@ fn get_coverage() {
             .unwrap();
     let db = Database::load(&blank).unwrap();
     let layout = db.layouts.first().map_or(0, |l| l.id);
-    let win = Window::new(&db, layout);
+    let mut win = Window::new(&db, layout);
+    // What the app fills in for every run (`App::script_window`).
+    win.host = crate::HostInfo {
+        file_name: "blank".into(),
+        file_path: "file:/C:/blank.fmp12".into(),
+        file_size: Some(1),
+        content: Some((800.0, 560.0)),
+        screen: Some((1920.0, 1080.0)),
+        scale: Some(1.0),
+        modifier_keys: Some(0),
+        quick_find: String::new(),
+    };
     let mut h = TestHost {
         db,
         win,
@@ -204,17 +215,26 @@ fn get_coverage() {
     assert_eq!(flags.len(), 139);
     assert_eq!(
         (answered.len(), PARTIAL_GET.len(), missing.len()),
-        (53, 8, 78)
+        (85, 13, 41)
     );
 }
 
 /// Flags answered with a fixed or approximate value, or only in some
 /// states (docs/COVERAGE.md).
-const PARTIAL_GET: [&str; 8] = [
-    // Only while a field is active; otherwise error 1225, not empty.
+const PARTIAL_GET: [&str; 13] = [
+    // Only fields and objects a script entered: the app's own focus is
+    // not passed to the engine.
     "ActiveFieldName",
     "ActiveFieldTableName",
     "ActiveFieldContents",
+    "ActiveRepetitionNumber",
+    "ActiveLayoutObjectName",
+    // Only a record a script opened.
+    "ModifiedFields",
+    // From LANG / LC_ALL only (English otherwise).
+    "SystemLanguage",
+    // No Caps Lock (egui does not report it).
+    "ActiveModifierKeys",
     // UTC: the engine has no time-zone data.
     "CurrentDate",
     "CurrentTime",
@@ -290,6 +310,51 @@ fn control_steps() {
         script(2, vec![plain(id::HALT_SCRIPT)]),
     ]);
     assert!(e.perform(&mut h, 1, None).halted);
+}
+
+/// Window, focus and open-record flags (docs/COVERAGE.md, `Get()`).
+#[test]
+fn get_window_and_record_flags() {
+    let mut h = TestHost::new(PEOPLE);
+    with_fields(&mut h);
+    h.win.host.file_name = "People".into();
+    h.win.host.quick_find = "ann".into();
+    let all = "Get ( ActiveFieldName ) & \"|\" & Get ( ActiveRepetitionNumber ) & \"|\" & \
+               Get ( ActiveLayoutObjectName ) & \"|\" & Get ( ModifiedFields )";
+    let steps = vec![
+        // No active field: empty, not "needs a host".
+        var_c(&h, "$none", all),
+        step(
+            id::GO_TO_OBJECT,
+            StepParams::GoToObject {
+                name: Some(calc(&h, "\"Age\"")),
+                repetition: None,
+            },
+        ),
+        set_field(CITY, "\"Lyon\""),
+        set_field(NAME, "\"Ann\""),
+        var_c(&h, "$on", all),
+        exit_c(
+            &h,
+            "$none & \"/\" & $on & \"/\" & Get ( FileName ) & Get ( QuickFindText ) & \
+             Get ( LastError )",
+        ),
+    ];
+    let (_, o) = go(&mut h, steps);
+    // Setting Name to its own value does not modify it.
+    assert_eq!(
+        (o.result.to_text(), o.last_error),
+        ("|0||/Age|1|Age|City/Peopleann0".to_string(), 0)
+    );
+    // The old flag name compiles (to CurrentPrivilegeSetName).
+    assert!(
+        text::Names {
+            db: &h.db,
+            scripts: &[]
+        }
+        .compile("Get ( PrivilegeSetName )")
+        .is_ok()
+    );
 }
 
 #[test]

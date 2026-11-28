@@ -361,6 +361,8 @@ impl Database {
                 Value::text(s.extended().join("\r"))
             }
             "accounttype" => Value::text("FileMaker"),
+            // Groups are external (server) accounts only.
+            "accountgroupname" => Value::text(""),
             _ => return None,
         })
     }

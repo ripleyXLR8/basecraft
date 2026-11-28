@@ -14,7 +14,7 @@ test until this page and the test are updated together.
 | Category | Reference | Total | Implemented | Partial | Missing | Test |
 |----------|-----------|------:|------------:|--------:|--------:|------|
 | Calculation functions | [functions.txt](reference/functions.txt) | 234 | 197 | 37 | 0 | `cargo test -p calc registry_coverage -- --nocapture` |
-| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 53 | 8 | 78 | `cargo test -p script get_coverage -- --nocapture` |
+| `Get()` flags | [get_functions.txt](reference/get_functions.txt) | 139 | 85 | 13 | 41 | `cargo test -p script get_coverage -- --nocapture` |
 | Script steps | [script_steps.txt](reference/script_steps.txt) | 222 | 128 | 23 | 0 (+71 desktop error) | `cargo test -p script step_coverage -- --nocapture` |
 | Script triggers | [script_triggers.txt](reference/script_triggers.txt) | 26 | 9 | 0 | 17 | `cargo test -p basecraft trigger_coverage -- --nocapture` |
 | Layout object kinds | [layout_objects.txt](reference/layout_objects.txt) | 19 | 15 | 4 | 0 | `cargo test -p basecraft layout_object_coverage -- --nocapture` |
@@ -88,29 +88,31 @@ Missing: none.
 
 ## `Get()` flags
 
-Partial (8): ActiveFieldName, ActiveFieldTableName, ActiveFieldContents (only while a field
-is active; error 1225 instead of empty otherwise); CurrentDate, CurrentTime,
+ApplicationVersion answers "Pro 26.0.1", the FileMaker Pro release BaseCraft is checked
+against (PROGRESS.md M2). Flags that need a server answer FileMaker's value for a local
+file (HostName = the computer's name, MultiUserState 0, UserCount 1). FileName, FilePath,
+FileSize, QuickFindText, WindowContentWidth/Height, ScreenWidth/Height and
+ScreenScaleFactor come from the app (`script::HostInfo`; the coverage test fills it as the
+app does).
+
+Partial (13): ActiveFieldName, ActiveFieldTableName, ActiveFieldContents,
+ActiveRepetitionNumber, ActiveLayoutObjectName (empty / 0 with no active field, but only
+fields and objects a script entered: the app's own focus is not passed to the engine);
+ModifiedFields (only a record a script opened); SystemLanguage (from `LANG` / `LC_ALL`,
+English otherwise); ActiveModifierKeys (no Caps Lock); CurrentDate, CurrentTime,
 CurrentTimestamp, CurrentHostTimestamp (UTC: no time-zone data); LastErrorDetail (always
 empty).
 
-Missing (78): ApplicationVersion, HostName, FileName, FileSize, SystemLanguage, PageNumber,
-MultiUserState, PrinterName, ScreenDepth, ScreenHeight, ActiveRepetitionNumber,
-SystemVersion, ScreenWidth, UserCount, ActiveModifierKeys, NetworkProtocol, FilePath,
-RecordModificationCount, RecordAccess, HighContrastState, LayoutAccess, SystemAppearance,
-SystemIPAddress, SystemNICAddress, ApplicationLanguage, WindowContentHeight,
-WindowContentWidth, WindowDesktopHeight, WindowDesktopWidth, FileMakerPath, HostIPAddress,
-DesktopPath, DocumentsPath, RequestOmitState, PreferencesPath, TextRulerVisible,
-AllowFormattingBarState, SystemDrive, CustomMenuSetName, ActiveLayoutObjectName,
-UseSystemFormatsState, TemporaryPath, HostApplicationVersion, QuickFindText,
-DocumentsPathListing, WindowStyle, InstalledFMPlugins, ConnectionState, PersistentID,
-TriggerGestureInfo, EncryptionState, Device, WindowOrientation, NetworkType,
-ConnectionAttributes, ModifiedFields, TouchKeyboardState, ScreenScaleFactor,
-AccountGroupName, ActiveRecordNumber, MenubarState, RegionMonitorEvents, PageCount,
-UUIDNumber, OpenDataFileInfo, InstalledFMPluginsAsJSON, SessionIdentifier,
-SystemLocaleElements, FileLocaleElements, CacheFileName, CacheFilePath,
-RevertTransactionOnErrorState, SystemStorageAvailable, LastStepTokensUsed,
-GuidedAccessState, AccountPasswordDaysRemaining, WindowUUID, PrivilegeSetName (not known
-to the script compiler).
+Missing (41): PageNumber, PrinterName, ScreenDepth, RecordModificationCount, RecordAccess,
+HighContrastState, LayoutAccess, SystemAppearance, SystemIPAddress, SystemNICAddress,
+WindowDesktopHeight, WindowDesktopWidth, HostIPAddress, AllowFormattingBarState,
+CustomMenuSetName, UseSystemFormatsState, HostApplicationVersion, DocumentsPathListing,
+WindowStyle, PersistentID, TriggerGestureInfo, EncryptionState, WindowOrientation,
+NetworkType, ConnectionAttributes, TouchKeyboardState, RegionMonitorEvents, PageCount,
+OpenDataFileInfo, InstalledFMPluginsAsJSON, SessionIdentifier, SystemLocaleElements,
+FileLocaleElements, CacheFileName, CacheFilePath, RevertTransactionOnErrorState,
+SystemStorageAvailable, LastStepTokensUsed, GuidedAccessState,
+AccountPasswordDaysRemaining, WindowUUID.
 
 ## Script steps
 

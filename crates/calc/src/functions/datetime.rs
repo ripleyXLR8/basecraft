@@ -336,6 +336,6 @@ pub fn builtin_get(flag: &str) -> Option<Value> {
             "x86" => "i386",
             other => other,
         }),
-        _ => return None,
+        _ => return super::system::system_get(flag),
     })
 }

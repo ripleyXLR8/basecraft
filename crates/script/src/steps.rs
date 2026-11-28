@@ -1044,7 +1044,7 @@ impl Engine {
 
     /// Window chosen by a step: `Some(name)` (bytes 22–23 = 1, name at
     /// `[128]`), `None` for the current window.
-    fn window_name(
+    pub(crate) fn window_name(
         &mut self,
         host: &mut dyn Host,
         frame: &mut Frame,

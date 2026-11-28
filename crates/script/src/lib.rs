@@ -26,6 +26,8 @@ pub mod datafiles;
 pub mod files;
 mod steps;
 pub mod text;
+mod triggers;
+pub use triggers::CANCELED;
 
 pub use steps::{UNSUPPORTED, stored_path};
 
@@ -313,6 +315,15 @@ pub trait Host {
     /// What a headless host answers to a [`UiRequest`] when the run is
     /// finished with [`Run::finish`]: nothing is shown, the step goes on
     /// (pickers are cancelled).
+    /// Script triggers fired by steps (`triggers.rs`): the script and
+    /// parameter of the trigger set for `event` (`fmp12::triggers::event`)
+    /// on layout object `object` of the window's layout, else on the
+    /// window's layout in its mode (events 100–199) or on the file (200 and
+    /// up). `None` (the default): nothing runs.
+    fn trigger(&mut self, event: u16, object: Option<u64>) -> Option<(u32, Option<Calc>)> {
+        let _ = (event, object);
+        None
+    }
     fn ui(&mut self, r: &UiRequest) -> Answer {
         match r {
             UiRequest::Index { .. } | UiRequest::FolderPath { .. } => Answer::Cancel,
@@ -501,6 +512,11 @@ struct Call {
     links: Links,
     pc: usize,
     frame: Frame,
+    /// A script or a triggered script.
+    kind: triggers::Kind,
+    /// Pre triggers of the current step still to run (`None`: not
+    /// looked at yet).
+    pres: Option<Vec<(u16, Option<u64>)>>,
 }
 
 /// A script run in progress ([`Engine::start`]).
@@ -517,6 +533,8 @@ pub struct Run {
     pub breakpoints: std::collections::BTreeSet<(u32, usize)>,
     stepping: Option<(Stepping, usize)>,
     resumed: bool,
+    /// The window before the running step, for its post triggers.
+    seen: Option<triggers::Seen>,
 }
 
 /// One level of a run's call stack ([`Run::stack`]).
@@ -539,6 +557,7 @@ impl Run {
             breakpoints: Default::default(),
             stepping: None,
             resumed: false,
+            seen: None,
         }
     }
 
@@ -923,6 +942,8 @@ impl Engine {
                 result: Value::empty(),
                 original_layout: host.window().layout,
             },
+            kind: Default::default(),
+            pres: None,
         }])
     }
 
@@ -986,12 +1007,20 @@ impl Engine {
                 result: Value::empty(),
                 original_layout: host.window().layout,
             },
+            kind: Default::default(),
+            pres: None,
         });
     }
 
     /// Runs steps until the run ends or suspends.
     fn drive(&mut self, run: &mut Run, host: &mut dyn Host) -> Status {
         loop {
+            // Post triggers of the step that just ended run before the next.
+            if let Some(was) = run.seen.take()
+                && self.post_triggers(run, host, was)
+            {
+                continue;
+            }
             let Some(top) = run.stack.last_mut() else {
                 // Halt Script or a cancel reverts an open transaction.
                 if run.halted {
@@ -1012,10 +1041,16 @@ impl Engine {
                 top.pc += 1;
                 continue;
             }
-            if !std::mem::take(&mut run.resumed) && run.should_break() {
+            let first = top.pres.is_none();
+            if !std::mem::take(&mut run.resumed) && first && run.should_break() {
                 run.pending = Some(Pending::Break);
                 return Status::Suspended(Suspend::Breakpoint);
             }
+            // Pre triggers run first and may cancel the step.
+            if self.pre_trigger(run, host) {
+                continue;
+            }
+            run.seen = self.watch(run, host);
             let Some(top) = run.stack.last_mut() else {
                 continue;
             };
@@ -1048,6 +1083,7 @@ impl Engine {
         let Some(top) = run.stack.last_mut() else {
             return;
         };
+        top.pres = None;
         let Some(s) = top.steps.get(top.pc) else {
             return;
         };
@@ -1122,11 +1158,14 @@ impl Engine {
 
     /// Returns from the top call with `result`.
     fn ret(&mut self, run: &mut Run, host: &mut dyn Host, result: Value, halted: bool) {
-        run.stack.pop();
+        let kind = run.stack.pop().map(|c| c.kind).unwrap_or_default();
         if run.stack.is_empty() {
             run.result = result;
             run.halted = halted;
             return;
+        }
+        if kind != triggers::Kind::Script {
+            return self.trigger_returned(run, host, kind, &result);
         }
         if let Some(parent) = run.stack.last_mut() {
             parent.frame.result = result;

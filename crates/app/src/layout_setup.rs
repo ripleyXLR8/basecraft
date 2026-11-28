@@ -518,6 +518,37 @@ pub fn apply(to: &mut Layout, from: &Layout) -> bool {
     !same
 }
 
+/// Browse mode's Layout Setup effects on the fields of record `rec`:
+/// (frames, plain). Frames around them when it is the `active` record
+/// ("Show field frames when record is active"); no fill or border on a
+/// list row other than the `current` one ("Delineate fields on current
+/// row only").
+pub fn field_marks(
+    options: u64,
+    list: bool,
+    rec: Option<usize>,
+    active: Option<usize>,
+    current: Option<usize>,
+) -> (bool, bool) {
+    let frames = options & setup::FIELD_FRAMES != 0 && rec.is_some() && rec == active;
+    let plain = list && options & setup::DELINEATE != 0 && rec != current;
+    (frames, plain)
+}
+
+/// "Show current record indicator in List view" (on by default).
+pub fn record_indicator(l: &Layout) -> bool {
+    l.options & setup::NO_RECORD_INDICATOR == 0
+}
+
+/// The view each window last showed each layout in.
+#[derive(Default)]
+pub struct Views {
+    /// (window, layout id) → view.
+    shown: std::collections::BTreeMap<(String, u32), View>,
+    /// The window and layout of the last frame, and its view.
+    last: Option<((String, u32), View)>,
+}
+
 impl App {
     /// Views the current layout offers in Browse and Find mode.
     pub fn views_allowed(&self) -> [bool; 3] {
@@ -535,10 +566,42 @@ impl App {
             .is_none_or(|l| l.options & setup::NO_QUICK_FIND == 0)
     }
 
-    /// A view the layout does not offer becomes its default view.
-    /// ponytail: FileMaker also opens a layout in its default view on
-    /// first visit; BaseCraft keeps the window's view while it is allowed.
+    /// FileMaker opens a layout in its default view the first time a
+    /// window shows it, then in the view it was left in (a script that
+    /// changes the layout and the view at once keeps its view). A view the
+    /// layout does not offer becomes its default view.
     pub fn enforce_view(&mut self) {
+        let key = (
+            self.front_name(),
+            self.doc
+                .as_ref()
+                .and_then(|d| d.layouts.get(self.layout))
+                .map_or(0, |l| l.id),
+        );
+        let first = self
+            .layout_views
+            .last
+            .as_ref()
+            .is_none_or(|(k, v)| *k != key && *v == self.view);
+        if first {
+            let d = self
+                .doc
+                .as_ref()
+                .and_then(|d| d.layouts.get(self.layout))
+                .map_or(0, Layout::default_view);
+            self.view = self
+                .layout_views
+                .shown
+                .get(&key)
+                .copied()
+                .unwrap_or([View::Form, View::List, View::Table][d]);
+        }
+        self.allowed_view();
+        self.layout_views.shown.insert(key.clone(), self.view);
+        self.layout_views.last = Some((key, self.view));
+    }
+
+    fn allowed_view(&mut self) {
         let views = self.views_allowed();
         let i = match self.view {
             View::Form => 0,
@@ -652,5 +715,103 @@ mod tests {
         b.margins = [1.0, 2.0, 3.0, 4.0];
         assert!(apply(&mut a, &b));
         assert_eq!(a, b);
+    }
+
+    /// Field frames on the active record only; plain fields on the other
+    /// list rows; the record indicator follows its option.
+    #[test]
+    fn field_marks_and_indicator() {
+        let (f, d) = (setup::FIELD_FRAMES, setup::DELINEATE);
+        assert_eq!(
+            field_marks(0, true, Some(1), Some(1), Some(0)),
+            (false, false)
+        );
+        assert_eq!(
+            field_marks(f, false, Some(1), Some(1), Some(1)),
+            (true, false)
+        );
+        assert_eq!(
+            field_marks(f, false, Some(2), Some(1), Some(1)),
+            (false, false)
+        );
+        assert_eq!(field_marks(f, false, None, None, None), (false, false));
+        assert_eq!(field_marks(d, true, Some(2), None, Some(1)), (false, true));
+        assert_eq!(field_marks(d, true, Some(1), None, Some(1)), (false, false));
+        assert_eq!(
+            field_marks(d, false, Some(2), None, Some(1)),
+            (false, false)
+        );
+        let mut l = Layout::default();
+        assert!(record_indicator(&l));
+        l.options |= setup::NO_RECORD_INDICATOR;
+        assert!(!record_indicator(&l));
+    }
+
+    /// A layout opens in its default view the first time the window shows
+    /// it, then in the view it was left in; a script changing the layout
+    /// and the view at once keeps its view.
+    #[test]
+    fn default_view_on_first_visit() {
+        let mut app = crate::ui_tests::shop_app();
+        let inv = app.layout;
+        let d = app.doc.as_mut().unwrap();
+        let cl = d.layouts.iter().position(|l| l.name == "Clients").unwrap();
+        d.layouts[cl].set_default_view(1);
+        app.enforce_view();
+        assert_eq!(app.view, View::Form);
+        app.layout = cl;
+        app.enforce_view();
+        assert_eq!(app.view, View::List, "first visit: default view");
+        app.view = View::Table;
+        app.enforce_view();
+        app.layout = inv;
+        app.enforce_view();
+        assert_eq!(app.view, View::Form);
+        app.layout = cl;
+        app.enforce_view();
+        assert_eq!(app.view, View::Table, "the view it was left in");
+        // Layout and view changed together (Go to Layout, View As).
+        app.layout = inv;
+        app.view = View::List;
+        app.enforce_view();
+        assert_eq!(app.view, View::List);
+    }
+
+    /// "Save record changes automatically" off: leaving a modified record
+    /// asks; Don't Save reverts it, Cancel stays in it, Save commits it.
+    #[test]
+    fn ask_before_saving() {
+        let mut app = crate::ui_tests::shop_app();
+        let i = app.layout;
+        app.doc.as_mut().unwrap().layouts[i].options |= setup::NO_AUTO_SAVE;
+        let mut h = harness_for(app);
+        h.run_steps(3);
+        let value = |h: &egui_kittest::Harness<'_, App>| {
+            let db = &h.state().doc.as_ref().unwrap().db;
+            let t = db.tables.iter().find(|t| t.name == "Invoices").unwrap();
+            let f = t.field_by_name("ClientId").unwrap().id;
+            db.value(t.id, 0, f).to_text()
+        };
+        let before = value(&h);
+        let leave = |h: &mut egui_kittest::Harness<'_, App>, button: &'static str| {
+            crate::ui_tests::retype(h, 0, "7");
+            h.key_press(egui::Key::Tab);
+            h.run_steps(2);
+            assert!(!h.state_mut().commit());
+            h.run_steps(2);
+            h.get_by_label(t(button)).click();
+            h.run_steps(3);
+        };
+        leave(&mut h, "Cancel");
+        assert_eq!(value(&h), "7");
+        assert!(h.state().editing.is_some(), "Cancel: still modified");
+        h.state_mut().revert_record();
+        h.run_steps(2);
+        leave(&mut h, "Don't Save");
+        assert_eq!(value(&h), before);
+        assert!(h.state().editing.is_none());
+        leave(&mut h, "Save");
+        assert_eq!(value(&h), "7");
+        assert!(h.state().editing.is_none());
     }
 }

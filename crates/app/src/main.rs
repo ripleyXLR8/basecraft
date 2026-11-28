@@ -174,6 +174,8 @@ struct App {
     edits: editing::State,
     /// Table view columns, widths, totals (`views.rs`).
     views: views::State,
+    /// Layout Setup's default view, per window and layout (`layout_setup.rs`).
+    layout_views: layout_setup::Views,
     /// Edit › Preferences… being edited (`prefs.rs`).
     prefs: Option<prefs::Prefs>,
     /// Launch Center (`launch.rs`).
@@ -380,7 +382,7 @@ impl App {
 
     /// Saves the records into a new `.fmp12` image. `as_copy` asks where.
     fn save(&mut self, ctx: &egui::Context, as_copy: bool) {
-        if self.remote_save() || !self.commit() {
+        if self.remote_save() || !self.commit_record() {
             return;
         }
         let Some(d) = self.doc.as_mut() else { return };
@@ -480,9 +482,20 @@ impl App {
         self.error = None;
     }
 
+    /// Leaves the record being edited: commits it, or with Layout Setup's
+    /// "Save record changes automatically" off asks Save / Don't Save /
+    /// Cancel first (`browse::save_ui`; false: the action is not done).
+    fn commit(&mut self) -> bool {
+        if self.editing.is_some() && !self.auto_save() {
+            self.ask_save();
+            return false;
+        }
+        self.commit_record()
+    }
+
     /// Commits the record being edited: runs field validation like
     /// FileMaker. Returns false (and shows a message) when it fails.
-    fn commit(&mut self) -> bool {
+    fn commit_record(&mut self) -> bool {
         let Some((t, r)) = self.editing else {
             return true;
         };
@@ -586,7 +599,6 @@ impl App {
         f: impl FnOnce(&mut script::Engine, &mut AppHost) -> R,
     ) -> Option<R> {
         let mode = self.mode();
-        let (old_view, old_names) = (self.view, self.window_names());
         let window = self.script_window()?;
         let d = self.doc.as_mut()?;
         let mut engine = self.engine.take()?;
@@ -596,10 +608,13 @@ impl App {
             .path
             .as_ref()
             .and_then(|p| p.parent().map(|x| x.to_path_buf()));
+        // Steps fire triggers (`script::triggers`), except in a script a
+        // trigger started (no trigger loops).
         let mut host = AppHost {
             db: &mut d.db,
             window,
             disk,
+            triggers: (!self.from_trigger).then_some(&d.triggers),
         };
         let out = f(&mut engine, &mut host);
         self.steps_ui.disk = host.disk;
@@ -607,7 +622,6 @@ impl App {
         self.engine = Some(engine);
         self.view = window.view;
         self.win = window.clone();
-        let old_layout = self.layout;
         if let Some(i) = d.layouts.iter().position(|l| l.id == window.layout) {
             self.layout = i;
         }
@@ -637,19 +651,6 @@ impl App {
         {
             self.dirty = true;
         }
-        if self.layout != old_layout && !self.from_trigger {
-            self.fire(event::LAYOUT_ENTER);
-            self.fire(event::RECORD_LOAD);
-        }
-        if !self.from_trigger {
-            if self.view != old_view {
-                self.fire(event::VIEW_CHANGE);
-            }
-            // New Window: the front window is one that was not there.
-            if !old_names.contains(&self.front_name()) {
-                self.fire_file(event::WINDOW_OPEN);
-            }
-        }
         Some(out)
     }
 
@@ -659,7 +660,7 @@ impl App {
         trigger: bool,
         start: impl FnOnce(&mut script::Engine, &mut AppHost) -> script::Run,
     ) {
-        if self.active.is_some() || !self.commit() {
+        if self.active.is_some() || !self.commit_record() {
             return;
         }
         self.from_trigger = trigger;
@@ -829,6 +830,7 @@ impl App {
                     db: &mut d.db,
                     window,
                     disk: Default::default(),
+                    triggers: None,
                 };
                 self.watches
                     .iter()
@@ -1462,11 +1464,14 @@ impl App {
             };
             let cur = band(pos);
             painter.rect_filled(cur, 0.0, Color32::from_rgba_unmultiplied(0, 90, 180, 24));
-            painter.rect_filled(
-                Rect::from_min_size(cur.min, Vec2::new(4.0, cur.height())),
-                0.0,
-                Color32::from_gray(40),
-            );
+            // Layout Setup › "Show current record indicator in List view".
+            if layout_setup::record_indicator(&layout) {
+                painter.rect_filled(
+                    Rect::from_min_size(cur.min, Vec2::new(4.0, cur.height())),
+                    0.0,
+                    Color32::from_gray(40),
+                );
+            }
             if let Some(p) =
                 ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()))
                 && resp.rect.contains(p)
@@ -1478,7 +1483,31 @@ impl App {
                 }
             }
         }
-        let ctx = DrawCtx { table: t, mode };
+        // The active record: the one being edited or with a field entered.
+        let active = self
+            .editing
+            .or_else(|| {
+                toolbar::last_focus(ui.ctx())
+                    .filter(|f| ui.memory(|m| m.has_focus(f.id)))
+                    .and_then(|f| f.record)
+                    .map(|r| (r.0, r.1))
+            })
+            .filter(|a| a.0 == t)
+            .map(|a| a.1);
+        let row_ctx = |rec: Option<usize>| {
+            let (frames, plain) = if mode == Mode::Browse {
+                let list = view == View::List;
+                layout_setup::field_marks(layout.options, list, rec, active, record)
+            } else {
+                (false, false)
+            };
+            DrawCtx {
+                table: t,
+                mode,
+                frames,
+                plain,
+            }
+        };
         let layout_to = (layout.table_occurrence & 0xFFF) as u32;
         let by_id: BTreeMap<u64, usize> = layout
             .objects
@@ -1670,7 +1699,7 @@ impl App {
                                     ui,
                                     &painter,
                                     doc,
-                                    &ctx,
+                                    &row_ctx(rec),
                                     c,
                                     &looks[ci],
                                     cr,
@@ -1712,7 +1741,7 @@ impl App {
                             ui,
                             &painter,
                             doc,
-                            &ctx,
+                            &row_ctx(rec),
                             o,
                             lk,
                             r,
@@ -1894,6 +1923,9 @@ struct AppHost<'a> {
     window: script::Window,
     /// Data file steps: the file's folder and the writes the user agreed to.
     disk: script::files::Disk,
+    /// The file's script triggers, fired by steps (`None` in a triggered
+    /// script).
+    triggers: Option<&'a fmp12::triggers::Triggers>,
 }
 
 impl script::Host for AppHost<'_> {
@@ -1902,6 +1934,25 @@ impl script::Host for AppHost<'_> {
     }
     fn window(&mut self) -> &mut script::Window {
         &mut self.window
+    }
+    fn trigger(
+        &mut self,
+        ev: u16,
+        object: Option<u64>,
+    ) -> Option<(u32, Option<fmp12::scripts::Calc>)> {
+        let t = self.triggers?;
+        let l = self.window.layout;
+        let bit = match self.window.mode {
+            script::Mode::Browse => fmp12::triggers::mode::BROWSE,
+            script::Mode::Find => fmp12::triggers::mode::FIND,
+            script::Mode::Preview => fmp12::triggers::mode::PREVIEW,
+        };
+        let found = match object {
+            Some(o) => t.object(l, o, ev),
+            None if ev >= 200 => t.file(ev),
+            None => t.layout(l, ev, bit),
+        };
+        found.map(|t| (t.script, t.parameter.clone()))
     }
     fn pick_file(&mut self, picture: bool) -> Option<(String, Vec<u8>)> {
         container::pick_file(picture)
@@ -1932,6 +1983,11 @@ impl script::Host for AppHost<'_> {
 struct DrawCtx {
     table: u32,
     mode: Mode,
+    /// Field frames drawn (the active record, Layout Setup).
+    frames: bool,
+    /// Fields drawn without fill or border (a list row other than the
+    /// current one, "Delineate fields on current row only").
+    plain: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1948,7 +2004,9 @@ fn draw_object(
     dirty: &mut bool,
     events: &mut Vec<(u64, u16)>,
 ) {
-    lk.paint_shape(painter, r, o.kind);
+    if !(c.plain && o.kind == 1) {
+        lk.paint_shape(painter, r, o.kind);
+    }
     if let Some(p) = o.picture.and_then(|id| doc.db.pictures.get(&id)) {
         container::picture(ui.ctx(), painter, r, p.data());
     }
@@ -1980,6 +2038,14 @@ fn draw_object(
         let target = (t, record, field, rep);
         draw_field(
             ui, painter, doc, c, o, lk, rr, target, request, dirty, events,
+        );
+    }
+    if c.frames {
+        painter.rect_stroke(
+            r,
+            0.0,
+            Stroke::new(1.0, Color32::from_gray(150)),
+            StrokeKind::Inside,
         );
     }
 }
@@ -2339,6 +2405,8 @@ fn draw_field(
                                 events.push((o.id, event::OBJECT_VALIDATE));
                                 events.push((o.id, event::OBJECT_SAVE));
                             }
+                            let x = egui::Id::NULL.with(("bc_exit", o.id));
+                            ui.data_mut(|d| d.insert_temp(x, edit_id));
                             events.push((o.id, event::OBJECT_EXIT));
                         }
                     }
@@ -2429,6 +2497,7 @@ impl App {
         self.prefs_dialog(&ctx);
         self.editing_frame(&ctx);
         let mut kept = None;
+        let mut entered = Vec::new();
         for (o, ev) in std::mem::take(&mut self.obj_events) {
             if kept == Some(o) {
                 continue;
@@ -2450,10 +2519,37 @@ impl App {
                 }
                 continue;
             }
+            // OnObjectSave runs now, so that it comes before OnObjectExit.
+            if ev == event::OBJECT_SAVE && self.active.is_none() {
+                let t = self.object_trigger(o, ev);
+                self.run_pre(t, Default::default());
+                continue;
+            }
+            // OnObjectExit's False keeps the focus in the field.
+            if ev == event::OBJECT_EXIT {
+                let t = self.object_trigger(o, ev);
+                if !self.run_pre(t, Default::default()) {
+                    kept = Some(o);
+                    let x = egui::Id::NULL.with(("bc_exit", o));
+                    if let Some(edit) = ctx.data(|d| d.get_temp::<egui::Id>(x)) {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(edit.with("refocus"), true);
+                            d.insert_temp(objects::focus_id(), o);
+                        });
+                    }
+                }
+                continue;
+            }
             if ev == event::OBJECT_ENTER {
-                self.m8.focus = Some(o);
+                entered.push(o);
+                continue;
             }
             self.fire_object(o, ev);
+        }
+        // Entering another field, unless the one left kept the focus.
+        for o in entered.into_iter().filter(|_| kept.is_none()) {
+            self.m8.focus = Some(o);
+            self.fire_object(o, event::OBJECT_ENTER);
         }
         if let Some(step) = self.pending_step.take() {
             self.start_run(false, |e, h| e.start_step(h, &step));

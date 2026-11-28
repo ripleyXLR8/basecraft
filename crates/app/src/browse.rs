@@ -33,6 +33,9 @@ pub fn t(key: &'static str) -> &'static str {
             "Rétablir l'enregistrement à la dernière version enregistrée ?"
         }
         "Revert" => "Rétablir",
+        "Save changes to this record?" => "Enregistrer les modifications de cet enregistrement ?",
+        "Save" => "Enregistrer",
+        "Don't Save" => "Ne pas enregistrer",
         "Move" => "Déplacer",
         "Clear All" => "Tout effacer",
         "Sort" => "Trier",
@@ -76,6 +79,8 @@ pub struct Dialogs {
     pub sort: Option<SortDialog>,
     goto: Option<String>,
     revert: bool,
+    /// "Save record changes automatically" off: Save / Don't Save / Cancel.
+    pub ask_save: bool,
     /// Saved Finds of the session: name and requests.
     saved: Vec<(String, Requests)>,
     save_name: Option<String>,
@@ -271,6 +276,7 @@ impl App {
         self.goto_ui(ctx);
         self.saved_find_ui(ctx);
         self.revert_ui(ctx);
+        self.save_ui(ctx);
         self.debugger_window(ctx);
         self.script_ui_frame(ctx);
     }
@@ -596,6 +602,50 @@ impl App {
     pub fn save_find(&mut self, name: &str) {
         let reqs = self.requests.clone();
         self.m5.saved.push((name.to_string(), reqs));
+    }
+
+    /// Layout Setup › "Save record changes automatically" (on unless the
+    /// current layout turns it off).
+    pub fn auto_save(&self) -> bool {
+        self.doc
+            .as_ref()
+            .and_then(|d| d.layouts.get(self.layout))
+            .is_none_or(|l| l.options & fmp12::layouts::setup::NO_AUTO_SAVE == 0)
+    }
+
+    pub fn ask_save(&mut self) {
+        self.m5.ask_save = true;
+    }
+
+    /// Leaving a modified record with automatic saving off: Save commits
+    /// it, Don't Save reverts it, Cancel stays in it.
+    ///
+    /// ponytail: the action that left the record is not done after the
+    /// answer (FileMaker goes on with it); the user does it again.
+    fn save_ui(&mut self, ctx: &egui::Context) {
+        if !self.m5.ask_save {
+            return;
+        }
+        let mut done = None;
+        egui::Modal::new(egui::Id::NULL.with("save_record")).show(ctx, |ui| {
+            ui.label(t("Save changes to this record?"));
+            ui.horizontal(|ui| {
+                for (i, b) in ["Save", "Don't Save", "Cancel"].into_iter().enumerate() {
+                    if ui.button(t(b)).clicked() {
+                        done = Some(i);
+                    }
+                }
+            });
+        });
+        let Some(i) = done else { return };
+        self.m5.ask_save = false;
+        match i {
+            0 => {
+                self.commit_record();
+            }
+            1 => self.revert_record(),
+            _ => {}
+        }
     }
 
     fn revert_ui(&mut self, ctx: &egui::Context) {

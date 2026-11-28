@@ -135,12 +135,12 @@ impl Doc {
     fn record_json(&self, t: &engine::Table, i: usize, found: Option<(&[usize], &[u32])>) -> Json {
         let mut fields = serde_json::Map::new();
         for f in &t.fields {
-            let v = match found {
-                Some((found, sort)) if f.kind == fmp12::schema::FieldKind::Summary => {
-                    engine::summary_at(&self.db, t.id, f.id, i, found, sort)
-                }
-                _ => self.db.value(t.id, i, f.id),
-            };
+            let fs = found.map(|(records, sort)| engine::FoundSet {
+                table: t.id,
+                records,
+                sort,
+            });
+            let v = self.db.value_in(t.id, i, f.id, 1, fs);
             fields.insert(f.name.clone(), value_json(&v));
         }
         json!({ "id": t.records[i].id, "fields": fields })
@@ -321,7 +321,9 @@ fn found_set(d: &Doc, t: &engine::Table, q: &Query) -> Res<Vec<usize>> {
     Ok(found)
 }
 
-fn eval(d: &Doc, src: &str, table: Option<&str>, record: Option<u32>) -> Res<Json> {
+/// Evaluates `src` for a record of the found set of `--find`/`--sort`
+/// (every record without them): the record `record`, else the first one.
+fn eval(d: &Doc, src: &str, table: Option<&str>, record: Option<u32>, q: &Query) -> Res<Json> {
     let t = match table {
         Some(n) => d.table(n)?,
         None => d.db.tables.first().ok_or("file has no tables")?,
@@ -332,11 +334,23 @@ fn eval(d: &Doc, src: &str, table: Option<&str>, record: Option<u32>) -> Res<Jso
             .find(|o| table.is_some_and(|n| o.name.eq_ignore_ascii_case(n)))
             .or_else(|| d.db.occurrences.iter().find(|o| o.base_table == t.id))
             .map_or(0, |o| o.id);
+    let found = found_set(d, t, q)?;
+    let sort: Vec<u32> = sort_keys(d, t, q)?.iter().map(|(f, _)| *f).collect();
     let rec = match record {
         Some(id) => Some(d.index_of(t.id, id)?),
-        None => (!t.records.is_empty()).then_some(0),
+        None => found.first().copied(),
     };
-    let v = d.db.eval_source(src, t.id, to, rec);
+    let scope = engine::Scope {
+        found: Some(engine::FoundSet {
+            table: t.id,
+            records: &found,
+            sort: &sort,
+        }),
+        self_value: None,
+    };
+    let v =
+        d.db.eval_source_in(src, t.id, to, rec, &scope)
+            .unwrap_or_else(|_| calc::Value::text("?"));
     Ok(json!({ "result": value_json(&v) }))
 }
 
@@ -534,7 +548,13 @@ fn run(d: &mut Doc, cmd: &str, o: &Opts) -> Res<Json> {
     match cmd {
         "info" => Ok(info(d)),
         "records" => records(d, &arg(0, "table")?, &o.query),
-        "eval" => eval(d, &arg(0, "calculation")?, o.table.as_deref(), o.record),
+        "eval" => eval(
+            d,
+            &arg(0, "calculation")?,
+            o.table.as_deref(),
+            o.record,
+            &o.query,
+        ),
         "new" => new_record(d, &arg(0, "table")?, &pairs(&o.rest[1..])?),
         "set" => set(
             d,

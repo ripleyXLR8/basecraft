@@ -85,6 +85,8 @@ fn field(id: u32, name: &str, kind: u8, dt: u8, reps: u32) -> Field {
         data_type: def.data_type(),
         calc: None,
         auto_calc: None,
+        validation_calc: None,
+        range: None,
         context: 0,
         def,
     }

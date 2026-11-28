@@ -363,6 +363,81 @@ fn value_list_size_and_custom_message_validation() {
     );
 }
 
+/// "In range" (503) and "validated by calculation" (507, `Self` is the
+/// value), checked in the dialog's order (range before calculation before
+/// maximum characters); "always" reported for imports and skipped commits.
+#[test]
+fn range_and_calculation_validation() {
+    use engine::Rule;
+    let mut s = shop();
+    let mut qty = FieldSpec::new("Qty", DataType::Number);
+    qty.validation.range = Some(("1".into(), "10".into()));
+    qty.validation.calculation = Some("Mod ( Self ; 2 ) = 0".into());
+    qty.validation.max_chars = Some(1);
+    qty.validation.always = true;
+    qty.validation.allow_override = false;
+    let qty = s.db.add_field(&mut s.file, s.invoices, &qty).unwrap();
+    let mut day = FieldSpec::new("Day", DataType::Date);
+    day.validation.range = Some(("1/1/2020".into(), "31/12/2020".into()));
+    let day = s.db.add_field(&mut s.file, s.invoices, &day).unwrap();
+    // A calculation that runs on empty values too.
+    let mut note = FieldSpec::new("Note", DataType::Text);
+    note.validation.calculation = Some("not IsEmpty ( Self ) or Amount < 100".into());
+    let note = s.db.add_field(&mut s.file, s.invoices, &note).unwrap();
+    let r = s.invoice("1", "5");
+    let rules = |s: &Shop| -> Vec<(u32, Rule, u32)> {
+        s.db.validate(s.invoices, r)
+            .iter()
+            .map(|e| (e.field, e.rule, e.rule.code()))
+            .collect()
+    };
+    assert!(rules(&s).is_empty());
+    let set = |s: &mut Shop, f: u32, v: &str| s.db.set_values(s.invoices, r, &[(f, v.into())]);
+    set(&mut s, qty, "12");
+    assert_eq!(rules(&s), [(qty, Rule::Range, 503)]);
+    set(&mut s, qty, "3");
+    assert_eq!(rules(&s), [(qty, Rule::Calculation, 507)]);
+    set(&mut s, qty, "4");
+    assert!(rules(&s).is_empty());
+    set(&mut s, qty, "10");
+    assert_eq!(rules(&s), [(qty, Rule::MaxChars, 511)]);
+    let e = s.db.validate(s.invoices, r)[0];
+    assert!(e.always && !e.can_override);
+    set(&mut s, qty, "");
+    set(&mut s, day, "15/6/2021");
+    assert_eq!(rules(&s), [(day, Rule::Range, 503)]);
+    set(&mut s, day, "15/6/2020");
+    assert!(rules(&s).is_empty());
+    let amount = s.f["Amount"];
+    set(&mut s, amount, "500");
+    assert_eq!(rules(&s), [(note, Rule::Calculation, 507)]);
+    set(&mut s, note, "big order");
+    assert!(rules(&s).is_empty());
+}
+
+/// Auto-enter calculations see `Self` and evaluate again when a field
+/// they use changes: over the value when "Do not replace existing value"
+/// is off, only into an empty field when it is on.
+#[test]
+fn auto_enter_self_and_reevaluation() {
+    let mut s = shop();
+    let mut total = FieldSpec::new("WithTax", DataType::Number);
+    total.auto_enter.calculation = Some("Amount * 2".into());
+    total.auto_enter.replace_existing = true;
+    let total = s.db.add_field(&mut s.file, s.invoices, &total).unwrap();
+    let mut first = FieldSpec::new("FirstAmount", DataType::Number);
+    first.auto_enter.calculation = Some("If ( IsEmpty ( Self ) ; Amount ; Self )".into());
+    let first = s.db.add_field(&mut s.file, s.invoices, &first).unwrap();
+    let r = s.invoice("1", "5");
+    let get = |s: &Shop, f: u32| s.db.value(s.invoices, r, f).to_text();
+    assert_eq!(get(&s, total), "10");
+    assert_eq!(get(&s, first), "5");
+    let amount = s.f["Amount"];
+    s.db.set_values(s.invoices, r, &[(amount, "7".into())]);
+    assert_eq!(get(&s, total), "14");
+    assert_eq!(get(&s, first), "5");
+}
+
 #[test]
 fn summary_options_written_and_computed() {
     use fmp12::schema::SummaryOp;

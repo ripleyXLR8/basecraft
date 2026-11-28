@@ -469,8 +469,59 @@ mod tests {
             check(s(frac_sub), Some(1.0), "GetSummary FracSub");
             check(s(sdp), Some(sp), "GetSummary SDP");
         }
-        // The calculation engine's GetSummary sorts by the break field.
+        // In a calculation: over the window's found set, by the break
+        // field only when sorted by it (empty otherwise, as in FileMaker).
         let v = db.eval_source("GetSummary ( RunTotR ; Region )", T, T, Some(4));
-        check(v, Some(20.0), "GetSummary in a calculation");
+        check(v, None, "GetSummary unsorted");
+        let scope = crate::Scope {
+            found: Some(crate::FoundSet {
+                table: T,
+                records: &found,
+                sort: &sort,
+            }),
+            self_value: None,
+        };
+        let ev = |src: &str, r: usize| {
+            db.eval_source_in(src, T, T, Some(r), &scope)
+                .unwrap_or_else(|e| Value::text(format!("error {}", e.code)))
+        };
+        check(
+            ev("GetSummary ( RunTotR ; Region )", 4),
+            Some(20.0),
+            "by Region",
+        );
+        check(
+            ev("GetSummary ( RunTot ; RunTot )", 4),
+            Some(120.0),
+            "grand",
+        );
+        // Record 4 (B15) is the 5th of the sorted found set.
+        check(ev("Get ( RecordNumber )", 4), Some(5.0), "RecordNumber");
+        check(ev("RunTot", 4), Some(80.0), "running total");
+        check(
+            ev("GetNthRecord ( Amount ; 2 )", 4),
+            Some(30.0),
+            "GetNthRecord",
+        );
+        let few = [6, 0];
+        let scope = crate::Scope {
+            found: Some(crate::FoundSet {
+                table: T,
+                records: &few,
+                sort: &[],
+            }),
+            self_value: None,
+        };
+        let ev = |src: &str| db.eval_source_in(src, T, T, Some(0), &scope);
+        assert_eq!(ev("Get ( FoundCount )").unwrap().to_text(), "2");
+        assert_eq!(ev("Get ( TotalRecordCount )").unwrap().to_text(), "7");
+        assert_eq!(
+            ev("GetSummary ( RunTot ; RunTot )").unwrap().to_text(),
+            "30"
+        );
+        assert_eq!(
+            ev("GetRecordIDsFromFoundSet ( 0 )").unwrap().to_text(),
+            "7\r1"
+        );
     }
 }

@@ -313,15 +313,12 @@ pub fn import(
             }
             let mut rejected = false;
             for e in db.validate(table, r) {
-                let always = db.tables[ti]
-                    .field(e.field)
-                    .is_some_and(|f| f.def.validation().always);
-                rejected |= always;
+                rejected |= e.always;
                 report.errors.push(RowError {
                     row: line,
                     field: e.field,
                     rule: e.rule,
-                    skipped: always,
+                    skipped: e.always,
                 });
             }
             if rejected {

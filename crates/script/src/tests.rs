@@ -178,6 +178,8 @@ fn db(people: &[(&str, &str, &str)]) -> Database {
         data_type: def(dt).data_type(),
         calc: None,
         auto_calc: None,
+        validation_calc: None,
+        range: None,
         context: 0,
         def: Def {
             name: name.into(),
@@ -606,6 +608,42 @@ fn sort_omit_and_show_all() {
         let (_, _, h) = run(vec![script(1, steps.clone())], "");
         assert_eq!(h.names(), *want, "{name}");
     }
+}
+
+/// Calculations in a script see the window's found set and sort order
+/// (GetNthRecord, `Get ( SortState )`), which a Sort step records.
+#[test]
+fn calculations_see_the_found_set() {
+    struct Names;
+    impl fmp12::calc::Resolve for Names {
+        fn occurrences(&self) -> Vec<(u32, String)> {
+            vec![(T, "People".into())]
+        }
+        fn fields(&self, _: u32) -> Vec<(u32, String)> {
+            vec![(NAME, "Name".into()), (AGE, "Age".into())]
+        }
+    }
+    let calc = |s: &str| Calc(fmp12::calc::compile(s, 0, &Names).unwrap().tokens);
+    let sort = step(
+        id::SORT,
+        StepParams::Sort {
+            dialog: false,
+            restore: true,
+            keys: vec![(field(NAME), SortOrder::Descending)],
+        },
+    );
+    let report = step(
+        id::EXIT_SCRIPT,
+        StepParams::ExitScript(Some(calc(
+            "GetNthRecord ( People::Name ; 1 ) & \"|\" & Get ( FoundCount ) & \"|\" & Get ( SortState )",
+        ))),
+    );
+    let (r, _, h) = run(
+        vec![script(1, vec![plain(id::OMIT_RECORD), sort, report])],
+        "",
+    );
+    assert_eq!(r, "Dee|3|1");
+    assert_eq!(h.win.sort, [NAME]);
 }
 
 #[test]

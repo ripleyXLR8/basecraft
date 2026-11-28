@@ -51,6 +51,9 @@ fn filemaker_oracle() {
         }
         if known {
             still_differ += 1;
+            println!(
+                "known: {src}\n    FileMaker {want:?} ({want_err})\n    calc      {got:?} ({err})"
+            );
         } else {
             failures.push(format!(
                 "{src}\n    FileMaker {want:?} (error {want_err})\n    calc      {got:?} (error {err})"

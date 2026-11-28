@@ -506,10 +506,12 @@ fn be(b: &[u8]) -> u32 {
     b.iter().fold(0, |a, x| (a << 8) | *x as u32)
 }
 
-/// `01` + path integer: an object id (layout, script, field, value list).
+/// Length + path integer: an object id (layout, script, field, value list).
 fn id_ref(b: &[u8]) -> Option<u32> {
     match b {
-        [1, rest @ ..] => path_int(rest),
+        // `01 7F` = 127, `02 80 00` = 128; BaseCraft before Nov 2026 wrote
+        // `01 80 00`, still read.
+        [1 | 2, rest @ ..] => path_int(rest),
         _ => None,
     }
 }

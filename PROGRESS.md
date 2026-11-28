@@ -224,6 +224,8 @@ Every step now runs; none is left to `Host::other`.
 | Leaves keep FileMaker's exact chunk bytes (key spelling, `80` node markers, empty nodes, trailing pops) | ✅ all 6,824 template leaves re-pack byte for byte |
 | Index (separator) sectors: encoding with pop flags, exact first-key separators | ✅ all 66 template roots re-encode byte for byte |
 | Full rewrite (`fmdump <file> rewrite <out>`) opens in FileMaker Pro 26 | ✅ 10 templates verified; XML export identical for Contacts, Tasks, Assets (DDR_INFO order and ids aside) |
+| Sectors keep room for their closing pops (FileMaker Server's consistency check, error 805, flagged full sectors without them: 14 of 66 template rewrites before the fix) | ✅ every leaf of 686 corpus rewrites ends as FileMaker's do; FMDeveloperTool re-check pending (test VM down) |
+| Scripts of 128 steps or more (step records `03 02 80 xx`, step count `02 80 xx`, as FileMaker 26 writes them) | ✅ byte for byte with a 140-step script FileMaker built; FileMaker Pro 26's XML export of one BaseCraft wrote shows all 140 steps' parameters |
 | Multi-level index trees (level ≥ 2) | 🚧 implemented, no template is deep enough to verify |
 | Writing records: add, edit, delete (`fmp12::save::save_records`, `engine::Database::save`) | ✅ verified: FileMaker opens the file and shows the right count, values and related records |
 | Bookkeeping: record-id set, last record id, change counter, modification count kept | ✅ |

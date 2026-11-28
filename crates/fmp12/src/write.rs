@@ -190,17 +190,31 @@ fn path_delta(from: &[Vec<u8>], to: &[Vec<u8>], out: &mut Vec<u8>) -> usize {
 
 /// Packs entries into leaf payloads of at most PAYLOAD bytes, each with the
 /// first entry it holds.
+///
+/// A sector ends with the pops towards the next sector's first path, as
+/// FileMaker writes them, so an entry only goes into a sector when those
+/// pops still fit after it: FileMaker Server's consistency check reports a
+/// full sector missing them as a bad block (error 805).
 pub fn pack(entries: &[Entry]) -> Vec<(Vec<u8>, &Entry)> {
     let mut pages: Vec<(Vec<u8>, &Entry)> = Vec::new();
     let mut prev: &[Vec<u8>] = &[];
-    for e in entries {
+    for (i, e) in entries.iter().enumerate() {
         let mut d = Vec::new();
         let pops = path_delta(prev, &e.path, &mut d);
+        let after = entries.get(i + 1).map_or(0, |n| {
+            e.path.len()
+                - e.path
+                    .iter()
+                    .zip(&n.path)
+                    .take_while(|(a, b)| a == b)
+                    .count()
+        });
         let fits = pages
             .last()
-            .is_some_and(|(buf, _)| buf.len() + d.len() + e.item.len() <= PAYLOAD);
+            .is_some_and(|(buf, _)| buf.len() + d.len() + e.item.len() + after <= PAYLOAD);
         if !fits {
-            // Like FileMaker, keep the pops towards the next entry.
+            // Like FileMaker, keep the pops towards the next entry (room
+            // was kept for them).
             if let Some((buf, _)) = pages.last_mut()
                 && buf.len() + pops <= PAYLOAD
             {
@@ -539,6 +553,50 @@ pub fn rewrite(file: &File) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every full sector ends with the pops towards the next sector's first
+    /// path (FileMaker Server's consistency check, error 805, otherwise):
+    /// entries of every size at depth 4 then 1, so some sectors fill up
+    /// to the last byte.
+    #[test]
+    fn sectors_keep_room_for_their_closing_pops() {
+        let mut entries = Vec::new();
+        for i in 0..3000u32 {
+            let deep = i % 7 != 0;
+            let path = if deep {
+                vec![vec![4], vec![5], vec![(i / 50) as u8], vec![1]]
+            } else {
+                vec![vec![9]]
+            };
+            entries.push(Entry {
+                path,
+                item: encode(&Item::Kv {
+                    key: 2,
+                    data: vec![7; (i % 300) as usize],
+                }),
+            });
+        }
+        let pages = pack(&entries);
+        let mut full = 0;
+        for w in pages.windows(2) {
+            let (buf, next) = (&w[0].0, &w[1].1);
+            assert!(buf.len() <= PAYLOAD);
+            full += usize::from(buf.len() + 3 >= PAYLOAD);
+            let (mut stack, mut last) = (Vec::new(), Vec::new());
+            for c in crate::chunk::parse(buf).unwrap() {
+                match c {
+                    Chunk::Push(p) => stack.push(p.to_vec()),
+                    Chunk::Pop => {
+                        stack.pop();
+                    }
+                    _ => last = stack.clone(),
+                }
+            }
+            let common = last.iter().zip(&next.path).take_while(|(a, b)| a == b);
+            assert_eq!(stack.len(), common.count());
+        }
+        assert!(full > 0, "no sector filled up: the test proves nothing");
+    }
 
     #[test]
     fn items_roundtrip_through_parser() {

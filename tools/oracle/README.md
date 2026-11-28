@@ -125,6 +125,7 @@ trial) gives a headless oracle that does not need FileMaker Pro's window:
 ```sh
 tools/oracle/fms_check.sh file.fmp12                       # consistency check, exit 0 = no problems
 tools/oracle/fms_check.sh file.fmp12 Admin "" out.xml      # also FileMaker's Save as XML export
+tools/oracle/fms_batch.sh a.fmp12 b.fmp12 …                # many files over one SSH session: OK/BAD per file
 ```
 
 The script copies the file into the VM over SSH (`127.0.0.1:2222`, key

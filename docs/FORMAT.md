@@ -60,7 +60,15 @@ chained through prev/next. The chain starts at the leaf whose prev is 0.
 Every leaf payload starts from an empty path and pushes the full path of its
 first chunk. A chunk never spans two sectors. When the next chunk does not
 fit, FileMaker still writes the pops towards its path at the end of the full
-sector (`… 40 40`).
+sector (`… 40 40`). **These pops are required**: a chunk only goes into a
+sector when the pops that follow it still fit. A full sector that ends
+deeper than the common prefix of its last path and the next sector's first
+path is a bad block for FileMaker Server's consistency check
+(FMDeveloperTool, error 805), although FileMaker Pro opens the file. Every
+leaf of the 66 templates ends that way; BaseCraft's packer
+(`write::pack`) dropped the pops when they did not fit, so about one
+rewrite in five (14 of the 66 templates, and files FileMaker had edited,
+e.g. after a layout's window was resized) got such a sector.
 
 **Sort order.** Store order is byte order on the sequence of path elements
 followed by the chunk's key bytes. A key is just one more element:
@@ -417,15 +425,16 @@ The trailing zeros of the last record are trimmed.
 
 | Bytes | Meaning |
 |------:|---------|
-| 0–3 | `02 01 n 00`: length-prefixed `01` + path integer *n*, the step's parameter node `[S].[5].[n]` |
+| 0–3 | `02 01 n 00`: an id slot (length, then the path integer's length and the path integer *n*), the step's parameter node `[S].[5].[n]`; from step 128 on `03 02 80 xx` |
 | 4–5 | uninitialised (`BE BE` in the templates, anything in new files) |
 | 6–19 | inline references (below); bytes between them are uninitialised |
 | 20–21 | step id, i16 BE; **negative = disabled** (`FF A3` = disabled Beep) |
 | 22–23 | u16: index (0-based) of the step closing the block for If, Else If, Else, Loop, Exit Loop If (End Loop: its Loop); destination kind for Go to Layout (1 original, 3 name by calculation, 4 number by calculation, 5 layout) and Go to Record/Request/Page (1 first, 2 last, 3 previous, 4 next, 5 by calculation) |
 | 24–27 | u32 options = XML `<Options>` |
 
-Inline references are length-prefixed: an object id is `01` + path
-integer (`02 01 0B` = 11), a table occurrence is `03 D0 hi lo` (§7). A
+Inline references are length-prefixed: an object id is the length of its
+path integer, then the path integer (`02 01 0B` = 11, `03 02 80 00` =
+128), a table occurrence is `03 D0 hi lo` (§7). A
 layout (Go to Layout, New Window) or script (Perform Script) sits at byte
 6. A field (Set Field, Go to Field, Insert Text, Show Custom Dialog input 1)
 is TO at 6, field at 12, repetition u16 at 18:
@@ -572,11 +581,20 @@ and evaluate (the dialog shows `21|two|yes|two|x¶y`).
   marker is reported damaged by FileMaker Server's consistency check
   (error 805, `tools/oracle/fms_check.sh`). `save_scripts` adds them
   (test `first_script_of_a_blank_file_marks_its_nodes` on the blank asset).
-* Scripts of 128 steps or more (step node `[S].[5].[128]`…): how
-  FileMaker spells those path elements was not seen; written with the
-  `80 00` form, FileMaker Server's XML export shows no parameters for
-  steps 128 and above.
-  ⏳
+* Scripts of 128 steps or more: seen in a 140-step script FileMaker 26
+  built (140 Set Variable steps pasted into a copy of Tasks). Step node
+  128 is spelled `80 00` (parameters under it `00 xx` as usual), the step
+  record starts `03 02 80 00` (an id slot whose path integer has 2
+  bytes), and `[S].[5]` key 0, the step count, is an id too: `02 80 0C`
+  = 140 (`01 xx` below 128, which reads like a len-int). BaseCraft wrote
+  `03 01 80 00` and `01 8C`; FileMaker then showed no parameters from
+  step 129 on. `step_entries` now writes FileMaker's bytes exactly
+  (test `scripts_of_128_steps_and_more_keep_their_parameters`; a
+  140-step script BaseCraft wrote into the blank file reads back in
+  FileMaker Pro 26's Save a Copy as XML with every name and value).
+  Script, layout and other ids of 128 and more in catalogs
+  (`[17].[1].[3]`, `[17].[1]` key 0) are still written as len-ints: not
+  seen in a FileMaker file yet.
 * Collation keys of the name index: 2-byte primary weights, case folded,
   then `00 00 00`; accented letters add secondary weights after `00 00`.
   Known weights: space `020A`, `-` `0223`, `'` `02EE`, a `120F` b `1225`
@@ -1483,8 +1501,10 @@ embedded. FileMaker Server's consistency check (`fms_check.sh`) flags
 that file, but it flags a plain BaseCraft rewrite of the same Tasks copy
 too, with no change at all (`fmdump … rewrite`): a writer issue, not
 the container entries. Bisected to layout 3 (FileMaker had resized its
-window): without that layout's 373-byte key-2 item the rewrite passes;
-FileMaker Pro 26 itself opens the file without warning. ⏳
+window): without that layout's 373-byte key-2 item the rewrite passes.
+The item only moved the sector boundaries: the packer filled a sector to
+its last byte and left out the pops that must close it (§1). Fixed in
+`write::pack`.
 
 ### Locale (`[2]` key 13)
 

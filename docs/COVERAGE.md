@@ -154,8 +154,9 @@ triggers after it, before the next step. Limits: PROGRESS.md, "More triggers".
 
 Partial objects (4): Graphic (PNG, JPEG, BMP pictures drawn in Browse, Preview and PDF; not
 GIF, SVG or PDF pictures; no Insert › Picture in Layout mode), Rounded Rectangle
-(drawn as read; no tool makes one), Web Viewer (a placeholder box with its address),
-Chart (drawn; no Chart tool in Layout mode).
+(drawn as read; no tool makes one), Web Viewer (a placeholder box with its address;
+Layout mode edits its address and options), Chart (drawn; Chart Setup edits existing charts,
+not the number of series; no Chart tool in Layout mode).
 
 Text objects draw in one style, their theme style's: style runs inside a text (several fonts,
 sizes or colours) are not decoded, for want of a sample (FORMAT.md §10). Merge fields stored

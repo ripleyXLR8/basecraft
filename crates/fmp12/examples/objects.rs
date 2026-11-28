@@ -29,6 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 o.field,
                 o.text
             );
+            if let Some(x) = o.external {
+                println!("    external {:#x} {}", x.0, x.1);
+            }
             if let Some(p) = o.picture {
                 println!("    picture {p}");
             }

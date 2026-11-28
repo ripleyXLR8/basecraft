@@ -569,6 +569,14 @@ fn node_calc(o: &crate::layouts::LayoutObject, sub: u32) -> Option<NodeCalc<'_>>
         6 => NodeCalc::Calc(o.placeholder.as_ref()),
         128 if o.external.is_some_and(|e| e.0 == WEB_VIEWER) => NodeCalc::Calc(o.url.as_ref()),
         138 => NodeCalc::Conditions(&o.conditions),
+        // ponytail: chart slots 138 and 141 (a third series' name, a
+        // fourth's value) would clash with conditions and the hide
+        // condition; charts with more than two series are not seen.
+        k if (128..=200).contains(&k) && k != 141 && o.chart.is_some() => NodeCalc::Calc(
+            o.chart
+                .as_ref()
+                .and_then(|c| c.calcs().into_iter().find(|x| x.0 == k).map(|x| x.1)),
+        ),
         _ => return None,
     })
 }
@@ -757,6 +765,13 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
                 },
                 // Tab label calculation of a panel.
                 _ if p[5] == 2 && n.kind == 12 => o.text == n.text,
+                // A chart's settings record.
+                _ if p[5] == 139 && n.chart.is_some() => {
+                    p.len() == 6
+                        || entry_kv(e).is_none()
+                        || o.chart.as_ref().map(|c| c.encode_record())
+                            == n.chart.as_ref().map(|c| c.encode_record())
+                }
                 _ if p[5] == 17 => {
                     o.button.as_ref().map(|s| s.id) == n.button.as_ref().map(|s| s.id)
                 }
@@ -783,7 +798,37 @@ pub fn save_layouts(file: &File, layouts: &[crate::layouts::Layout]) -> Result<V
         // Calculations and conditions of an object (all of them for a new one).
         let node_entries = |n: &LayoutObject, o: Option<&LayoutObject>| -> Vec<Entry> {
             let mut out = Vec::new();
+            if let Some(ch) = &n.chart {
+                for (k, t) in ch.calcs() {
+                    if k == 138 || k == 141 {
+                        continue;
+                    }
+                    if o.and_then(|o| node_calc(o, k)) != Some(NodeCalc::Calc(Some(t))) {
+                        out.extend(calc_entries(n.id, &[k, 5], t));
+                    }
+                }
+                let rec = ch.encode_record();
+                if o.is_none_or(|o| {
+                    o.chart.as_ref().map(|c| c.encode_record()) != Some(rec.clone())
+                }) && !rec.is_empty()
+                {
+                    let p = [4, 5, l, 5, n.id as u32, 139];
+                    out.push(marker(&p));
+                    if o.is_none() {
+                        out.push(kv_entry(&p, 0, Vec::new()));
+                    }
+                    let p = [4, 5, l, 5, n.id as u32, 139, 138];
+                    out.push(marker(&p));
+                    out.push(kv_entry(&p, 0, (rec.len() as u32).to_be_bytes().to_vec()));
+                    for (i, c) in rec.chunks(INLINE_MAX).enumerate() {
+                        out.push(kv_entry(&p, i as u32 + 1, c.to_vec()));
+                    }
+                }
+            }
             for sub in NODE_CALCS {
+                if sub == 128 && n.chart.is_some() {
+                    continue;
+                }
                 let Some(NodeCalc::Calc(new_calc)) = node_calc(n, sub) else {
                     if sub == 138 && o.is_none_or(|o| o.conditions != n.conditions) {
                         out.extend(condition_entries(l, n, &calc_entries));

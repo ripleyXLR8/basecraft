@@ -998,7 +998,12 @@ such a file (`<<TO::Field>>` there) and FileMaker's display.
   🔸 slide options bits are not decoded (`slideFlagSet` of the clipboard
   XML; BaseCraft assumes 1 = no swipe, 2 = no dots). Button bar (field
   21): `{1 options, 2 active segment id}`. Web viewer (field 11): `{1:
-  0x57454256 'WEBV', 2: 0, 3 options}`; a new one has options 32781.
+  0x57454256 'WEBV', 2: 0, 3 options}`; a new one has options 32781
+  (`0x800D`), the Contacts template's map `0x8003`. 🔸 Read as Web Viewer
+  Setup's checkboxes (`fmp12::layouts::web`): `0x1` allow interaction, `0x2`
+  display in Find mode, `0x4` progress bar, `0x8` status messages, `0x8000`
+  encode URL, `0x10` (assumed) allow JavaScript to perform scripts; inferred
+  from the dialog's defaults and those two values, not toggled one by one.
 * **Conditional formats** `[obj].[138]`: key 4 = count (u16), then
   `.[128 + i]` per condition, in order: key 1 = first value as typed,
   key 6 = second value (between), key 13 = `{1 options, 2 style {1 local
@@ -1119,7 +1124,7 @@ agree). `fmp12::layouts::setup`.
 * Not decoded: Table View Properties (grid, parts, column headers, row
   height; the XML `<GridStyle>` and `<TableView>`), "Reset Quick Find".
 
-### Charts (`fmp12::charts`) ✅ read
+### Charts (`fmp12::charts`) ✅ read, 🔸 edited
 
 Decoded from charts made in FileMaker Pro 26 (Insert › Chart, Chart Setup,
 and layout objects pasted as `Mac-XML2` clipboard snippets, then diffed;
@@ -1152,6 +1157,12 @@ fixture `crates/fmp12/tests/fixtures/charts.fmp12`, 14 charts).
   …` with size and RGBA colour, the series colours list `00 00 00 02 38 79
   A3 FF D8 92 41 FF`, gridline colours, axis number formats) that are not
   decoded.
+* Writing (`save_layouts`, `LayoutObject::chart`): the calculations are
+  rewritten as web viewer addresses are (`.[K]` and `.[K].[5]` marked), the
+  record with words 4, 8, 20, 56 and the source (byte 120 and its
+  length-prefixed reference) replaced, the rest kept; key 0 = new length.
+  FileMaker Server's consistency check passes on edited charts. The record
+  is 75 bytes longer per series: the series count is not changed.
 * Rendering (`print::chart`, shared by Browse, Preview and PDF), measured
   on FileMaker's Browse mode: title 19 pt on top, legend (swatch + series
   name) under it, value labels on both sides of the plot (top and bottom

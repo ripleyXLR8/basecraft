@@ -89,6 +89,23 @@ pub mod kind {
 
 /// Type id of a web viewer in object field 11.1 (`WEBV`).
 pub const WEB_VIEWER: u64 = 0x5745_4256;
+/// Type id of a chart in object field 11.1 (`CHRT`).
+pub const CHART: u64 = 0x4348_5254;
+
+/// Web viewer option bits (object field 11.3, XML `<External><Options>`),
+/// the checkboxes of FileMaker's Web Viewer Setup. A new web viewer has
+/// `0x800D` (interaction, progress bar, status messages, encoded URL, the
+/// dialog's defaults); the Contacts template's map has `0x8003`.
+/// 🔸 The bit of each checkbox is inferred from those two values (FileMaker
+/// Pro was not driven to toggle them one by one); `JAVASCRIPT` is assumed.
+pub mod web {
+    pub const INTERACTION: u64 = 0x1;
+    pub const FIND_MODE: u64 = 0x2;
+    pub const PROGRESS_BAR: u64 = 0x4;
+    pub const STATUS: u64 = 0x8;
+    pub const JAVASCRIPT: u64 = 0x10;
+    pub const ENCODE_URL: u64 = 0x8000;
+}
 
 /// Slide control option bits (object field 19.1).
 pub mod slide {
@@ -370,6 +387,8 @@ pub struct LayoutObject {
     pub flags: u64,
     /// Button bar: the active segment (field 21.2).
     pub selected: Option<u64>,
+    /// Chart settings (external object `CHRT`), see [`crate::charts`].
+    pub chart: Option<Box<crate::charts::Chart>>,
 }
 
 impl Bounds {
@@ -566,6 +585,8 @@ struct Raw {
     tabs: BTreeMap<u32, u64>,
     /// Button step parameters: `[4].[5].[L].[5].[obj].[17]`.
     actions: BTreeMap<u32, crate::scripts::RawParams>,
+    /// Chart settings records `.[139].[138]`: object → chunk key → bytes.
+    charts: BTreeMap<u32, BTreeMap<u32, Vec<u8>>>,
 }
 
 /// Occurrence and field id of a merge field as FileMaker stores it in a
@@ -701,6 +722,17 @@ impl LayoutObject {
         if self.external.is_some_and(|e| e.0 == WEB_VIEWER) {
             self.url = calc(&[128, 5]);
         }
+        if let Some(rec) = r.charts.get(&id)
+            && self.external.is_some_and(|e| e.0 == CHART)
+        {
+            let rec = rec
+                .range(1..)
+                .flat_map(|(_, v)| v.iter().copied())
+                .collect();
+            self.chart = Some(Box::new(crate::charts::Chart::from_node(rec, |k| {
+                calc(&[k, 5])
+            })));
+        }
         let keys = r.keys.get(&id);
         self.format = keys
             .and_then(|k| k.get(&13))
@@ -769,6 +801,14 @@ pub fn layouts(file: &File) -> Result<Vec<Layout>, Error> {
                 raw.entry(*l)
                     .or_default()
                     .objects
+                    .insert(*key, data.to_vec());
+            }
+            [4, 5, l, 5, obj, 139, 138] if *key >= 1 => {
+                raw.entry(*l)
+                    .or_default()
+                    .charts
+                    .entry(*obj)
+                    .or_default()
                     .insert(*key, data.to_vec());
             }
             // Calculations under an object's node: token stream (`crate::calc`).

@@ -66,3 +66,54 @@ fn charts_of_the_fixture() {
     assert_eq!(get(14).source, Source::Related(130));
     assert!(!get(1).legend && !get(1).data_points);
 }
+
+/// Chart Setup edits written by `save_layouts` read back; the other charts
+/// keep their bytes.
+#[test]
+fn chart_edits_are_saved() {
+    let f = fmp12::File::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/charts.fmp12"
+    ))
+    .unwrap();
+    let mut layouts = fmp12::layouts::layouts(&f).unwrap();
+    let before = charts(&f).unwrap();
+    let l = layouts.iter_mut().find(|l| l.id == 1).unwrap();
+    let o = l.objects.iter_mut().find(|o| o.id == 2).unwrap();
+    let c = o.chart.as_mut().unwrap();
+    assert_eq!(**c, before[&(1, 2)]);
+    let title = fmp12::save::text_literal_tokens("New title");
+    c.title = Some(title.clone());
+    c.y[1].name = Some(fmp12::save::text_literal_tokens("Costs"));
+    c.x_title = Some(fmp12::save::text_literal_tokens("Months"));
+    c.kind = Kind::Line;
+    c.legend = false;
+    c.source = Source::Related(130);
+    let out = fmp12::save::save_layouts(&f, &layouts).unwrap();
+    // `BASECRAFT_CHART_DEMO=<out.fmp12>` keeps the file (checked with
+    // `tools/oracle/fms_check.sh`).
+    if let Ok(p) = std::env::var("BASECRAFT_CHART_DEMO") {
+        std::fs::write(p, &out).unwrap();
+    }
+    let g = fmp12::File::from_bytes(out).unwrap();
+    let after = charts(&g).unwrap();
+    let c = &after[&(1, 2)];
+    assert_eq!(c.title.as_ref(), Some(&title));
+    assert_eq!(c.y[1].name, Some(fmp12::save::text_literal_tokens("Costs")));
+    assert!(c.x_title.is_some());
+    assert_eq!(
+        (c.kind, c.legend, c.source),
+        (Kind::Line, false, Source::Related(130))
+    );
+    assert_eq!(c.y[0], before[&(1, 2)].y[0]);
+    assert_eq!(c.record.len(), before[&(1, 2)].record.len() + 2);
+    for (k, v) in &before {
+        if *k != (1, 2) {
+            assert_eq!(&after[k], v);
+        }
+    }
+    // The re-read layout carries the same chart.
+    let again = fmp12::layouts::layouts(&g).unwrap();
+    let o = again[0].objects.iter().find(|o| o.id == 2).unwrap();
+    assert_eq!(o.chart.as_deref(), Some(c));
+}

@@ -540,6 +540,7 @@ impl Engine {
         w.found = found;
         w.current = 0;
         w.sorted = false;
+        w.sort.clear();
         match (w.found.is_empty(), missing) {
             (true, _) => Err(error::NO_MATCH),
             (false, true) => Err(error::RECORD_MISSING),

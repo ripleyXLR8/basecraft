@@ -83,6 +83,12 @@ pub fn tr(key: &'static str) -> &'static str {
         "must contain a unique value." => "doit contenir une valeur unique.",
         "must contain an existing value." => "doit contenir une valeur existante.",
         "must contain a number." => "doit contenir un nombre.",
+        "must contain a date with a four-digit year." => {
+            "doit contenir une date avec une année à quatre chiffres."
+        }
+        "must contain a time of day." => "doit contenir une heure du jour.",
+        "must contain a value in the range" => "doit contenir une valeur comprise entre",
+        "does not pass its validation calculation." => "ne satisfait pas son calcul de validation.",
         "must contain a value from the value list." => {
             "doit contenir une valeur de la liste de valeurs."
         }

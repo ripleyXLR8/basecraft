@@ -33,6 +33,10 @@ pub struct Field {
     pub calc: Option<String>,
     /// Auto-enter calculation of a normal field.
     pub auto_calc: Option<String>,
+    /// "Validated by calculation" (`calc` source; `Self` is the value).
+    pub validation_calc: Option<String>,
+    /// "In range" validation: low and high, as text in the file's formats.
+    pub range: Option<(String, String)>,
     /// Table occurrence a calculation is evaluated from (0 if none).
     pub context: u32,
     pub def: fmp12::schema::Field,
@@ -218,17 +222,31 @@ impl Database {
         let occurrences = fmp12::graph::table_occurrences(file)?;
         // Calculation token streams of calculated fields: (table, field) -> (key 4, key 5).
         let mut streams: BTreeMap<(u32, u32), (Vec<u8>, Vec<u8>)> = BTreeMap::new();
+        // Validation calculations (sub-node 25) and range bounds (keys 33, 34).
+        let mut checks: BTreeMap<(u32, u32), (Vec<u8>, Vec<u8>)> = BTreeMap::new();
+        let mut ranges: BTreeMap<(u32, u32), (String, String)> = BTreeMap::new();
         file.walk(|path, c| {
             let (Some(p), fmp12::Chunk::Kv { key, data }) = (fmp12::int_path(path), c) else {
                 return;
             };
-            if let [t, 3, 5, f, 5] = p.as_slice() {
-                let e = streams.entry((*t, *f)).or_default();
-                match key {
-                    4 => e.0 = data.to_vec(),
-                    5 => e.1.extend_from_slice(data),
-                    _ => {}
+            let e = match p.as_slice() {
+                [t, 3, 5, f, 5] => streams.entry((*t, *f)).or_default(),
+                [t, 3, 5, f, 25] => checks.entry((*t, *f)).or_default(),
+                [t, 3, 5, f] => {
+                    let r = ranges.entry((*t, *f)).or_default();
+                    match key {
+                        33 => r.0 = fmp12::text(data),
+                        34 => r.1 = fmp12::text(data),
+                        _ => {}
+                    }
+                    return;
                 }
+                _ => return,
+            };
+            match key {
+                4 => e.0 = data.to_vec(),
+                5 => e.1.extend_from_slice(data),
+                _ => {}
             }
         })?;
         let names = EvalNames {
@@ -258,6 +276,14 @@ impl Database {
                     } else {
                         (None, source.filter(|_| f.auto_calculation()))
                     };
+                    let v = f.validation();
+                    let validation_calc = checks
+                        .get(&(t.id, *id))
+                        .filter(|_| v.calculation)
+                        .and_then(|(k4, k5)| {
+                            let to = fmp12::calc::context(k4).unwrap_or(context);
+                            fmp12::calc::decompile(k5, to, &names).ok()
+                        });
                     Field {
                         id: *id,
                         name: f.name.clone(),
@@ -265,6 +291,8 @@ impl Database {
                         data_type: f.data_type(),
                         calc,
                         auto_calc,
+                        validation_calc,
+                        range: ranges.get(&(t.id, *id)).filter(|_| v.range).cloned(),
                         context,
                         def: f.clone(),
                     }
@@ -661,6 +689,23 @@ impl Database {
     /// Typed value of repetition `rep` (1-based) of a field; empty beyond
     /// the field's repetitions.
     pub fn value_rep(&self, table: u32, record: usize, field: u32, rep: u32) -> Value {
+        self.value_in(table, record, field, rep, None)
+    }
+
+    /// Like [`Database::value_rep`], as a window showing `found` sees it:
+    /// a summary field summarizes the found set in its sort order (running
+    /// totals, subtotaled fractions), and calculations see the found set
+    /// (GetSummary, GetNthRecord, `Get ( RecordNumber )`…). `None`, or a
+    /// found set of another table: every record, unsorted.
+    pub fn value_in(
+        &self,
+        table: u32,
+        record: usize,
+        field: u32,
+        rep: u32,
+        found: Option<FoundSet>,
+    ) -> Value {
+        let found = found.filter(|f| f.table == table);
         let Some(t) = self.table(table) else {
             return Value::empty();
         };
@@ -671,23 +716,26 @@ impl Database {
             return Value::empty();
         }
         if f.kind == FieldKind::Summary {
-            // ponytail: the engine has no found set, so a summary field
-            // summarizes the whole table (Show All Records, unsorted);
-            // O(n) per call, O(n²) for a running summary over every record.
-            let all: Vec<usize> = (0..t.records.len()).collect();
-            return summary_at(self, table, field, record, &all, &[]);
+            // ponytail: O(n) per call, O(n²) for a running summary over
+            // every record of a found set.
+            return match found {
+                Some(fs) => summary_at(self, table, field, record, fs.records, fs.sort),
+                None => {
+                    let all: Vec<usize> = (0..t.records.len()).collect();
+                    summary_at(self, table, field, record, &all, &[])
+                }
+            };
         }
         if let Some(src) = &f.calc {
-            let mut ctx = RecordContext {
-                db: self,
-                table,
-                to: f.context,
-                record,
-                rep,
-                vars: BTreeMap::new(),
-                env: None,
+            let scope = Scope {
+                found,
+                self_value: None,
             };
-            return calc::evaluate(src, &mut ctx).unwrap_or_else(|_| Value::text("?"));
+            let mut ctx = RecordContext::new(self, table, f.context, Some(record), &scope, None);
+            ctx.rep = rep;
+            return calc::evaluate(src, &mut ctx)
+                .map(Value::plain)
+                .unwrap_or_else(|_| Value::text("?"));
         }
         let raw = t
             .records
@@ -833,16 +881,43 @@ impl Database {
     /// Evaluates calculation source text for `record` of `table`, from
     /// occurrence `to` (Data Viewer style).
     pub fn eval_source(&self, src: &str, table: u32, to: u32, record: Option<usize>) -> Value {
-        let mut ctx = RecordContext {
-            db: self,
-            table,
-            to,
-            record: record.unwrap_or(usize::MAX),
-            rep: 1,
-            vars: BTreeMap::new(),
-            env: None,
+        self.eval_source_in(src, table, to, record, &Scope::default())
+            .unwrap_or_else(|_| Value::text("?"))
+    }
+
+    /// Like [`Database::eval_source`], in a window's found set and with
+    /// `Self` ([`Scope`]), and the error FileMaker would report.
+    pub fn eval_source_in(
+        &self,
+        src: &str,
+        table: u32,
+        to: u32,
+        record: Option<usize>,
+        scope: &Scope,
+    ) -> Result<Value, calc::EvalError> {
+        let mut ctx = RecordContext::new(self, table, to, record, scope, None);
+        calc::evaluate(src, &mut ctx)
+    }
+
+    /// A layout object's calculation where `Self` is the object's value:
+    /// conditional formatting (the formula FileMaker stores for a "Value
+    /// is…" condition tests `Self`), "hide object when", tooltips.
+    /// `found`: the window's found set (GetSummary, `Get ( RecordNumber )`).
+    pub fn eval_with_self(
+        &self,
+        tokens: &[u8],
+        table: u32,
+        to: u32,
+        record: Option<usize>,
+        self_value: &Value,
+        found: Option<FoundSet>,
+    ) -> Value {
+        let scope = Scope {
+            found,
+            self_value: Some(self_value.clone()),
         };
-        calc::evaluate(src, &mut ctx).unwrap_or_else(|_| Value::text("?"))
+        self.eval_tokens_scoped(tokens, table, to, record, &scope, None)
+            .unwrap_or_else(|_| Value::text("?"))
     }
 
     /// Evaluates a calculation stored as a token stream (layout labels,
@@ -860,6 +935,20 @@ impl Database {
         table: u32,
         to: u32,
         record: Option<usize>,
+        env: Option<&mut dyn Env>,
+    ) -> Result<Value, calc::EvalError> {
+        self.eval_tokens_scoped(tokens, table, to, record, &Scope::default(), env)
+    }
+
+    /// The general form of the token evaluations: in a window's found set
+    /// and with `Self` ([`Scope`]), with a script's variables and flags.
+    pub fn eval_tokens_scoped(
+        &self,
+        tokens: &[u8],
+        table: u32,
+        to: u32,
+        record: Option<usize>,
+        scope: &Scope,
         env: Option<&mut dyn Env>,
     ) -> Result<Value, calc::EvalError> {
         let schema: Vec<fmp12::schema::Table> = self
@@ -883,15 +972,7 @@ impl Database {
         };
         let src = fmp12::calc::decompile(tokens, to, &names)
             .map_err(|e| calc::EvalError::new(calc::error::code::GENERIC, e.to_string()))?;
-        let mut ctx = RecordContext {
-            db: self,
-            table,
-            to,
-            record: record.unwrap_or(usize::MAX),
-            rep: 1,
-            vars: BTreeMap::new(),
-            env,
-        };
+        let mut ctx = RecordContext::new(self, table, to, record, scope, env);
         calc::evaluate(&src, &mut ctx)
     }
 
@@ -956,7 +1037,50 @@ impl Database {
         }
         let changed: Vec<u32> = values.iter().map(|(f, _)| *f).collect();
         self.apply_lookups(table, record, Some(&changed));
+        self.reevaluate_auto(table, record, &changed);
         self.touch(table, record);
+    }
+
+    /// Auto-enter calculations that use a changed field evaluate again, as
+    /// in FileMaker: into an empty field, or over its value when "Do not
+    /// replace existing value" is unticked.
+    // ponytail: a field is "used" when its `${Name}` appears in the formula
+    // (a same-named related field counts too); one pass, no cascade.
+    fn reevaluate_auto(&mut self, table: u32, record: usize, changed: &[u32]) {
+        let Some(t) = self.table(table) else {
+            return;
+        };
+        let names: Vec<String> = changed
+            .iter()
+            .filter_map(|c| t.field(split_rep_key(*c).0))
+            .map(|f| format!("${{{}}}", f.name.to_lowercase()))
+            .collect();
+        let empty = |f: &Field| {
+            t.records
+                .get(record)
+                .is_none_or(|r| r.values.get(&f.id).is_none_or(|v| v.is_empty()))
+        };
+        let updates: Vec<(u32, String)> = t
+            .fields
+            .iter()
+            .filter(|f| !changed.contains(&f.id))
+            .filter(|f| {
+                f.auto_calc.as_ref().is_some_and(|s| {
+                    let s = s.to_lowercase();
+                    names.iter().any(|n| s.contains(n.as_str()))
+                })
+            })
+            .filter(|f| f.def.auto_overwrite() || empty(f))
+            .filter_map(|f| Some((f.id, self.auto_calc_value(table, record, f)?)))
+            .collect();
+        if let Some(r) = self
+            .tables
+            .iter_mut()
+            .find(|t| t.id == table)
+            .and_then(|t| t.records.get_mut(record))
+        {
+            r.values.extend(updates);
+        }
     }
 
     /// Relookup Field Contents: the lookups matching on `field` copy their
@@ -1211,16 +1335,39 @@ impl Database {
             };
             return Some(next.to_string());
         }
+        self.auto_calc_value(table, record, f)
+    }
+
+    /// The auto-enter calculation of `f` for `record`; `Self` is the
+    /// field's current value.
+    fn auto_calc_value(&self, table: u32, record: usize, f: &Field) -> Option<String> {
         let src = f.auto_calc.as_ref()?;
+        let scope = Scope {
+            found: None,
+            self_value: Some(self.value(table, record, f.id)),
+        };
         let v = self
-            .eval_source(src, table, f.context, Some(record))
-            .to_text();
-        Some(v)
+            .eval_source_in(src, table, f.context, Some(record), &scope)
+            .unwrap_or_else(|_| Value::text("?"));
+        Some(v.to_text())
     }
 
     /// Checks a record against its fields' validation options, as FileMaker
     /// does when the record is committed. Returns the failing fields.
     pub fn validate(&self, table: u32, record: usize) -> Vec<Invalid> {
+        self.validate_with(table, record, true)
+    }
+
+    /// [`Database::validate`] for a record a script changed (Set Field…,
+    /// then a commit): FileMaker 26 only checks not empty, unique, existing
+    /// and calculations then; value lists, ranges and maximum characters
+    /// are checked on data entry only (whatever "validate always" says).
+    /// The first failing field (by field id) is the error FileMaker reports.
+    pub fn validate_script(&self, table: u32, record: usize) -> Vec<Invalid> {
+        self.validate_with(table, record, false)
+    }
+
+    fn validate_with(&self, table: u32, record: usize, entry: bool) -> Vec<Invalid> {
         let Some(t) = self.table(table) else {
             return Vec::new();
         };
@@ -1232,65 +1379,114 @@ impl Database {
             let v = f.def.validation();
             let raw = t.records.get(record).and_then(|r| r.values.get(&f.id));
             let text = raw.map_or("", |s| s.as_str());
-            if v.not_empty && text.trim().is_empty() {
+            if let Some(rule) = self.failed_rule(t, f, record, text, entry) {
                 out.push(Invalid {
                     field: f.id,
-                    rule: Rule::NotEmpty,
+                    rule,
                     can_override: v.allow_override,
-                });
-                continue;
-            }
-            if text.is_empty() {
-                continue;
-            }
-            let same = |o: &Record| {
-                o.values
-                    .get(&f.id)
-                    .is_some_and(|x| x.eq_ignore_ascii_case(text))
-            };
-            let others = t.records.iter().enumerate().filter(|(i, _)| *i != record);
-            if v.unique && others.clone().any(|(_, o)| same(o)) {
-                out.push(Invalid {
-                    field: f.id,
-                    rule: Rule::Unique,
-                    can_override: v.allow_override,
-                });
-            } else if v.existing && !others.clone().any(|(_, o)| same(o)) {
-                out.push(Invalid {
-                    field: f.id,
-                    rule: Rule::Existing,
-                    can_override: v.allow_override,
-                });
-            } else if v.strict_numeric && calc::value::text_to_num(text).is_none() {
-                out.push(Invalid {
-                    field: f.id,
-                    rule: Rule::Numeric,
-                    can_override: v.allow_override,
-                });
-            } else if let Some(vl) = f.def.validation_value_list()
-                && !self
-                    .value_list_values(vl)
-                    .iter()
-                    .any(|x| x.eq_ignore_ascii_case(text))
-            {
-                out.push(Invalid {
-                    field: f.id,
-                    rule: Rule::ValueList,
-                    can_override: v.allow_override,
-                });
-            } else if f
-                .def
-                .max_size()
-                .is_some_and(|n| text.chars().count() > n as usize)
-            {
-                out.push(Invalid {
-                    field: f.id,
-                    rule: Rule::MaxChars,
-                    can_override: v.allow_override,
+                    always: v.always,
                 });
             }
         }
         out
+    }
+
+    /// The first validation rule `text` (the stored value of field `f` in
+    /// `record`) fails, in the order of FileMaker's Field Options dialog:
+    /// strict data type, not empty, unique, existing, value list, range,
+    /// calculation, maximum characters. Empty values only fail "not empty".
+    /// Without `entry`, only the rules a script's commit
+    /// checks ([`Database::validate_script`]).
+    fn failed_rule(
+        &self,
+        t: &Table,
+        f: &Field,
+        record: usize,
+        text: &str,
+        entry: bool,
+    ) -> Option<Rule> {
+        let v = f.def.validation();
+        let typed = typed_in(text, f.data_type, &self.locale);
+        let set = !text.trim().is_empty();
+        let same = |o: &Record| {
+            o.values
+                .get(&f.id)
+                .is_some_and(|x| x.eq_ignore_ascii_case(text))
+        };
+        let others = || t.records.iter().enumerate().filter(|(i, _)| *i != record);
+        let in_range = |(lo, hi): &(String, String)| {
+            // Typed values compare by type, text fields as text.
+            let bound = |s: &str| typed_in(s, f.data_type, &self.locale);
+            calc::eval::compare(&typed, &bound(lo)).is_ge()
+                && calc::eval::compare(&typed, &bound(hi)).is_le()
+        };
+        let checks: [(bool, Rule); 10] = [
+            (
+                v.strict_numeric && calc::value::text_to_num(text).is_none(),
+                Rule::Numeric,
+            ),
+            (
+                v.strict_four_digit_year && !four_digit_date(text, &typed),
+                Rule::Date,
+            ),
+            (
+                v.strict_time
+                    && !match &typed {
+                        Value::Time(s) => time_of_day(s),
+                        _ => calc::value::parse_time(text).is_some_and(|s| time_of_day(&s)),
+                    },
+                Rule::Time,
+            ),
+            (v.not_empty && !set, Rule::NotEmpty),
+            (v.unique && others().any(|(_, o)| same(o)), Rule::Unique),
+            (
+                v.existing && !others().any(|(_, o)| same(o)),
+                Rule::Existing,
+            ),
+            (
+                f.def.validation_value_list().is_some_and(|vl| {
+                    !self
+                        .value_list_values(vl)
+                        .iter()
+                        .any(|x| x.eq_ignore_ascii_case(text))
+                }),
+                Rule::ValueList,
+            ),
+            (f.range.as_ref().is_some_and(|r| !in_range(r)), Rule::Range),
+            (false, Rule::Calculation),
+            (
+                f.def
+                    .max_size()
+                    .is_some_and(|n| text.chars().count() > n as usize),
+                Rule::MaxChars,
+            ),
+        ];
+        for (failed, rule) in checks {
+            if !entry && matches!(rule, Rule::ValueList | Rule::Range | Rule::MaxChars) {
+                continue;
+            }
+            let failed = match rule {
+                // Only evaluated when the earlier rules pass, and not on an
+                // empty value (FileMaker 26).
+                Rule::Calculation => {
+                    set && f.validation_calc.as_ref().is_some_and(|src| {
+                        let scope = Scope {
+                            found: None,
+                            self_value: Some(typed.clone()),
+                        };
+                        !self
+                            .eval_source_in(src, t.id, f.context, Some(record), &scope)
+                            .is_ok_and(|r| r.truth())
+                    })
+                }
+                Rule::NotEmpty => failed,
+                _ => failed && set,
+            };
+            if failed {
+                return Some(rule);
+            }
+        }
+        None
     }
 
     /// The custom message of a field's validation ("Display custom message
@@ -1622,6 +1818,24 @@ pub trait Env {
     fn get(&mut self, flag: &str) -> Option<Value>;
 }
 
+/// A window's found set: record indexes of `table` in the order shown, and
+/// the fields it is sorted by (empty when unsorted).
+#[derive(Debug, Clone, Copy)]
+pub struct FoundSet<'a> {
+    pub table: u32,
+    pub records: &'a [usize],
+    pub sort: &'a [u32],
+}
+
+/// What a calculation sees besides its record: the window's found set
+/// (`None`: every record, unsorted) and `Self` (the value of the field
+/// being validated or auto-entered, or of the layout object).
+#[derive(Debug, Clone, Default)]
+pub struct Scope<'a> {
+    pub found: Option<FoundSet<'a>>,
+    pub self_value: Option<Value>,
+}
+
 /// Evaluation context bound to one record.
 struct RecordContext<'a, 'e> {
     db: &'a Database,
@@ -1633,6 +1847,70 @@ struct RecordContext<'a, 'e> {
     rep: u32,
     vars: BTreeMap<(String, usize), Value>,
     env: Option<&'e mut dyn Env>,
+    found: Option<FoundSet<'a>>,
+    self_value: Option<Value>,
+}
+
+impl<'a, 'e> RecordContext<'a, 'e> {
+    fn new(
+        db: &'a Database,
+        table: u32,
+        to: u32,
+        record: Option<usize>,
+        scope: &Scope<'a>,
+        env: Option<&'e mut dyn Env>,
+    ) -> Self {
+        RecordContext {
+            db,
+            table,
+            to,
+            record: record.unwrap_or(usize::MAX),
+            rep: 1,
+            vars: BTreeMap::new(),
+            env,
+            found: scope.found.filter(|f| f.table == table),
+            self_value: scope.self_value.clone(),
+        }
+    }
+
+    /// The found set of this calculation's table, in order.
+    fn found_records(&self) -> Vec<usize> {
+        match self.found {
+            Some(f) => f.records.to_vec(),
+            None => (0..self.db.table(self.table).map_or(0, |t| t.records.len())).collect(),
+        }
+    }
+
+    /// `Get` flags of the window's found set and record.
+    fn found_flag(&self, flag: &str) -> Option<Value> {
+        let t = self.db.table(self.table)?;
+        let pos = || match self.found {
+            Some(f) => f.records.iter().position(|r| *r == self.record),
+            None => (self.record < t.records.len()).then_some(self.record),
+        };
+        let count = self.found.map_or(t.records.len(), |f| f.records.len());
+        let int = |n: usize| Some(Value::int(n as i64));
+        match flag.to_ascii_lowercase().as_str() {
+            "foundcount" => int(count),
+            "totalrecordcount" => int(t.records.len()),
+            "recordnumber" => int(pos().map_or(0, |p| p + 1)),
+            "recordid" => int(t.records.get(self.record).map_or(0, |r| r.id as usize)),
+            // 0 unsorted, 1 sorted (2, semi-sorted, after records were added).
+            "sortstate" => int(self.found.is_some_and(|f| !f.sort.is_empty()) as usize),
+            "layoutcount" => int(self.db.layouts.len()),
+            // Outside a script.
+            "lasterror"
+            | "errorcapturestate"
+            | "recordopenstate"
+            | "recordopencount"
+            | "transactionopenstate"
+            | "windowmode" => int(0),
+            "allowabortstate" => int(1),
+            "scriptname" | "scriptparameter" | "scriptresult" | "lasterrordetail"
+            | "lasterrorlocation" => Some(Value::empty()),
+            _ => None,
+        }
+    }
 }
 
 impl RecordContext<'_, '_> {
@@ -1673,15 +1951,25 @@ impl RecordContext<'_, '_> {
         repetition: usize,
         extended: bool,
     ) -> Result<Value, calc::EvalError> {
-        let (t, records, f, _) = self.resolve(table, name)?;
+        let (t, records, f, own) = self.resolve(table, name)?;
         let rep = match (repetition, self.rep) {
             (1, n) if n > 1 && repetitions(f) > 1 => n,
             (1, n) if n > 1 && !extended => return Ok(Value::empty()),
             (r, _) => r as u32,
         };
+        // A related summary field summarizes the related records.
+        let found = if own {
+            self.found
+        } else {
+            Some(FoundSet {
+                table: t,
+                records: &records,
+                sort: &[],
+            })
+        };
         Ok(records
             .first()
-            .map_or_else(Value::empty, |r| self.db.value_rep(t, *r, f.id, rep)))
+            .map_or_else(Value::empty, |r| self.db.value_in(t, *r, f.id, rep, found)))
     }
 }
 
@@ -1745,26 +2033,32 @@ impl calc::Context for RecordContext<'_, '_> {
         _repetition: usize,
         n: usize,
     ) -> Result<Value, calc::EvalError> {
-        // ponytail: n-th record of the whole table (no found sets in the engine yet).
+        // A related field: the n-th related record; otherwise the n-th
+        // record of the found set.
+        if table.is_some()
+            && let Ok((t, records, f, false)) = self.resolve(table, name)
+        {
+            return Ok(records
+                .get(n.wrapping_sub(1))
+                .map_or_else(Value::empty, |r| self.db.value(t, *r, f.id)));
+        }
+        let (t, _, f, _) = self.resolve(table, name)?;
         Ok(self
-            .field_values(table, name)
-            .ok()
-            .filter(|_| table.is_some())
-            .and_then(|v| v.into_iter().nth(n.saturating_sub(1)))
-            .or_else(|| {
-                let t = self.db.table(self.table)?;
-                let f = t.field_by_name(name)?;
-                (n >= 1 && n <= t.records.len()).then(|| self.db.value(t.id, n - 1, f.id))
-            })
-            .unwrap_or_else(Value::empty))
+            .found_records()
+            .get(n.wrapping_sub(1))
+            .map_or_else(Value::empty, |r| {
+                self.db.value_in(t, *r, f.id, 1, self.found)
+            }))
     }
 
+    /// The summary of the found set (break field = summary field), or of
+    /// the record's group when the found set is sorted by the break field;
+    /// empty otherwise, as in FileMaker.
     fn summary(
         &mut self,
         summary: (Option<&str>, &str),
         break_field: (Option<&str>, &str),
     ) -> Result<Value, calc::EvalError> {
-        // ponytail: the found set is the whole table (no found set in the engine).
         let t = self
             .db
             .table(self.table)
@@ -1775,37 +2069,43 @@ impl calc::Context for RecordContext<'_, '_> {
                 .ok_or_else(|| calc::EvalError::new(102, format!("field {n} missing")))
         };
         let (sf, bf) = (field(summary.1)?, field(break_field.1)?);
-        let mut found: Vec<usize> = (0..t.records.len()).collect();
+        let found = self.found_records();
+        let sort = self.found.map_or(&[][..], |f| f.sort);
         if sf == bf {
-            return Ok(summary::summarize(self.db, t.id, sf, &found, &found));
+            return Ok(summary::summarize_sorted(
+                self.db, t.id, sf, &found, &found, sort,
+            ));
         }
-        // The found set sorted by the break field, and the records sharing
-        // this record's break value.
-        sort(self.db, t.id, &mut found, &[(bf, Order::Ascending)]);
-        let mine = self.db.value(t.id, self.record, bf);
-        let group: Vec<usize> = found
-            .iter()
-            .copied()
-            .filter(|&r| {
-                calc::eval::compare(&self.db.value(t.id, r, bf), &mine) == std::cmp::Ordering::Equal
-            })
-            .collect();
+        let (Some(level), Some(pos)) = (
+            sort.iter().position(|f| *f == bf),
+            found.iter().position(|r| *r == self.record),
+        ) else {
+            return Ok(Value::empty());
+        };
+        let group = summary::groups(self.db, t.id, &found, &sort[..=level])
+            .into_iter()
+            .find(|g| g.contains(&pos))
+            .map_or_else(Vec::new, |g| found[g].to_vec());
         Ok(summary::summarize_sorted(
-            self.db,
-            t.id,
-            sf,
-            &group,
-            &found,
-            &[bf],
+            self.db, t.id, sf, &group, &found, sort,
         ))
     }
 
+    fn self_value(&mut self) -> Result<Value, calc::EvalError> {
+        self.self_value
+            .clone()
+            .ok_or_else(|| calc::eval::unavailable("Self"))
+    }
+
     fn record_ids(&mut self, _table: Option<&str>) -> Result<Vec<u64>, calc::EvalError> {
+        let Some(t) = self.db.table(self.table) else {
+            return Ok(Vec::new());
+        };
         Ok(self
-            .db
-            .table(self.table)
-            .map(|t| t.records.iter().map(|r| r.id as u64).collect())
-            .unwrap_or_default())
+            .found_records()
+            .iter()
+            .filter_map(|r| t.records.get(*r).map(|r| r.id as u64))
+            .collect())
     }
 
     fn rows(&mut self, table: &str) -> Result<calc::schema::Rows, calc::EvalError> {
@@ -1822,6 +2122,7 @@ impl calc::Context for RecordContext<'_, '_> {
             .as_mut()
             .and_then(|e| e.get(flag))
             .or_else(|| self.db.account_flag(flag))
+            .or_else(|| self.found_flag(flag))
     }
 
     fn variable(&mut self, name: &str, repetition: usize) -> Value {
@@ -1842,15 +2143,40 @@ impl calc::Context for RecordContext<'_, '_> {
     }
 }
 
+/// A date (or timestamp) with a four-digit year ("Strict data type: 4-digit
+/// year date").
+fn four_digit_date(text: &str, typed: &Value) -> bool {
+    let date = text.split_whitespace().next().unwrap_or("");
+    (matches!(typed, Value::Date(_) | Value::Timestamp(_))
+        || calc::value::parse_date(date).is_some())
+        && date
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|p| p.len() == 4)
+}
+
+/// A time of day, 0:00:00 to 23:59:59 ("Strict data type: time of day").
+fn time_of_day(secs: &calc::num::Num) -> bool {
+    *secs >= calc::num::int(0) && *secs < calc::num::int(86_400)
+}
+
 /// A failed validation rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
     NotEmpty,
     Unique,
     Existing,
+    /// Strict data type: numeric only.
     Numeric,
+    /// Strict data type: 4-digit year date.
+    Date,
+    /// Strict data type: time of day.
+    Time,
     /// Not a value of the field's "member of value list".
     ValueList,
+    /// Outside the field's "in range" bounds.
+    Range,
+    /// The field's validation calculation is false.
+    Calculation,
     /// More characters than the field's maximum.
     MaxChars,
 }
@@ -1859,10 +2185,14 @@ impl Rule {
     /// FileMaker's error code (`Get ( LastError )` after a commit fails).
     pub fn code(self) -> u32 {
         match self {
+            Rule::Date => 500,
+            Rule::Time => 501,
             Rule::Numeric => 502,
+            Rule::Range => 503,
             Rule::Unique => 504,
             Rule::Existing => 505,
             Rule::ValueList => 506,
+            Rule::Calculation => 507,
             Rule::NotEmpty => 509,
             Rule::MaxChars => 511,
         }
@@ -1875,6 +2205,9 @@ pub struct Invalid {
     pub rule: Rule,
     /// The user may accept the value anyway ("Allow user to override").
     pub can_override: bool,
+    /// Validated always, not only during data entry: imports and Commit
+    /// Records' "skip data entry validation" still check it.
+    pub always: bool,
 }
 
 /// FileMaker's sort order for one field: ascending or descending.
@@ -1936,6 +2269,8 @@ pub(crate) mod tests {
             data_type: def.data_type(),
             calc: None,
             auto_calc: None,
+            validation_calc: None,
+            range: None,
             context: 0,
             def,
         }
@@ -2046,5 +2381,39 @@ pub(crate) mod tests {
             stored_text(&Value::Number(calc::num::parse("12.75").unwrap()), &fr),
             "12,75"
         );
+    }
+
+    struct NoNames;
+    impl fmp12::calc::Resolve for NoNames {
+        fn occurrences(&self) -> Vec<(u32, String)> {
+            Vec::new()
+        }
+        fn fields(&self, _: u32) -> Vec<(u32, String)> {
+            Vec::new()
+        }
+    }
+
+    /// A layout object's stored formula sees the object's value as `Self`
+    /// (conditional formats, hide conditions, tooltips) and the window's
+    /// found set.
+    #[test]
+    fn eval_with_self() {
+        let db = sample();
+        let compile = |s: &str| fmp12::calc::compile(s, 0, &NoNames).unwrap().tokens;
+        let tokens = compile("Self > 40 and Self < 100");
+        let ev = |v: i64| db.eval_with_self(&tokens, T, 0, Some(0), &Value::int(v), None);
+        assert_eq!(ev(50).to_text(), "1");
+        assert_eq!(ev(30).to_text(), "0");
+        // Without a value, Self is not available.
+        assert_eq!(db.eval_source("Self", T, 0, Some(0)).to_text(), "?");
+        let found = [2, 0];
+        let fs = FoundSet {
+            table: T,
+            records: &found,
+            sort: &[NAME],
+        };
+        let tokens = compile("Get ( RecordNumber ) & \"/\" & Get ( FoundCount )");
+        let v = db.eval_with_self(&tokens, T, 0, Some(0), &Value::empty(), Some(fs));
+        assert_eq!(v.to_text(), "2/2");
     }
 }

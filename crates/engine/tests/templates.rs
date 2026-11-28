@@ -184,6 +184,46 @@ fn validation_on_commit() {
     assert_eq!(db.validate(tid, b)[0].rule, engine::Rule::NotEmpty);
 }
 
+/// Every template's existing records pass their range and calculation
+/// validations (FileMaker accepted them).
+#[test]
+fn template_records_validate() {
+    let Some(d) = dir() else { return };
+    for t in [
+        "Contacts",
+        "Tasks",
+        "Assets",
+        "Inventory",
+        "Meetings",
+        "Content_Management",
+    ] {
+        let db = Database::open(d.join(t).join("en.fmp12")).unwrap();
+        for tbl in &db.tables {
+            // Auto-entered stamps pass "strict data type: 4-digit year".
+            let mut new = db.clone();
+            let r = new.new_record(tbl.id).unwrap();
+            let strict: Vec<_> = new
+                .validate(tbl.id, r)
+                .into_iter()
+                .filter(|e| matches!(e.rule, engine::Rule::Date | engine::Rule::Time))
+                .collect();
+            assert!(
+                strict.is_empty(),
+                "{t}::{} new record: {strict:?}",
+                tbl.name
+            );
+            for r in 0..tbl.records.len() {
+                let bad: Vec<_> = db
+                    .validate(tbl.id, r)
+                    .into_iter()
+                    .filter(|e| matches!(e.rule, engine::Rule::Range | engine::Rule::Calculation))
+                    .collect();
+                assert!(bad.is_empty(), "{t}::{} record {r}: {bad:?}", tbl.name);
+            }
+        }
+    }
+}
+
 #[test]
 fn export_import_round_trip_and_summaries() {
     use engine::export::{Export, Format, columns};
@@ -298,6 +338,23 @@ fn get_summary_by_break_field() {
         .id;
     let ev = |s: &str, r| db.eval_source(s, tid, to, Some(r)).to_text();
     assert_eq!(ev("GetSummary ( Total ; Total )", 0), "1800");
+    // Unsorted: no sub-summary.
+    assert_eq!(ev("GetSummary ( Total ; Type )", 0), "");
+    let mut found: Vec<usize> = (0..3).collect();
+    engine::sort(&db, tid, &mut found, &[(ty, Order::Ascending)]);
+    let scope = engine::Scope {
+        found: Some(engine::FoundSet {
+            table: tid,
+            records: &found,
+            sort: &[ty],
+        }),
+        self_value: None,
+    };
+    let ev = |s: &str, r| {
+        db.eval_source_in(s, tid, to, Some(r), &scope)
+            .unwrap()
+            .to_text()
+    };
     assert_eq!(ev("GetSummary ( Total ; Type )", 0), "1500");
     assert_eq!(ev("GetSummary ( Total ; Type )", 1), "300");
 }

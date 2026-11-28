@@ -325,6 +325,9 @@ pub struct Evaluator<'a> {
     pub(crate) custom_calls: u32,
     /// Custom function calls not returned yet.
     custom_depth: u32,
+    /// An error a function absorbed while still returning a value
+    /// (`Count ( 1 ; 1/0 )` is 1, with error 15): EvaluationError reports it.
+    pub sticky: Option<EvalError>,
 }
 
 /// Named constants usable as bare words in formulas.
@@ -392,6 +395,7 @@ impl<'a> Evaluator<'a> {
             evaluate_depth: 0,
             custom_calls: 0,
             custom_depth: 0,
+            sticky: None,
         }
     }
 
@@ -441,7 +445,7 @@ impl<'a> Evaluator<'a> {
             }
             Expr::Call { name, args } => functions::call(self, name, args),
             Expr::Unary(op, e) => {
-                let v = self.eval(e)?;
+                let v = self.eval(e)?.plain();
                 Ok(match (op, v) {
                     (UnOp::Not, v) => Value::bool(!v.truth()),
                     (UnOp::Neg, v) if v.is_empty() => Value::empty(),
@@ -617,6 +621,7 @@ fn ts_seconds(v: &Value) -> Num {
 /// When either side is text, values compare as text, ignoring case and
 /// accents (`10 < "9"`, "é" is not after "e"); otherwise as numbers.
 pub fn compare(l: &Value, r: &Value) -> Ordering {
+    let (l, r) = (l.plain_ref(), r.plain_ref());
     let text = |v: &Value| matches!(v, Value::Text(_) | Value::Json { .. });
     if text(l) || text(r) {
         return functions::base_key(&l.to_text()).cmp(&functions::base_key(&r.to_text()));
@@ -627,9 +632,14 @@ pub fn compare(l: &Value, r: &Value) -> Ordering {
 pub fn binary(op: BinOp, l: Value, r: Value, scale: i64) -> R {
     use BinOp::*;
     use Value::*;
+    if op == Concat {
+        return Ok(Text(l.to_text() + &r.to_text()));
+    }
+    // Only the text of a shown date or time differs.
+    let (l, r) = (l.plain(), r.plain());
     let (a, b) = (l.num_or_zero(), r.num_or_zero());
     Ok(match op {
-        Concat => Text(l.to_text() + &r.to_text()),
+        Concat => Text(l.to_text() + &r.to_text()), // handled above
         Eq => Value::bool(compare(&l, &r).is_eq()),
         Ne => Value::bool(compare(&l, &r).is_ne()),
         Lt => Value::bool(compare(&l, &r).is_lt()),

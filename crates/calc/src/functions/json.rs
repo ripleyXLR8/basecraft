@@ -32,8 +32,68 @@ const VALUE_EXPECTED: &str = "Syntax error: value, object or array expected.";
 /// JsonCpp runs in strict-root mode). Errors use JsonCpp's wording.
 // ponytail: only the common JsonCpp messages are reproduced (empty text,
 // a non-JSON first character, a scalar root); other syntax errors carry
-// serde_json's message, and duplicate keys are not detected.
+// serde_json's message.
 fn parse(s: &str) -> Result<J, String> {
+    let j = parse_document(s)?;
+    match duplicate_key(s) {
+        Some(e) => Err(e),
+        None => Ok(j),
+    }
+}
+
+/// JsonCpp's strict mode rejects an object with the same key twice, at the
+/// second key: `* Line 1, Column 8\r  Duplicate key: 'a'`. `s` is valid JSON.
+fn duplicate_key(s: &str) -> Option<String> {
+    // Per open container: its keys when it is an object.
+    let mut stack: Vec<Option<Vec<String>>> = Vec::new();
+    let (mut key_next, mut line, mut col) = (false, 1, 0);
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        col += 1;
+        match c {
+            '\n' => (line, col) = (line + 1, 0),
+            '{' | '[' => {
+                stack.push((c == '{').then(Vec::new));
+                key_next = c == '{';
+            }
+            '}' | ']' => {
+                stack.pop();
+                key_next = false;
+            }
+            ',' => key_next = matches!(stack.last(), Some(Some(_))),
+            '"' => {
+                let at = col;
+                let mut text = String::new();
+                while let Some(d) = it.next() {
+                    col += 1;
+                    match d {
+                        '"' => break,
+                        '\\' => {
+                            text.push(d);
+                            text.extend(it.next());
+                            col += 1;
+                        }
+                        d => text.push(d),
+                    }
+                }
+                if std::mem::take(&mut key_next)
+                    && let Some(Some(keys)) = stack.last_mut()
+                {
+                    if keys.contains(&text) {
+                        return Some(format!(
+                            "* Line {line}, Column {at}\r  Duplicate key: '{text}'"
+                        ));
+                    }
+                    keys.push(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_document(s: &str) -> Result<J, String> {
     let Some((line, col, first)) = s.lines().enumerate().find_map(|(l, t)| {
         t.char_indices()
             .find(|(_, c)| !c.is_whitespace())

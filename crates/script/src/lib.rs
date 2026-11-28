@@ -77,6 +77,9 @@ pub struct Window {
     /// Current record: index into `found`.
     pub current: usize,
     pub sorted: bool,
+    /// Fields of the layout's table the found set is sorted by, in order
+    /// (GetSummary needs its break field among them); empty when unsorted.
+    pub sort: Vec<u32>,
     /// Find requests (Find mode) and the current one.
     pub requests: Vec<Request>,
     pub current_request: usize,
@@ -127,6 +130,7 @@ impl Default for Window {
             found: Vec::new(),
             current: 0,
             sorted: false,
+            sort: Vec::new(),
             requests: Vec::new(),
             current_request: 0,
             name: String::new(),
@@ -1215,12 +1219,23 @@ impl Engine {
         if let Some(t) = db.table(table) {
             flags.insert("layouttablename", Value::text(&t.name));
         }
+        flags.insert("sortstate", num(w.sorted as usize));
         let mut env = ScriptEnv {
             locals: &mut frame.locals,
             globals: &mut self.globals,
             flags,
         };
-        db.eval_tokens_in(&c.0, table, to, record, Some(&mut env))
+        // The window's found set and sort: summary fields, GetSummary,
+        // GetNthRecord.
+        let scope = engine::Scope {
+            found: Some(engine::FoundSet {
+                table,
+                records: &w.found,
+                sort: &w.sort,
+            }),
+            self_value: None,
+        };
+        db.eval_tokens_scoped(&c.0, table, to, record, &scope, Some(&mut env))
             .map_err(|e| e.code)
     }
 
@@ -1252,16 +1267,11 @@ impl Engine {
             }
             return Ok(());
         };
-        let db = host.db();
-        let always = |f: u32| {
-            db.table(table)
-                .and_then(|t| t.field(f))
-                .is_some_and(|f| f.def.validation().always)
-        };
-        if let Some(e) = db
-            .validate(table, r)
+        if let Some(e) = host
+            .db()
+            .validate_script(table, r)
             .into_iter()
-            .find(|e| !skip || always(e.field))
+            .find(|e| !skip || e.always)
         {
             return Err(e.rule.code());
         }
@@ -1944,6 +1954,7 @@ impl Engine {
                 w.found = found;
                 w.current = 0;
                 w.sorted = false;
+                w.sort.clear();
                 if w.found.is_empty() {
                     return Err(error::NO_MATCH);
                 }
@@ -1957,6 +1968,7 @@ impl Engine {
                 w.found = (0..n).collect();
                 w.current = 0;
                 w.sorted = false;
+                w.sort.clear();
             }
             (_, id::SHOW_OMITTED) => {
                 self.commit(host)?;
@@ -1966,6 +1978,7 @@ impl Engine {
                 w.found = (0..n).filter(|r| !w.found.contains(r)).collect();
                 w.current = 0;
                 w.sorted = false;
+                w.sort.clear();
             }
             (_, id::OMIT_RECORD) => {
                 self.commit(host)?;
@@ -1999,10 +2012,12 @@ impl Engine {
                     let (table, _, _) = Self::context(host);
                     let mut found = host.window().found.clone();
                     sort(host.db(), table, &mut found, keys);
+                    let fields = sort_fields(host.db(), table, keys.iter().map(|k| k.0));
                     let w = host.window();
                     w.found = found;
                     w.current = 0;
                     w.sorted = true;
+                    w.sort = fields;
                 }
                 // With dialog: the Sort Records dialog, on the stored order.
                 if *dialog {
@@ -2017,6 +2032,7 @@ impl Engine {
                 let w = host.window();
                 w.found.sort_unstable();
                 w.sorted = false;
+                w.sort.clear();
             }
             (_, id::FREEZE_WINDOW) => host.freeze(),
             (_, id::REFRESH_WINDOW) => host.refresh(),
@@ -2096,6 +2112,7 @@ impl Engine {
             w.found = (0..new.1).collect();
             w.current = 0;
             w.sorted = false;
+            w.sort.clear();
         }
         Ok(())
     }
@@ -2308,6 +2325,13 @@ fn delete_records(host: &mut dyn Host, table: u32, records: &[usize]) {
         .map(|&r| r - del.iter().filter(|&&d| d < r).count())
         .collect();
     w.current = w.current.min(w.found.len().saturating_sub(1));
+}
+
+/// The fields of `table` among sort keys, for [`Window::sort`].
+pub fn sort_fields(db: &Database, table: u32, keys: impl Iterator<Item = FieldRef>) -> Vec<u32> {
+    keys.filter(|f| db.table_of(f.to).is_some_and(|t| t.id == table))
+        .map(|f| f.field)
+        .collect()
 }
 
 /// Sorts a found set by stored sort keys of `table` (other tables' fields

@@ -17,7 +17,7 @@ fn bad_time(what: &str) -> EvalError {
 /// Date argument: empty (or a time, which has no date) stays empty (None),
 /// invalid is error 500.
 fn date_arg(v: &Value, what: &str) -> Result<Option<i64>, EvalError> {
-    if v.is_empty() || matches!(v, Value::Time(_)) {
+    if v.is_empty() || matches!(v.plain_ref(), Value::Time(_)) {
         return Ok(None);
     }
     v.to_date()
@@ -190,26 +190,77 @@ pub fn seconds(_: &mut Evaluator, a: &[Value]) -> R {
     on_time(a, "Seconds", |t| Value::num(hms(&t).2))
 }
 
-pub fn get_as_date(_: &mut Evaluator, a: &[Value]) -> R {
-    on_date(a, "GetAsDate", Value::Date)
+/// `v` shown as `text` ([`Value::Shown`]).
+fn shown(v: Value, text: String) -> Value {
+    Value::Shown {
+        value: Box::new(v),
+        text,
+    }
 }
 
+/// The separator of a date typed with `.` or `-` (`1.15.2024`), which
+/// FileMaker keeps when showing it.
+fn date_separator(s: &str) -> Option<char> {
+    let date = s.split_whitespace().next()?;
+    ['.', '-'].into_iter().find(|c| date.contains(*c))
+}
+
+pub fn get_as_date(_: &mut Evaluator, a: &[Value]) -> R {
+    let v = on_date(a, "GetAsDate", Value::Date)?;
+    Ok(match (&a[0], date_separator(&a[0].to_text())) {
+        (Value::Text(_), Some(sep)) => {
+            let text = v.to_text().replace('/', &sep.to_string());
+            shown(v, text)
+        }
+        _ => v,
+    })
+}
+
+/// A time read with AM/PM, or from a timestamp, shows in the 12-hour form
+/// (`1:30 PM`, `1 PM` when typed without minutes).
 pub fn get_as_time(_: &mut Evaluator, a: &[Value]) -> R {
-    on_time(a, "GetAsTime", Value::Time)
+    let v = on_time(a, "GetAsTime", Value::Time)?;
+    let Value::Time(t) = &v else {
+        return Ok(v);
+    };
+    let from_ts = match a[0].plain_ref() {
+        Value::Timestamp(_) => true,
+        Value::Text(s) => value::parse_time(s).is_none(),
+        _ => false,
+    };
+    let s = a[0].to_text().to_ascii_uppercase();
+    let twelve = matches!(a[0], Value::Text(_)) && (s.ends_with("AM") || s.ends_with("PM"));
+    if !from_ts && !twelve {
+        return Ok(v);
+    }
+    let mut text = value::format_time12(t);
+    if twelve && !s.contains(':') {
+        // "1 PM": no minutes typed, none shown.
+        text = text.replacen(":00", "", 1);
+    }
+    Ok(shown(v, text))
 }
 
 pub fn get_as_timestamp(_: &mut Evaluator, a: &[Value]) -> R {
-    let v = &a[0];
+    let v = a[0].plain_ref();
     let t = match v {
         _ if v.is_empty() => return Ok(Value::empty()),
         Value::Timestamp(t) | Value::Number(t) | Value::Time(t) => Some(t.clone()),
         Value::Date(d) => Some(make_ts(*d, &num::int(0))),
         Value::Text(s) | Value::Json { text: s, .. } => value::parse_timestamp(s),
-        Value::Container(_) => None,
+        Value::Container(_) | Value::Shown { .. } => None,
     };
-    t.filter(|t| valid_day(value::ts_date(t)))
+    let ts = t
+        .filter(|t| valid_day(value::ts_date(t)))
         .map(Value::Timestamp)
-        .ok_or_else(|| bad_date("GetAsTimestamp"))
+        .ok_or_else(|| bad_date("GetAsTimestamp"))?;
+    Ok(match (v, date_separator(&v.to_text())) {
+        (Value::Text(_), Some(sep)) => {
+            let text = ts.to_text().replacen('/', &sep.to_string(), 2);
+            shown(ts, text)
+        }
+        _ => ts,
+    })
 }
 // ---- Get() flags that need no database -----------------------------------------
 

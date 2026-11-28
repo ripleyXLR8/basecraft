@@ -173,7 +173,10 @@ impl Parser<'_> {
         Ok(Some(Box::new(e)))
     }
 
-    fn items(&mut self, close: &'static str) -> Result<Vec<Expr>, ParseError> {
+    /// Items up to `close`; `max`: a function's most parameters, past which
+    /// an empty last one (`Abs ( 1 ; )`) is "too many parameters". A
+    /// function without a maximum ignores it (`Case ( 1 ; 2 ; )`).
+    fn items(&mut self, close: &'static str, max: Option<usize>) -> Result<Vec<Expr>, ParseError> {
         let mut items = Vec::new();
         if self.peek() == &Tok::Sym(close) {
             self.next();
@@ -183,6 +186,18 @@ impl Parser<'_> {
             items.push(self.expr(1)?);
             if self.peek() == &Tok::Sym(";") {
                 self.next();
+                if self.peek() == &Tok::Sym(close) {
+                    match max {
+                        Some(crate::functions::N) => {
+                            self.next();
+                            return Ok(items);
+                        }
+                        Some(m) if items.len() >= m => {
+                            return self.fail(code::TOO_MANY_PARAMS, "too many parameters");
+                        }
+                        _ => {}
+                    }
+                }
                 continue;
             }
             self.expect(close)?;
@@ -199,7 +214,7 @@ impl Parser<'_> {
                 self.expect(")")?;
                 Ok(e)
             }
-            Tok::Sym("[") => Ok(Expr::List(self.items("]")?)),
+            Tok::Sym("[") => Ok(Expr::List(self.items("]", None)?)),
             Tok::Var(name) => Ok(Expr::Var {
                 name,
                 rep: self.repetition()?,
@@ -225,13 +240,15 @@ impl Parser<'_> {
                         return self.fail(code::OPERATOR_MISSING, "function not found");
                     }
                     self.next();
-                    let args = self.items(")")?;
+                    let max = crate::functions::lookup(&name).map(|f| f.max);
+                    let args = self.items(")", max)?;
                     return Ok(Expr::Call { name, args });
                 }
                 if self.peek() == &Tok::Sym("::") {
                     self.next();
+                    // FileMaker looks the table up first: `x::` is 106.
                     let Tok::Ident { name: field, .. } = self.peek().clone() else {
-                        return self.fail(code::NAME_MISSING, "field name is missing");
+                        return self.fail(code::TABLE_MISSING, "table not found");
                     };
                     self.next();
                     return Ok(Expr::Field {

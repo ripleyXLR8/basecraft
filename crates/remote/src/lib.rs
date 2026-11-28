@@ -98,6 +98,11 @@ impl std::fmt::Display for Error {
                 }
             }
             Error::Http { status, message } => write!(f, "HTTP {status}: {message}"),
+            Error::Transport(m) if m.contains("certificate") => write!(
+                f,
+                "connection failed: {m} (the server's certificate is not trusted; for a \
+                 test server with a self-signed one, accept it explicitly)"
+            ),
             Error::Transport(m) => write!(f, "connection failed: {m}"),
             Error::Protocol(m) => write!(f, "unexpected reply: {m}"),
         }

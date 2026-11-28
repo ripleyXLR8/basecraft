@@ -268,6 +268,19 @@ fn tools() -> Vec<(&'static str, &'static str, Json)> {
             "Write the open file with all changes. Give `path` to save a copy; omit it to overwrite the opened file.",
             s(json!({ "path": { "type": "string" } }), &[]),
         ),
+        (
+            "remote_command",
+            "Run a command on a file hosted by FileMaker Server (Data API), without opening a local file: info, records, find, new, set, delete or run-script, with the command line's arguments (e.g. [\"Contacts\", \"--find\", \"City=Paris\"], [\"Contacts\", \"12\", \"City=Rome\", \"--mod-id\", \"3\"], [\"Echo\", \"--layout\", \"Contacts\", \"--param\", \"x\"]). The password is read from the environment variable named by `password_env`, never passed here. Writes go to the server at once.",
+            s(
+                json!({ "url": { "type": "string", "description": "https://host/Database" },
+                        "account": { "type": "string" },
+                        "password_env": { "type": "string", "description": "Name of the environment variable holding the password" },
+                        "insecure": { "type": "boolean", "description": "Accept a self-signed certificate (test servers only)" },
+                        "command": { "type": "string", "enum": ["info", "records", "find", "new", "set", "delete", "run-script"] },
+                        "args": { "type": "array", "items": { "type": "string" } } }),
+                &["url", "account", "password_env", "command"],
+            ),
+        ),
     ]
 }
 
@@ -280,6 +293,31 @@ fn call(doc: &mut Option<Doc>, name: &str, a: &Json) -> Res<Json> {
         let r = crate::schema::new_file(&path, &table)?;
         *doc = Some(Doc::open(&path, None)?);
         return Ok(r);
+    }
+    if name == "remote_command" {
+        let mut args: Vec<String> = vec![
+            "--remote".into(),
+            str_of("url").ok_or("url is required")?,
+            "--password-env".into(),
+            str_of("password_env").ok_or("password_env is required")?,
+        ];
+        if a.get("insecure").and_then(Json::as_bool) == Some(true) {
+            args.push("--insecure".into());
+        }
+        let login = crate::Login {
+            account: str_of("account").ok_or("account is required")?,
+            password: String::new(),
+        };
+        let c = crate::hosted::conn(&mut args, Some(&login))?.ok_or("url is required")?;
+        let rest: Vec<String> = a
+            .get("args")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+            .collect();
+        let cmd = str_of("command").ok_or("command is required")?;
+        return crate::hosted::run(&c, &cmd, &rest);
     }
     if name == "open_file" {
         let path = str_of("path").ok_or("path is required")?;

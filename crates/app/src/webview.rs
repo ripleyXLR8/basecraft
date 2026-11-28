@@ -1,8 +1,15 @@
 //! Web viewers in Browse mode: a native child webview (wry: WebView2 on
-//! Windows, WKWebView on macOS) over the object's rectangle in the main
-//! window; in the web version a sandboxed `<iframe>` over the canvas
-//! (`iframe`). Elsewhere (Linux, the other OS windows, the UI tests)
-//! the placeholder of `objects.rs` shows.
+//! Windows, WKWebView on macOS, WebKitGTK on Linux under X11) over the
+//! object's rectangle in the main window; in the web version a sandboxed
+//! `<iframe>` over the canvas (`iframe`). Elsewhere (Linux under Wayland,
+//! the other OS windows, the UI tests) the placeholder of `objects.rs`
+//! shows.
+//!
+//! Linux: GTK is initialised once, on the X11 backend (XWayland under a
+//! Wayland session), and its main loop is pumped at each frame, as wry
+//! asks of winit apps. wry's child webviews need an X11 parent window:
+//! when eframe runs on Wayland they cannot be made (`env -u
+//! WAYLAND_DISPLAY basecraft` runs it on XWayland).
 //!
 //! Each frame `objects::web_viewer` asks for the web viewers it drew
 //! ([`want`]); [`sync`] then creates, moves, hides and destroys the
@@ -87,8 +94,11 @@ struct State {
     inbox: Inbox,
     calls: std::collections::VecDeque<(String, String)>,
     pages: BTreeMap<String, (String, String)>,
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     context: Option<wry::WebContext>,
+    /// Linux: whether GTK started (asked once).
+    #[cfg(target_os = "linux")]
+    gtk: Option<bool>,
 }
 
 thread_local! {
@@ -96,7 +106,12 @@ thread_local! {
 }
 
 /// Live webviews on this platform.
-const NATIVE: bool = cfg!(any(windows, target_os = "macos", target_arch = "wasm32"));
+const NATIVE: bool = cfg!(any(
+    windows,
+    target_os = "macos",
+    target_os = "linux",
+    target_arch = "wasm32"
+));
 
 /// A web viewer drawn this frame.
 pub fn want(w: Want) {
@@ -134,8 +149,14 @@ pub fn sync(ctx: &egui::Context, frame: &eframe::Frame) {
     let hide = egui::Popup::is_any_open(ctx) || ctx.memory(|m| m.top_modal_layer().is_some());
     STATE.with_borrow_mut(|s| {
         let inbox = s.inbox.clone();
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         {
+            #[cfg(target_os = "linux")]
+            if !native::gtk(&mut s.gtk, frame) {
+                let _ = (frame, inbox);
+                s.update(hide, &mut |_| None);
+                return;
+            }
             let mut wc = s.context.take().unwrap_or_else(|| {
                 wry::WebContext::new(crate::prefs::dir().map(|d| d.join("WebView")))
             });
@@ -143,13 +164,25 @@ pub fn sync(ctx: &egui::Context, frame: &eframe::Frame) {
                 native::create(frame, &mut wc, w, inbox.clone(), ctx.clone())
             });
             s.context = Some(wc);
+            // ponytail: GTK only runs while egui repaints; a 30 ms tick
+            // keeps pages loading and animating. A GLib source waking
+            // egui would idle better.
+            #[cfg(target_os = "linux")]
+            if !s.live.is_empty() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            }
         }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = frame;
             s.update(hide, &mut |w| iframe::create(w, inbox.clone(), ctx.clone()));
         }
-        #[cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))]
+        #[cfg(not(any(
+            windows,
+            target_os = "macos",
+            target_os = "linux",
+            target_arch = "wasm32"
+        )))]
         {
             let _ = (frame, inbox);
             s.update(hide, &mut |_| None);
@@ -361,7 +394,12 @@ fn unescape(s: &str) -> Option<String> {
 /// source once loaded, adds `window.FileMaker` when the web viewer lets
 /// JavaScript perform scripts, and swallows input when interaction is off.
 #[cfg_attr(
-    not(any(windows, target_os = "macos", target_arch = "wasm32")),
+    not(any(
+        windows,
+        target_os = "macos",
+        target_os = "linux",
+        target_arch = "wasm32"
+    )),
     allow(dead_code)
 )]
 pub fn bridge(flags: u64) -> String {
@@ -394,10 +432,35 @@ pub fn bridge(flags: u64) -> String {
     js
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 mod native {
     use super::*;
     use wry::raw_window_handle::HasWindowHandle;
+
+    /// Linux: starts GTK on X11 the first time (`started` remembers the
+    /// answer) and runs its pending events. `false` when the main window
+    /// is not an X11 window or GTK cannot start (no X server).
+    #[cfg(target_os = "linux")]
+    pub fn gtk(started: &mut Option<bool>, parent: &impl HasWindowHandle) -> bool {
+        use wry::raw_window_handle::RawWindowHandle;
+        let x11 = parent
+            .window_handle()
+            .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Xlib(_)));
+        if !x11 {
+            return false;
+        }
+        let ok = *started.get_or_insert_with(|| {
+            // wry's child webviews are X11 windows: GDK must be on X11 too.
+            gtk::gdk::set_allowed_backends("x11");
+            gtk::init().is_ok()
+        });
+        if ok {
+            while gtk::events_pending() {
+                gtk::main_iteration_do(false);
+            }
+        }
+        ok
+    }
 
     struct Wry(wry::WebView);
 

@@ -101,13 +101,25 @@ updated as milestones move; details live in [PROGRESS.md](PROGRESS.md).
 
 ## Web viewers
 
-On Windows and macOS, web viewers show their page in Browse mode, with
+On Windows, macOS and Linux, web viewers show their page in Browse mode, with
 Set Web Viewer, Perform JavaScript in Web Viewer and the `FileMaker.PerformScript`
 bridge (when the web viewer allows JavaScript to perform scripts). Windows uses
 the Microsoft Edge WebView2 runtime, already present on Windows 10 and 11. In
 the web version a web viewer is a sandboxed iframe (the bridge and Perform
 JavaScript work for `data:text/html` pages only, browsers keep other sites out
-of reach). On Linux it is a box with its address.
+of reach).
+
+Linux needs WebKitGTK 4.1, to build and to run (the .deb asks for it; the
+AppImage and the tar.gz do not bring it):
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev      # Debian, Ubuntu (to run only: libwebkit2gtk-4.1-0)
+sudo dnf install webkit2gtk4.1-devel        # Fedora (to run only: webkit2gtk4.1)
+```
+
+Linux webviews are X11 child windows. Under a Wayland session BaseCraft's window
+is a Wayland window and web viewers stay a box with their address; to see the
+pages, run it on XWayland: `env -u WAYLAND_DISPLAY basecraft`.
 
 ## Command line for scripts and AI agents
 
